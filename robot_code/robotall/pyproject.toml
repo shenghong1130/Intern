@@ -1,0 +1,53 @@
+[project]
+name = "robotall"
+version = "0.1.0"
+description = "Robot NFC + motion control library for ST25DV04 / TonyPi"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "smbus2>=0.4",
+    "pyserial>=3.4",
+]
+keywords = ["robotics", "nfc", "st25dv04", "hiwonder", "raspberrypi", "servo"]
+license = { file = "LICENSE" }
+authors = [
+    { name = "TonyPi robot contest" },
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Topic :: Software Development :: Libraries",
+]
+urls = { "Homepage" = "https://example.com/robotall", "Source" = "https://example.com/robotall" }
+
+[project.scripts]
+robotall-robot-tag = "robotall.robot_tag:main"
+robotall-st25dv04 = "robotall.st25dv04:main"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "build>=1.2",
+]
+
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["robotall*"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

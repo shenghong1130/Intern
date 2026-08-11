@@ -1,0 +1,6 @@
+smbus2>=0.4
+pyserial>=3.4
+
+[dev]
+pytest>=8
+build>=1.2

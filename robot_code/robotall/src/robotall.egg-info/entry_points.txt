@@ -1,0 +1,3 @@
+[console_scripts]
+robotall-robot-tag = robotall.robot_tag:main
+robotall-st25dv04 = robotall.st25dv04:main

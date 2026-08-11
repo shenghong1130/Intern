@@ -1,0 +1,75 @@
+Metadata-Version: 2.4
+Name: robotall
+Version: 0.1.0
+Summary: Robot NFC + motion control library for ST25DV04 / TonyPi
+Author: TonyPi robot contest
+License: MIT License
+        
+        Copyright (c) 2026 TonyPi robot contest
+        
+        Permission is hereby granted, free of charge, to any person obtaining a copy
+        of this software and associated documentation files (the "Software"), to deal
+        in the Software without restriction, including without limitation the rights
+        to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+        copies of the Software, and to permit persons to whom the Software is
+        furnished to do so, subject to the following conditions:
+        
+        The above copyright notice and this permission notice shall be included in all
+        copies or substantial portions of the Software.
+        
+        THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+        IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+        FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+        AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+        LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+        OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+        SOFTWARE.
+        
+Project-URL: Homepage, https://example.com/robotall
+Project-URL: Source, https://example.com/robotall
+Keywords: robotics,nfc,st25dv04,hiwonder,raspberrypi,servo
+Classifier: Development Status :: 4 - Beta
+Classifier: Intended Audience :: Developers
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3.9
+Classifier: Programming Language :: Python :: 3.10
+Classifier: Programming Language :: Python :: 3.11
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Operating System :: OS Independent
+Classifier: Topic :: Software Development :: Libraries
+Requires-Python: >=3.9
+Description-Content-Type: text/markdown
+License-File: LICENSE
+Requires-Dist: smbus2>=0.4
+Requires-Dist: pyserial>=3.4
+Provides-Extra: dev
+Requires-Dist: pytest>=8; extra == "dev"
+Requires-Dist: build>=1.2; extra == "dev"
+Dynamic: license-file
+
+# robotall
+
+`robotall` is a small Python library for controlling TonyPi robot servos and writing robot contest request/response packets to ST25DV04 NFC tags.
+
+## Features
+
+- Servo motion helpers for head turning and action group playback
+- ST25DV04 NFC mailbox read/write support
+- Robot contest identity and attempt request packet helpers
+
+## Installation
+
+```bash
+pip install .
+```
+
+## Requirements
+
+- Python 3.9+
+- `smbus2`
+
+## Usage
+
+```python
+from robotall import act, register_robot, send_request
+```
