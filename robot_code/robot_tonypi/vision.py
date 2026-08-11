@@ -53,7 +53,7 @@ class ScreenDetector:
             reject = self._reject_quad(frame, quad, area, aspect, tags)
             if reject:
                 continue
-            tag = self._bind_right_upper_tag(quad, tags)
+            tag = self._bind_left_upper_tag(quad, tags)
             if tag is None:
                 continue
             if not (1 <= int(tag.tag_id) <= 36):
@@ -155,8 +155,8 @@ class ScreenDetector:
         white = np.sum(crop >= int(self.cfg["vision"]["white_threshold"]))
         return float(white) / float(max(1, crop.size))
 
-    def _bind_right_upper_tag(self, quad, tags) -> Optional[TagDetection]:
-        tr = np.array(quad[1], dtype=np.float64)
+    def _bind_left_upper_tag(self, quad, tags) -> Optional[TagDetection]:
+        tl = np.array(quad[0], dtype=np.float64)
         center = np.mean(np.array(quad, dtype=np.float64), axis=0)
         diag = np.linalg.norm(np.array(quad[2], dtype=np.float64) - np.array(quad[0], dtype=np.float64))
         max_px = max(float(self.cfg["vision"]["tag_bind_max_px"]), diag * float(self.cfg["vision"]["tag_bind_diag_ratio"]))
@@ -166,11 +166,11 @@ class ScreenDetector:
             if not (1 <= int(tag.tag_id) <= 36):
                 continue
             tc = np.array(tag.center, dtype=np.float64)
-            dist = np.linalg.norm(tc - tr)
+            dist = np.linalg.norm(tc - tl)
             if dist > max_px:
                 continue
-            # Tag must be to the right of the quad center (field physical constraint).
-            if tc[0] < center[0]:
+            # Tag must be to the left of the quad center (field physical constraint).
+            if tc[0] > center[0]:
                 continue
             if dist < best_dist:
                 best = tag
