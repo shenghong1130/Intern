@@ -1,0 +1,178 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""Shared dataclasses used by the TonyPi competition controller."""
+
+from dataclasses import dataclass, field
+from enum import Enum
+from typing import Any, Dict, List, Optional, Tuple
+
+
+class Confidence(str, Enum):
+    HIGH = "HIGH"
+    MEDIUM = "MEDIUM"
+    LOW = "LOW"
+    UNKNOWN = "UNKNOWN"
+
+
+class ScreenStatus(str, Enum):
+    UNKNOWN = "UNKNOWN"
+    NEEDS_CHANGE = "NEEDS_CHANGE"
+    INTERACTING = "INTERACTING"
+    CHANGED = "CHANGED"
+    ALREADY_TARGET = "ALREADY_TARGET"
+    FAILED = "FAILED"
+
+
+@dataclass
+class RobotPose:
+    x_cm: float
+    y_cm: float
+    yaw_deg: float
+    confidence: Confidence = Confidence.UNKNOWN
+    source: str = "UNKNOWN"
+    last_update_s: float = 0.0
+
+    def xy(self) -> Tuple[float, float]:
+        return self.x_cm, self.y_cm
+
+    def as_dict(self) -> Dict[str, Any]:
+        return {
+            "x_cm": self.x_cm,
+            "y_cm": self.y_cm,
+            "yaw_deg": self.yaw_deg,
+            "confidence": self.confidence.value,
+            "source": self.source,
+            "last_update_s": self.last_update_s,
+        }
+
+
+@dataclass
+class Screen:
+    screen_id: int
+    tag_corners_3d: Any
+    center_xy: Tuple[float, float]
+    normal_xy: Tuple[float, float]
+    normal_yaw_deg: float
+    observation_xy: Tuple[float, float]
+    interaction_xy: Tuple[float, float]
+    interaction_yaw_deg: float
+    reader_xy: Tuple[float, float]
+    screen_left_tangent_xy: Tuple[float, float]
+    interaction_staging_xy: Tuple[float, float]
+    worker_id: Optional[int] = None
+    status: ScreenStatus = ScreenStatus.UNKNOWN
+    attempts: int = 0
+    last_seen_s: float = 0.0
+    last_classification: Optional[str] = None
+    last_confidence: float = 0.0
+    notes: List[str] = field(default_factory=list)
+
+    def done(self) -> bool:
+        # ALREADY_TARGET needs no physical transaction, so it is complete for
+        # target selection even though completed_count() tracks actual changes.
+        return self.status in (ScreenStatus.CHANGED, ScreenStatus.ALREADY_TARGET)
+
+    def successful(self) -> bool:
+        return self.status == ScreenStatus.CHANGED
+
+    def needs_interaction(self) -> bool:
+        return self.status == ScreenStatus.NEEDS_CHANGE and bool(self.last_classification)
+
+    def as_dict(self) -> Dict[str, Any]:
+        return {
+            "screen_id": self.screen_id,
+            "center_xy": list(self.center_xy),
+            "normal_xy": list(self.normal_xy),
+            "normal_yaw_deg": self.normal_yaw_deg,
+            "observation_xy": list(self.observation_xy),
+            "interaction_xy": list(self.interaction_xy),
+            "interaction_yaw_deg": self.interaction_yaw_deg,
+            "reader_xy": list(self.reader_xy),
+            "screen_left_tangent_xy": list(self.screen_left_tangent_xy),
+            "interaction_staging_xy": list(self.interaction_staging_xy),
+            "worker_id": self.worker_id,
+            "status": self.status.value,
+            "attempts": self.attempts,
+            "last_seen_s": self.last_seen_s,
+            "last_classification": self.last_classification,
+            "last_confidence": self.last_confidence,
+            "notes": self.notes[-5:],
+        }
+
+
+@dataclass
+class TagDetection:
+    tag_id: int
+    center: Any
+    corners: Any
+
+
+@dataclass
+class ScreenCandidate:
+    screen_id: int
+    quad: Any
+    area: float
+    aspect_ratio: float
+    tag: TagDetection
+    crop_28x28: Any
+    geometric_score: float = 0.0
+    map_score: float = 0.0
+    reject_reason: str = ""
+
+
+@dataclass
+class ClassificationResult:
+    ok: bool
+    flower_api: Optional[str] = None
+    flower_cn: Optional[str] = None
+    confidence: float = 0.0
+    class_index: Optional[int] = None
+    raw: Dict[str, Any] = field(default_factory=dict)
+    error: str = ""
+
+
+@dataclass
+class InteractionPoseCheck:
+    ready: bool
+    pose_valid: bool
+    distance_cm: Optional[float] = None
+    distance_error_cm: Optional[float] = None
+    yaw_error_deg: Optional[float] = None
+    lateral_error_cm: Optional[float] = None
+    target_error_cm: Optional[float] = None
+    reasons: List[str] = field(default_factory=list)
+
+    def as_dict(self) -> Dict[str, Any]:
+        return {
+            "ready": self.ready,
+            "pose_valid": self.pose_valid,
+            "distance_cm": self.distance_cm,
+            "distance_error_cm": self.distance_error_cm,
+            "yaw_error_deg": self.yaw_error_deg,
+            "lateral_error_cm": self.lateral_error_cm,
+            "target_error_cm": self.target_error_cm,
+            "reasons": list(self.reasons),
+        }
+
+
+@dataclass
+class WorkerChangeResult:
+    success: bool
+    simulated: bool = False
+    worker_id: Optional[int] = None
+    response: Dict[str, Any] = field(default_factory=dict)
+    error: str = ""
+
+
+@dataclass
+class ActionResult:
+    key: str
+    group: str
+    times: int
+    elapsed_s: float
+    model_forward_cm: float = 0.0
+    model_lateral_cm: float = 0.0
+    model_yaw_deg: float = 0.0
+    imu_yaw_delta_deg: Optional[float] = None
+    ok: bool = True
+    error: str = ""

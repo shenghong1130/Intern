@@ -1,0 +1,281 @@
+{
+  "camera": {
+    "forward_offset_cm": 0.0,
+    "head_move_ms": 600,
+    "settle_s": 0.55,
+    "discard_frames": 3,
+    "default_matrix": [
+      [
+        441.5962,
+        0.0,
+        290.2693
+      ],
+      [
+        0.0,
+        441.6984,
+        278.622
+      ],
+      [
+        0.0,
+        0.0,
+        1.0
+      ]
+    ],
+    "default_dist_coeff": [
+      -0.3405,
+      0.1252,
+      0.0,
+      0.0
+    ]
+  },
+  "map": {
+    "observe_distance_cm": 48.0,
+    "obstacle_inflation_cm": 30.0,
+    "obstacle_hard_margin_cm": 17.0,
+    "obstacle_cost_max": 80.0,
+    "obstacle_cost_power": 2.0,
+    "obstacle_line_clear_max_cost": 60.0,
+    "approach_margin_cm": 30.0,
+    "excluded_screen_ids": [4, 6, 10, 20, 25]
+  },
+  "localization": {
+    "detector_upscale": 1.5,
+    "min_tag_area_px": 350.0,
+    "edge_margin_px": 35.0
+  },
+  "motion": {
+    "enable_imu": false,
+    "imu_yaw_scale": 25.5,
+    "actions": {
+      "forward_fast": {
+        "group": "go_forward_fast",
+        "times": 1,
+        "with_stand": true,
+        "forward_cm": 3.5,
+        "settle_s": 0.35
+      },
+      "back_fast": {
+        "sequence": [
+          {
+            "group": "back_start",
+            "times": 1,
+            "with_stand": false
+          },
+          {
+            "group": "back",
+            "times": 1,
+            "repeat": true,
+            "with_stand": false
+          },
+          {
+            "group": "back_end",
+            "times": 1,
+            "with_stand": false
+          }
+        ],
+        "times": 2,
+        "forward_cm": -2.0,
+        "settle_s": 0.35
+      },
+      "turn_left_fast": {
+        "group": "turn_left_small_step_s80",
+        "times": 1,
+        "with_stand": false,
+        "yaw_deg": 7.5,
+        "settle_s": 0.12
+      },
+      "turn_right_fast": {
+        "group": "turn_right_small_step_s80",
+        "times": 1,
+        "with_stand": false,
+        "yaw_deg": -11.25,
+        "settle_s": 0.12
+      },
+      "turn_left_large": {
+        "sequence": [
+          {
+            "group": "turn_left_small_step_s80",
+            "times": 4,
+            "repeat": true,
+            "with_stand": false
+          }
+        ],
+        "times": 1,
+        "yaw_deg": 30.0,
+        "settle_s": 0.12
+      },
+      "turn_right_large": {
+        "sequence": [
+          {
+            "group": "turn_right_small_step_s80",
+            "times": 4,
+            "repeat": true,
+            "with_stand": false
+          }
+        ],
+        "times": 1,
+        "yaw_deg": -45.0,
+        "settle_s": 0.12
+      },
+      "strafe_left_fast": {
+        "group": "left_move_fast",
+        "times": 1,
+        "with_stand": false,
+        "lateral_cm": 4.0,
+        "settle_s": 0.35
+      },
+      "strafe_right_fast": {
+        "group": "right_move_fast",
+        "times": 1,
+        "with_stand": false,
+        "lateral_cm": -4.0,
+        "settle_s": 0.35
+      }
+    }
+  },
+  "navigation": {
+    "turn_tolerance_deg": 20.0,
+    "max_turn_cycles_per_step": 4,
+    "large_turn_threshold_deg": 35.0,
+    "max_large_turn_cycles_per_step": 2,
+    "max_forward_cycles_high": 8,
+    "max_forward_cycles_medium": 4,
+    "max_forward_cycles_low": 2,
+    "max_strafe_cycles_high": 6,
+    "max_strafe_cycles_medium": 4,
+    "max_strafe_cycles_low": 2,
+    "strafe_min_lateral_cm": 7.0,
+    "strafe_prefer_max_yaw_deg": 115.0,
+    "translation_prefer_enabled": true,
+    "translation_min_forward_cm": 6.0,
+    "translation_min_progress_cm": 2.0,
+    "translation_max_backward_cm": 8.0,
+    "navigation_waypoint_lookahead_cm": 14.0,
+    "navigation_waypoint_max_lookahead_cm": 0.0,
+    "navigation_waypoint_forward_buffer_cm": 16.0,
+    "action_planner_enabled": true,
+    "action_planner_yaw_bin_deg": 15.0,
+    "action_planner_forward_step_cm": 28.0,
+    "action_planner_strafe_step_cm": 12.0,
+    "action_planner_forward_cost": 1.0,
+    "action_planner_strafe_cost": 1.0,
+    "action_planner_turn_cost_cm_per_deg": 1.1,
+    "action_planner_turn_fixed_cost_cm": 8.0,
+    "action_planner_large_turn_extra_cost_cm": 4.0,
+    "action_planner_obstacle_cost_scale": 1.0,
+    "action_planner_segment_max_cost": 85.0,
+    "action_planner_goal_tolerance_cm": 8.0,
+    "action_planner_max_expansions": 45000,
+    "translation_path_prefer_enabled": true,
+    "translation_path_min_component_cm": 8.0,
+    "translation_path_max_detour_ratio": 1.45,
+    "turn_cost_cm_per_deg": 0.65,
+    "route_screen_bonus_cm": 100.0,
+    "route_sample_step_cm": 24.0,
+    "route_passby_scan_enabled": true,
+    "route_passby_include_completed_screens": true,
+    "route_passby_pan_angles": [130, 70, 100],
+    "route_passby_min_score": 0.22,
+    "route_passby_min_ahead_cm": 50.0,
+    "route_passby_max_ahead_cm": 95.0,
+    "route_passby_arrival_radius_cm": 12.0,
+    "route_passby_merge_distance_cm": 28.0,
+    "route_passby_require_side": true,
+    "route_passby_cooldown_s": 22.0,
+    "route_passby_repeat_distance_cm": 45.0,
+    "route_passby_max_pans": 2,
+    "no_tag_recovery_enabled": true,
+    "no_tag_recovery_failures": 2,
+    "no_tag_recovery_cooldown_s": 4.0,
+    "outward_exit_distance_cm": 62.0,
+    "boundary_recovery_enabled": true,
+    "boundary_trapped_margin_cm": 45.0,
+    "boundary_recovery_goal_radius_cm": 20.0,
+    "boundary_recovery_max_steps": 18,
+    "boundary_recovery_max_target_distance_cm": 170.0,
+    "boundary_recovery_center_pull_cm": 65.0,
+    "boundary_outward_look_exit_cm": 75.0,
+    "boundary_safe_turn_enabled": true,
+    "collision_recovery_enabled": false,
+    "collision_recovery_back_steps": 9,
+    "collision_recovery_localize_attempts": 3,
+    "collision_recovery_turn_attempts": 3,
+    "forward_clearance_margin_cm": 10.0,
+    "forward_map_obstacle_check_enabled": false,
+    "forward_map_check_min_cm": 16.0,
+    "forward_map_block_recover_limit": 2,
+    "progress_check_enabled": true,
+    "progress_check_expected_cm": 18.0,
+    "progress_check_min_actual_cm": 6.0,
+    "progress_check_fail_limit": 2,
+    "visual_progress_check_enabled": true,
+    "visual_progress_expected_cm": 12.0,
+    "visual_progress_fail_limit": 2,
+    "visual_progress_resize_width": 160,
+    "visual_progress_min_absdiff": 4.5,
+    "visual_progress_min_feature_shift_px": 1.8,
+    "visual_progress_min_tracked_features": 12,
+    "target_body_reaim_enabled": true,
+    "target_body_reaim_min_deg": 12.0
+  },
+  "vision": {
+    "harvest_during_localize_enabled": true,
+    "scan_after_turn_enabled": true,
+    "scan_after_turn_min_interval_s": 1.0,
+    "vote_frames": 1,
+    "min_votes": 1,
+    "min_screen_area_px": 120.0,
+    "max_tagged_center_white_ratio": 0.96,
+    "max_screen_width_height_ratio": 1.0,
+    "harvest_pan_angles": [100, 130, 70],
+    "opportunistic_pan_angles": [100],
+    "map_visible_max_distance_cm": 125.0,
+    "map_visible_min_distance_cm": 16.0,
+    "map_visible_half_fov_deg": 34.0,
+    "screen_front_max_angle_deg": 82.0,
+    "opportunistic_enabled": true,
+    "opportunistic_min_interval_s": 2.0,
+    "opportunistic_min_move_cm": 12.0,
+    "opportunistic_max_pans": 1,
+    "periodic_full_scan_s": 35.0,
+    "recheck_completed_screens_enabled": true,
+    "recheck_completed_screen_reasons": [
+      "route_passby",
+      "navigate_step",
+      "loop_start",
+      "periodic_full_scan",
+      "initial_discovery_scan",
+      "scan_after_turn"
+    ],
+    "harvest_during_localize_recheck_completed": true
+  },
+  "obstacle": {
+    "enabled": false
+  },
+  "interaction": {
+    "interaction_distance_cm": 15.0,
+    "interaction_distance_tolerance_cm": 4.0,
+    "interaction_yaw_tolerance_deg": 10.0,
+    "sensor_left_offset_cm": 5.0,
+    "interaction_lateral_tolerance_cm": 4.0,
+    "left_hand_body_offset_cm": 0.0,
+    "interaction_staging_distance_cm": 34.0,
+    "interaction_staging_arrival_radius_cm": 8.0,
+    "interaction_pose_max_age_s": 3.0,
+    "interaction_pose_min_confidence": "HIGH",
+    "interaction_relocalize_before_action": true,
+    "interaction_relocalize_each_step": true,
+    "interaction_max_alignment_steps": 20,
+    "flower_change_scan_timeout_s": 0.0,
+    "left_hand_settle_s": 0.5,
+    "worker_mapping": {}
+  },
+  "mission": {
+    "initial_discovery_scan_enabled": true,
+    "initial_discovery_scan_pan_angles": [130, 100, 70],
+    "initial_discovery_scan_frames": 1,
+    "initial_discovery_scan_left_turn_cycles": 4,
+    "initial_discovery_scan_right_turn_cycles": 5,
+    "initial_discovery_scan_relocalize_after": true
+  }
+}
