@@ -13,7 +13,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "paths": {
         "tonypi_root": "/home/pi/TonyPi",
         "tonypi_sdk": "/home/pi/TonyPi/HiwonderSDK",
-        "action_group_dir": "/home/pi/TonyPi/ActionGroups",
+        "action_group_dir": "/home/pi/robot_tonypi/action_groups",
         "camera_calibration": "/home/pi/TonyPi/Functions/CameraCalibration/calibration_param.npz",
         "debug_root": "/home/pi/TonyPi/debug_runs",
     },
