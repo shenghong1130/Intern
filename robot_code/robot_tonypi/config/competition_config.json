@@ -36,7 +36,7 @@
     "obstacle_cost_power": 2.0,
     "obstacle_line_clear_max_cost": 60.0,
     "approach_margin_cm": 30.0,
-    "excluded_screen_ids": [4, 6, 10, 20, 25]
+    "excluded_screen_ids": [2, 6, 9, 20, 28]
   },
   "localization": {
     "detector_upscale": 1.5,

@@ -20,7 +20,135 @@
                  robot.y - screen.target_xy.y)
 stable_key = (distance, screen_id /* binding Tag ID */)</div><div class="tree"><span class="node state">SELECT_NEAREST_TARGET / <code>choose_nearest_screen()</code></span><ul><li>候选来自 <code>MapModel.unfinished_screens()</code>；地图排除 ID、<code>CHANGED</code>、<code>ALREADY_TARGET</code>、<code>FAILED</code> 不再入选。</li><li>按当前世界 pose 到每个 <code>target_xy</code> 的二维欧氏直线距离升序。该点默认在屏幕正前方 34cm，是直达并拍摄的目标，不是旧的远距离观察停靠点。</li><li>同距离按 <code>screen_id</code>（屏幕绑定 Tag ID）升序，结果稳定可复现。</li><li>锁定 <code>current_target_screen_id</code> 后，途中看到其他屏幕不能抢占。</li><li>当前目标处理后清锁，并从机器人最新 pose 重新计算，绝不预生成固定访问序列。</li></ul></div><p><code>screen_id</code> 来自屏幕左上绑定 Tag；<code>worker_id</code> 只通过显式 <code>interaction.worker_mapping</code> 解析，绝不假设与 screen/tag 相等。</p></section>
 
-  <section id="transit"><h2>4. 直接导航与途中视觉边界</h2><div class="grid"><div class="card"><h3>NAVIGATE_TO_TARGET</h3><p>导航主体继续使用现有 action-level A* / A*、waypoint、前进/平移/转向动作、重定位、边界/障碍/无进展恢复。任务目标始终是当前屏幕 <code>target_xy</code>。</p><p>已删除 pass-by stop、opportunistic harvest、周期完整扫描、起点发现扫描和观察识别中途点。</p></div><div class="card"><h3>geometry-only</h3><p><code>observe_transit_bindings()</code> 调用 <code>ScreenDetector.detect(..., extract_crops=False)</code>：检测屏幕四边形，在屏幕中心左侧寻找距离左上角最近的 1～36 Tag，更新 quad/可见性/绑定时间。</p><p class="bad">该接口无法生成 28×28 crop，也没有分类器、投票、花朵状态或 Worker 调用。</p></div></div><div class="tree"><span class="node decision">当前位置进入 target 到达半径且身体朝向屏幕？</span><ul><li>否：继续底层导航；需要时按原策略重定位/恢复。</li><li><span class="ok">是：</span>记录 <code>arrived_at_target</code>，进入 <code>ARRIVED_AT_TARGET</code>；此前 <code>classifier_allowed=false</code>。</li></ul></div></section>
+  <section id="transit">
+    <h2>4. 直接导航、路径规划与动作选择</h2>
+    <div class="grid">
+      <div class="card"><h3>NAVIGATE_TO_TARGET</h3><p><code>navigate_to_screen(screen)</code> 始终把当前锁定屏幕的 <code>target_xy</code> 作为任务目标，单个目标最多执行 <code>max_steps_per_target=80</code> 个导航决策步。</p><p>任务层不会插入 pass-by、opportunistic、周期扫描或观察识别停靠点；底层为了转向、分段行走、重新定位和安全恢复而产生的动作步骤仍然保留。</p></div>
+      <div class="card"><h3>途中视觉：geometry-only</h3><p>导航引发重新定位或转身扫描时，<code>observe_transit_bindings()</code> 调用 <code>ScreenDetector.detect(..., extract_crops=False)</code>，只检测屏幕四边形并绑定屏幕左上附近的 1～36 号 AprilTag。</p><p class="bad">途中不能生成 28×28 crop，不能调用 FPGA、投票或写入花朵状态，也不能因为看到其他屏幕而切换当前目标。</p></div>
+    </div>
+
+    <h3>4.1 <code>navigate_to_screen()</code> 每一步的完整决策</h3>
+    <div class="tree">
+      <span class="node state">NAVIGATE_TO_TARGET：开始一个导航决策步</span>
+      <ul>
+        <li><span class="node decision">当前 pose 是否存在？</span>
+          <ul>
+            <li>不存在：执行 <code>localize_scan()</code>；定位失败时调用 no-tag 恢复判断。</li>
+            <li>恢复后仍无 pose：当前目标导航失败。</li>
+            <li>存在：继续使用当前世界坐标和 yaw。</li>
+          </ul>
+        </li>
+        <li><span class="node decision"><code>collision_recovery_pending</code> 是否成立？</span>
+          <ul><li>成立：执行 <code>recover_toward_field_center("forward_no_progress", backoff=True)</code>，完成后进入下一导航步。</li><li>不成立：继续计算目标距离。</li></ul>
+        </li>
+        <li>计算 <code>dist = distance(robot.pose.xy, screen.target_xy)</code>。</li>
+        <li><span class="node decision"><code>dist ≤ arrival_radius_cm</code>（默认 23cm）？</span>
+          <ul>
+            <li>否：继续安全检查和路径规划。</li>
+            <li>是：目标身体 yaw 使用 <code>screen.interaction_yaw_deg</code>，计算 <code>yaw_diff</code>。</li>
+            <li><span class="node decision"><code>yaw_diff ≤ arrival_yaw_tolerance_deg</code>（默认 30°）？</span>
+              <ul><li>否：调用边界感知转向，转正后重新判断，不能提前分类。</li><li><span class="ok">是：</span>记录 <code>arrived_at_target</code>，导航成功并进入 <code>ARRIVED_AT_TARGET</code>。</li></ul>
+            </li>
+          </ul>
+        </li>
+        <li><span class="node guard">墙边预检查</span>：若地图判断机器人在当前朝向上离墙小于 <code>safe_wall_distance_cm</code>，先执行恢复，不向目标继续前进。</li>
+        <li><span class="node action">规划路径</span>：调用 <code>plan_navigation_path(pose, target_xy)</code>，再由 <code>select_navigation_waypoint()</code> 选本轮可执行的前视点。</li>
+        <li>根据 waypoint 计算世界目标 yaw、当前 yaw 差，并发布路线到 Dashboard。</li>
+        <li><span class="node decision"><code>choose_translation_action()</code> 是否产生前进或平移候选？</span>
+          <ul>
+            <li>有：执行预计能最大幅度缩短 waypoint 距离的平移动作。</li>
+            <li>没有：执行 <code>turn_last_resort</code>，调用边界感知转向。</li>
+            <li>若已经在转向容差内却仍没有可执行平移动作：记录一次 navigation noop；连续 2 次后重新定位，避免原地循环。</li>
+          </ul>
+        </li>
+        <li><span class="node decision">动作后是否需要重定位？</span>
+          <ul><li>pose 置信度变 LOW，或累计动作数达到 <code>relocalize_after_actions</code>：执行 <code>localize_scan()</code>。</li><li>定位失败：进入 no-tag 恢复判断。</li><li>重新定位确认前进无进展：设置/处理碰撞恢复状态。</li></ul>
+        </li>
+        <li>80 个导航步仍未到达：记录 <code>navigate_failed</code>，上层将该目标标记为 <code>FAILED</code>，不再选择。</li>
+      </ul>
+    </div>
+
+    <h3>4.2 路径规划与 waypoint 选择</h3>
+    <div class="tree">
+      <span class="node decision"><code>plan_navigation_path()</code></span>
+      <ul>
+        <li><code>action_planner_enabled=True</code>：优先调用 action-level A*。搜索状态包含网格位置和离散 yaw；当前 yaw bin 为 15°。</li>
+        <li>action-level A* 使用前进约 28cm、平移约 12cm、小转和大转作为规划动作；前进/平移基础代价均为 1，转向代价为 <code>1.1cm/deg + 8cm</code>，大转额外增加 4cm，并叠加障碍 cost。</li>
+        <li>规划段 cost 超过 85 时不能使用；目标容差为 8cm；最大展开数为 45000。</li>
+        <li>action-level A* 找不到路线：回退到地图普通 A*，不会直接盲走。</li>
+        <li>只有关闭 action planner 时，才比较普通 A* 与“先前进再横移 / 先横移再前进”的直角平移候选；候选必须全程可通行，且长度不超过 A* 的 1.45 倍。</li>
+      </ul>
+    </div>
+    <div class="tree">
+      <span class="node decision"><code>select_navigation_waypoint()</code></span>
+      <ul>
+        <li>路径为空：直接把 <code>target_xy</code> 当 waypoint。</li>
+        <li>离最终目标不超过基础前视距离 14cm：直接选最终目标。</li>
+        <li>跳过离当前 pose 不超过 1cm 的无意义小点，并过滤与当前 pose 不直线可达的点。</li>
+        <li>动态最大前视距离根据 pose 置信度计算：<code>reserve_stop_distance + forward_step × max_forward_cycles + 16cm buffer</code>。</li>
+        <li>HIGH/MEDIUM/LOW pose 分别最多预看 8/4/2 个前进周期；置信度越低，选择的 waypoint 越保守。</li>
+        <li>优先返回达到基础前视距离且确实能产生前进、平移或转向动作的最远安全点；否则回退到最后一个可执行点、最后一个直线安全点或首个路径点。</li>
+      </ul>
+    </div>
+
+    <h3>4.3 单步动作选择</h3>
+    <div class="formula">world delta → robot-local components
+forward = dx·cos(yaw) + dy·sin(yaw)
+lateral = -dx·sin(yaw) + dy·cos(yaw)
+
+progress = current_distance_to_waypoint
+         - predicted_distance_after_action
+
+choose max(progress); equal progress prefers forward</div>
+    <div class="tree">
+      <span class="node decision"><code>choose_translation_action(pose, waypoint)</code></span>
+      <ul>
+        <li><span class="node decision">前进候选</span>
+          <ul>
+            <li>机器人坐标系中的 forward 分量至少为 <code>translation_min_forward_cm=6cm</code>。</li>
+            <li>按剩余距离、14cm 预留停车距离和 pose 置信度计算实际 <code>forward_fast</code> 周期数；当前每周期模型位移约 3.5cm。</li>
+            <li>计划前进达到 16cm 时执行地图/边界前向检查；更短动作仍会受后续边界和恢复逻辑保护。</li>
+            <li>预测动作必须让 waypoint 至少接近 <code>translation_min_progress_cm=2cm</code>，否则不生成候选。</li>
+          </ul>
+        </li>
+        <li><span class="node decision">左/右平移候选</span>
+          <ul>
+            <li>lateral 绝对值至少为 <code>strafe_min_lateral_cm=7cm</code>。</li>
+            <li>目标不能明显在身后：forward 必须不小于 -8cm；目标 yaw 差必须不超过 115°。</li>
+            <li>根据 lateral 正负选择 <code>strafe_left_fast</code> 或 <code>strafe_right_fast</code>；每周期模型横移约 4cm。</li>
+            <li>HIGH/MEDIUM/LOW pose 最多执行 6/4/2 个横移周期；预测横移线段必须可通行，并至少产生 2cm 进展。</li>
+          </ul>
+        </li>
+        <li><span class="node action">候选裁决</span>：从有效前进/平移候选中选择预测 progress 最大者；进展相同时优先前进。</li>
+        <li><span class="node action">执行平移</span>：平移候选直接调用 <code>move_lateral()</code>，清零前进地图阻塞计数。</li>
+        <li><span class="node guard">执行前进前</span>：检查前方障碍 Tag（仅 obstacle 功能启用时）和本次预计前进路径；发现风险则恢复或重新定位，不执行该次前进。</li>
+        <li>前进后记录期望位移；若视觉进展检查启用，会比较动作前后画面。当前 JSON 中碰撞恢复和 obstacle 检测关闭，但代码路径及配置开关仍保留。</li>
+      </ul>
+    </div>
+
+    <h3>4.4 没有平移动作时如何转向</h3>
+    <table>
+      <tr><th>条件</th><th>动作 key</th><th>当前模型效果</th><th>周期限制</th></tr>
+      <tr><td><code>|yaw error| ≤ 20°</code></td><td>不转身</td><td>已在普通导航转向容差内</td><td>若也无平移动作，累计 noop；连续 2 次重新定位</td></tr>
+      <tr><td><code>|yaw error| ≥ 35°</code>，向左</td><td><code>turn_left_large</code></td><td>约 +30°/周期</td><td>单导航步最多 2 周期</td></tr>
+      <tr><td><code>|yaw error| ≥ 35°</code>，向右</td><td><code>turn_right_large</code></td><td>约 -45°/周期</td><td>单导航步最多 2 周期</td></tr>
+      <tr><td><code>20° &lt; |yaw error| &lt; 35°</code>，向左</td><td><code>turn_left_fast</code></td><td>约 +7.5°/周期</td><td>单导航步最多 4 周期</td></tr>
+      <tr><td><code>20° &lt; |yaw error| &lt; 35°</code>，向右</td><td><code>turn_right_fast</code></td><td>约 -11.25°/周期</td><td>单导航步最多 4 周期</td></tr>
+      <tr><td>interaction 最终对准</td><td><code>turn_left_micro</code> / <code>turn_right_micro</code></td><td>使用同一小步转身动作组做精确 yaw 修正</td><td>不属于普通导航动作选择；由交互对准循环逐步执行</td></tr>
+      <tr><td>机器人靠近场地边界</td><td>边界感知选择左/右大转</td><td>综合比较转后目标 yaw 误差与前方出界距离</td><td>优先选择更安全的转向方向</td></tr>
+    </table>
+
+    <h3>4.5 导航安全与恢复出口</h3>
+    <table>
+      <tr><th>触发</th><th>处理</th><th>是否改变当前目标</th></tr>
+      <tr><td>pose 缺失或按动作数需要重定位</td><td><code>localize_scan()</code>；失败时按 no-tag 条件恢复</td><td>否</td></tr>
+      <tr><td>当前位置/朝向存在墙边风险</td><td>后退、寻找安全方向、重新定位和重规划</td><td>否</td></tr>
+      <tr><td>前进路径被地图判为不安全</td><td>第一次优先重定位；连续达到阈值后执行 backoff 恢复</td><td>否</td></tr>
+      <tr><td>定位或视觉确认前进无实际进展</td><td>设置 collision pending，下一步执行恢复</td><td>否</td></tr>
+      <tr><td>途中看到其他屏幕</td><td>只更新屏幕框和左上 Tag 绑定</td><td><span class="bad">绝不切换</span></td></tr>
+      <tr><td>超过 80 个导航决策步</td><td>当前目标导航失败并由上层标记 FAILED</td><td>结束当前目标，重新选择剩余目标</td></tr>
+    </table>
+  </section>
 
   <section id="classify"><h2>5. 到达当前目标后才分类</h2><div class="tree"><span class="node state">ARRIVED_AT_TARGET → CAPTURE_TARGET_SCREEN</span><ul><li><span class="node guard"><code>classifier_gate_open(screen)</code></span> 同时要求：已到达、screen 是锁定目标、MissionState 属于到达/捕获/分类状态。</li><li>在目标地点重新拍照和定位，调用 crop-enabled 屏幕检测。</li><li>画面中的候选必须满足 <code>candidate.screen_id == current_target_screen_id</code>；其他屏幕只被忽略，绝不写入当前目标。</li><li><span class="node state">CLASSIFY_TARGET_FLOWER</span> 仅此函数调用 <code>ClassifierClient.classify_crop()</code>，保留置信度、投票和重拍结构。</li><li>没有当前目标绑定、HTTP/结果失败、低置信或票数不足：有限拍摄结束后失败，不编造类别、不进入换花。</li><li><span class="node decision">稳定结果 == target_flower？</span><ul><li><span class="ok">是：</span><code>ALREADY_TARGET</code>，不举手、不请求 Worker，作为已处理完成。</li><li><span class="warn">否：</span><code>NEEDS_CHANGE</code>，才进入实体接近。</li></ul></li></ul></div></section>
 
