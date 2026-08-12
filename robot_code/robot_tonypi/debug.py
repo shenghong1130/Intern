@@ -39,7 +39,7 @@ class DebugReporter:
 
     def _write_dashboard_html(self):
         html = """<!doctype html>
-<html><head><meta charset="utf-8"><title>TonyPi Debug</title>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>TonyPi 调试面板 / Debug Dashboard</title>
 <style>
 body{font-family:Arial,sans-serif;margin:16px;background:#111;color:#eee}
 img{max-width:49%;border:1px solid #555;margin:4px;vertical-align:top}
@@ -55,6 +55,13 @@ td pre{margin:0;max-height:120px;padding:6px;font-size:12px}
 function esc(x){return String(x===null||x===undefined?'':x).replace(/[&<>]/g,s=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[s]));}
 function fmt(x,d=1){if(x===null||x===undefined||x==='')return'-'; const n=Number(x); return Number.isFinite(n)?n.toFixed(d):'-';}
 function clsForStatus(s){return s==='CHANGED'?'ok':(s==='FAILED'?'bad':(s==='ALREADY_TARGET'?'warn':''));}
+const statusZh={UNKNOWN:'未知',NEEDS_CHANGE:'需要换花',INTERACTING:'交互中',CHANGED:'已换花',ALREADY_TARGET:'已是目标花',FAILED:'失败'};
+const modeZh={mission:'完整任务',localize:'仅定位',harvest:'仅扫描识别'};
+const phaseZh={idle:'空闲',transaction_start:'交互开始',stand:'站立',left_hand_lifted:'左手已举起',worker_request_sent:'已发送 Worker 请求',worker_response:'收到 Worker 响应',transaction_end:'交互结束'};
+const reasonZh={distance:'距离不合格',yaw:'身体朝向不合格',lateral:'横向位置不合格',pose_missing:'缺少定位',pose_stale:'定位已过期',flower_unknown:'花朵未知',already_target:'已是目标花',worker_mapping_missing:'缺少 Worker 映射',flower_changed_since_alignment:'对准后花朵结果改变'};
+const eventZh={flower_observed:'观察到花朵',screen_needs_change:'屏幕需要换花',already_target:'已是目标花',classification_failed:'分类失败',classification_low_confidence:'分类置信度低',target_selected:'已选择目标',interaction_alignment_check:'交互对准检查',interaction_safety_gate_blocked:'交互安全门阻止',interaction_changed:'换花成功',interaction_not_changed:'换花未成功',interaction_exception:'交互异常',left_hand_lifted:'左手已举起',worker_request_sent:'已发送 Worker 请求',worker_response:'收到 Worker 响应',navigate_failed:'导航失败',localize_failed:'定位失败',pose_update:'定位已更新',action:'执行动作',recovery_start:'开始恢复',recovery_done:'恢复完成',initial_discovery_scan_start:'开始初始发现扫描',initial_discovery_scan_done:'初始发现扫描完成',opportunistic_harvest:'路过识别'};
+function bi(value,dict){const raw=String(value===null||value===undefined?'':value); return dict[raw]?`${dict[raw]} / ${raw}`:raw;}
+function reasonsBi(values){return (values||[]).map(x=>bi(x,reasonZh)).join(',')||'-';}
 function renderSummary(data){
   const pose=data.robot&&data.robot.pose?data.robot.pose:{};
   const plan=data.last_target_plan||{};
@@ -69,47 +76,47 @@ function renderSummary(data){
   const passbyScreens=(passby.screen_ids||[]).join(',');
   const passbyPans=(passby.pan_angles||[]).join(',');
   document.getElementById('summary').innerHTML =
-    '<b>mode</b>: '+esc(data.mode)+' &nbsp; <b>target</b>: '+esc(data.target_flower)+
-    ' &nbsp; <b>physically changed</b>: '+esc(data.completed_count)+' &nbsp; <b>time</b>: '+esc(data.time_left_s)+'s<br>'+
-    '<b>pose</b>: x='+esc(fmt(pose.x_cm))+
+    '<b>运行模式 / Mode</b>: '+esc(bi(data.mode,modeZh))+' &nbsp; <b>目标花 / Target</b>: '+esc(data.target_flower)+
+    ' &nbsp; <b>实际换花数 / Changed</b>: '+esc(data.completed_count)+' &nbsp; <b>剩余时间 / Time left</b>: '+esc(data.time_left_s)+'s<br>'+
+    '<b>机器人位姿 / Pose</b>: x='+esc(fmt(pose.x_cm))+
     ', y='+esc(fmt(pose.y_cm))+
     ', yaw='+esc(fmt(pose.yaw_deg))+
-    ', conf='+esc(pose.confidence||'')+'<br>'+
-    '<b>current target</b>: '+esc(targetScreen.screen_id||'-')+
-    ' '+(targetScreen.status?`<span class="${clsForStatus(targetScreen.status)}">${esc(targetScreen.status)}</span>`:'')+'<br>'+
-    '<b>plan</b>: score='+esc(plan.score||'-')+
-    ', travel='+esc(plan.travel_cm||'-')+
-    'cm, turn='+esc(plan.turn_deg||'-')+
-    'deg, turnCost='+esc(plan.turn_cost||0)+
-    ', routeBonus='+esc(plan.route_bonus||0)+
-    ', route screens='+esc(routeScreens||'-')+'<br>'+
-    '<b>passby stop</b>: screens='+esc(passbyScreens||'-')+
-    ', sides='+esc((passby.sides||[]).join(',')||'-')+
-    ', pans='+esc(passbyPans||'-')+
+    ', 置信度/conf='+esc(pose.confidence||'')+'<br>'+
+    '<b>当前目标 / Current target</b>: '+esc(targetScreen.screen_id||'-')+
+    ' '+(targetScreen.status?`<span class="${clsForStatus(targetScreen.status)}">${esc(bi(targetScreen.status,statusZh))}</span>`:'')+'<br>'+
+    '<b>导航计划 / Plan</b>: 评分/score='+esc(plan.score||'-')+
+    ', 路程/travel='+esc(plan.travel_cm||'-')+
+    'cm, 转向/turn='+esc(plan.turn_deg||'-')+
+    'deg, 转向代价/turnCost='+esc(plan.turn_cost||0)+
+    ', 路过奖励/routeBonus='+esc(plan.route_bonus||0)+
+    ', 路线屏幕/route screens='+esc(routeScreens||'-')+'<br>'+
+    '<b>路过停靠点 / Passby stop</b>: 屏幕/screens='+esc(passbyScreens||'-')+
+    ', 方向/sides='+esc((passby.sides||[]).join(',')||'-')+
+    ', 头部角度/pans='+esc(passbyPans||'-')+
     ', xy='+esc(passby.xy?passby.xy.join(','):'-')+'<br>'+
-    '<b>tag health</b>: noTagScans='+esc(health.consecutive_no_tag_scans||0)+
-    ', locFailures='+esc(health.consecutive_localize_failures||0)+
-    ', sinceTag='+esc(fmt(health.seconds_since_any_tag,1))+'s'+
-    ', sinceLoc='+esc(fmt(health.seconds_since_localize,1))+'s<br>'+
-    '<b>recovery</b>: count='+esc(recovery.count||0)+
-    ', last='+esc(lastRecovery.reason||'-')+
-    ', outward='+esc(recovery.facing_outside)+
-    ', exitAhead='+esc(fmt(recovery.field_exit_ahead_cm,1))+'cm'+
-    ', noProgress='+esc(recovery.no_progress_count||0)+'<br>'+
-    '<b>interaction</b>: phase='+esc(interaction.phase||'idle')+
-    ', ready='+esc(interaction.ready)+
-    ', leftHand='+esc(interaction.left_hand_lifted)+
-    ', distance='+esc(fmt(check.distance_cm,1))+'cm'+
-    ', distanceErr='+esc(fmt(check.distance_error_cm,1))+'cm'+
-    ', yawErr='+esc(fmt(check.yaw_error_deg,1))+'deg'+
-    ', lateralErr='+esc(fmt(check.lateral_error_cm,1))+'cm'+
-    ', blockers='+esc((check.reasons||[]).join(',')||'-');
+    '<b>Tag/定位健康 / Localization health</b>: 无Tag扫描/noTagScans='+esc(health.consecutive_no_tag_scans||0)+
+    ', 定位失败/locFailures='+esc(health.consecutive_localize_failures||0)+
+    ', 距上次Tag/sinceTag='+esc(fmt(health.seconds_since_any_tag,1))+'s'+
+    ', 距上次定位/sinceLoc='+esc(fmt(health.seconds_since_localize,1))+'s<br>'+
+    '<b>恢复 / Recovery</b>: 次数/count='+esc(recovery.count||0)+
+    ', 最近原因/last='+esc(lastRecovery.reason||'-')+
+    ', 朝向场外/outward='+esc(recovery.facing_outside)+
+    ', 前方出界距离/exitAhead='+esc(fmt(recovery.field_exit_ahead_cm,1))+'cm'+
+    ', 无进展/noProgress='+esc(recovery.no_progress_count||0)+'<br>'+
+    '<b>实体交互 / Interaction</b>: 阶段/phase='+esc(bi(interaction.phase||'idle',phaseZh))+
+    ', 可执行/ready='+esc(interaction.ready)+
+    ', 左手举起/leftHand='+esc(interaction.left_hand_lifted)+
+    ', 距离/distance='+esc(fmt(check.distance_cm,1))+'cm'+
+    ', 距离误差/distanceErr='+esc(fmt(check.distance_error_cm,1))+'cm'+
+    ', 朝向误差/yawErr='+esc(fmt(check.yaw_error_deg,1))+'deg'+
+    ', 横向误差/lateralErr='+esc(fmt(check.lateral_error_cm,1))+'cm'+
+    ', 阻止原因/blockers='+esc(reasonsBi(check.reasons));
 }
 function renderVotes(summary){
-  if(!summary||!summary.screens){document.getElementById('votes').innerHTML='No vote data yet.';return;}
+  if(!summary||!summary.screens){document.getElementById('votes').innerHTML='暂无投票数据 / No vote data yet.';return;}
   let rows='';
   Object.values(summary.screens).sort((a,b)=>a.screen_id-b.screen_id).forEach(s=>{
-    const best=s.best?`${esc(s.best.flower)} (${s.best.count}x, conf ${s.best.avg_confidence})`:'-';
+    const best=s.best?`${esc(s.best.flower)} (${s.best.count}次/x, 置信度/conf ${s.best.avg_confidence})`:'-';
     const votes=Object.entries(s.votes||{}).map(([k,v])=>`${esc(k)}:${v.count}`).join(', ');
     const obs=(s.observations||[]).slice(-5).map(o=>{
       const why=o.reject_reason||o.error||'';
@@ -118,27 +125,27 @@ function renderVotes(summary){
     rows+=`<tr><td>${s.screen_id}</td><td>${best}</td><td>${esc(s.decision)}</td><td>${esc(votes)}</td><td>${(s.observations||[]).length}</td><td>${obs}</td></tr>`;
   });
   document.getElementById('votes').innerHTML =
-    `<div><span class="pill">reason=${esc(summary.reason||'-')}</span><span class="pill">frames=${esc(summary.vote_frames)}</span><span class="pill">pans=${esc((summary.pan_angles||[]).join(','))}</span><span class="pill">min_votes=${esc(summary.min_votes)}</span><span class="pill">min_conf=${esc(summary.min_confidence)}</span></div>`+
-    '<table><tr><th>screen</th><th>best</th><th>decision</th><th>votes</th><th>obs</th><th>last observations</th></tr>'+rows+'</table>';
+    `<div><span class="pill">原因/reason=${esc(summary.reason||'-')}</span><span class="pill">帧数/frames=${esc(summary.vote_frames)}</span><span class="pill">头部角度/pans=${esc((summary.pan_angles||[]).join(','))}</span><span class="pill">最低票数/min_votes=${esc(summary.min_votes)}</span><span class="pill">最低置信度/min_conf=${esc(summary.min_confidence)}</span></div>`+
+    '<table><tr><th>屏幕 / Screen</th><th>最佳结果 / Best</th><th>决策 / Decision</th><th>票数 / Votes</th><th>观察数 / Obs</th><th>最近观察 / Last observations</th></tr>'+rows+'</table>';
 }
 function renderInteraction(result,data){
   const logPath=data&&data.interaction_log_path?data.interaction_log_path:'';
-  let html=`<div><b>interaction log</b>: ${esc(logPath||'not created yet')}</div>`;
-  if(!result){document.getElementById('interaction').innerHTML=html+'<div>No Worker request yet.</div>';return;}
+  let html=`<div><b>交互日志 / Interaction log</b>: ${esc(logPath||'尚未创建 / not created yet')}</div>`;
+  if(!result){document.getElementById('interaction').innerHTML=html+'<div>尚无 Worker 请求 / No Worker request yet.</div>';return;}
   const cls=result.success?'ok':'bad';
   html +=
-    `<div class="${cls}"><b>success</b>: ${esc(result.success)} &nbsp; <b>simulated</b>: ${esc(result.simulated)}</div>`+
-    `<div><b>screen</b>: ${esc(result.screen_id)} &nbsp; <b>worker</b>: ${esc(result.worker_id)} &nbsp; <b>from</b>: ${esc(result.from_flower)} &nbsp; <b>to</b>: ${esc(result.to_flower)}</div>`+
-    `<div><b>pose check</b>: ${esc(JSON.stringify(result.interaction_check||{}))}</div>`+
-    `<div><b>response</b>: ${esc(JSON.stringify(result.response||{}))}</div>`+
-    `<div><b>error</b>: ${esc(result.error)}</div>`;
+    `<div class="${cls}"><b>成功 / Success</b>: ${esc(result.success)} &nbsp; <b>模拟 / Simulated</b>: ${esc(result.simulated)}</div>`+
+    `<div><b>屏幕 / Screen</b>: ${esc(result.screen_id)} &nbsp; <b>Worker</b>: ${esc(result.worker_id)} &nbsp; <b>原花 / From</b>: ${esc(result.from_flower)} &nbsp; <b>目标花 / To</b>: ${esc(result.to_flower)}</div>`+
+    `<div><b>位姿检查 / Pose check</b>: ${esc(JSON.stringify(result.interaction_check||{}))}</div>`+
+    `<div><b>响应 / Response</b>: ${esc(JSON.stringify(result.response||{}))}</div>`+
+    `<div><b>错误 / Error</b>: ${esc(result.error)}</div>`;
   const recent=(data&&data.recent_interactions)||[];
   if(recent.length){
     let rows='';
     recent.slice().reverse().forEach(r=>{
       rows+=`<tr><td>${esc(r.screen_id)}</td><td>${esc(r.worker_id)}</td><td>${esc(r.from_flower)}</td><td>${esc(r.to_flower)}</td><td>${esc(JSON.stringify(r.response||{})||r.error)}</td></tr>`;
     });
-    html += '<table><tr><th>screen</th><th>worker</th><th>from</th><th>to</th><th>result</th></tr>'+rows+'</table>';
+    html += '<table><tr><th>屏幕 / Screen</th><th>Worker</th><th>原花 / From</th><th>目标花 / To</th><th>结果 / Result</th></tr>'+rows+'</table>';
   }
   document.getElementById('interaction').innerHTML = html;
 }
@@ -147,23 +154,23 @@ function renderScreens(data){
   let rows='';
   Object.values(screens).sort((a,b)=>a.screen_id-b.screen_id).forEach(s=>{
     const status=s.status||'';
-    rows+=`<tr><td>${esc(s.screen_id)}</td><td>${esc(s.worker_id||'-')}</td><td class="${clsForStatus(status)}">${esc(status)}</td><td>${esc(s.attempts)}</td><td>${esc(s.last_classification||'-')}</td><td>${esc(fmt(s.last_confidence,3))}</td><td>${esc((s.observation_xy||[]).join(','))}</td><td>${esc((s.interaction_xy||[]).join(','))} @ ${esc(fmt(s.interaction_yaw_deg,1))}deg</td><td>${esc((s.notes||[]).join('; '))}</td></tr>`;
+    rows+=`<tr><td>${esc(s.screen_id)}</td><td>${esc(s.worker_id||'-')}</td><td class="${clsForStatus(status)}">${esc(bi(status,statusZh))}</td><td>${esc(s.attempts)}</td><td>${esc(s.last_classification||'-')}</td><td>${esc(fmt(s.last_confidence,3))}</td><td>${esc((s.observation_xy||[]).join(','))}</td><td>${esc((s.interaction_xy||[]).join(','))} @ ${esc(fmt(s.interaction_yaw_deg,1))}deg</td><td>${esc((s.notes||[]).join('; '))}</td></tr>`;
   });
   document.getElementById('screens').innerHTML =
-    '<table><tr><th>screen</th><th>worker</th><th>status</th><th>attempts</th><th>flower</th><th>conf</th><th>observation XY</th><th>interaction XY/yaw</th><th>notes</th></tr>'+rows+'</table>';
+    '<table><tr><th>屏幕 / Screen</th><th>Worker</th><th>状态 / Status</th><th>尝试 / Attempts</th><th>花朵 / Flower</th><th>置信度 / Conf</th><th>观察点 / Observation XY</th><th>交互位姿 / Interaction XY/yaw</th><th>备注 / Notes</th></tr>'+rows+'</table>';
 }
 function renderEvents(events){
   events=events||[];
-  if(!events.length){document.getElementById('events').innerHTML='No events yet.';return;}
+  if(!events.length){document.getElementById('events').innerHTML='暂无事件 / No events yet.';return;}
     const important=new Set(['flower_observed','interaction_alignment_check','interaction_safety_gate_blocked','interaction_changed','interaction_not_changed','interaction_exception','left_hand_lifted','worker_request_sent','worker_response','already_target','classification_failed','classification_low_confidence','target_selected','target_body_reaim','target_body_reaim_skipped','target_not_completed_after_arrival','navigate_failed','near_wall_recover','front_obstacle_recover','forward_blocked_by_map','forward_no_progress','visual_forward_no_progress','visual_progress_check_inconclusive','visual_forward_progress_restored','no_tag_recovery_triggered','recovery_start','recovery_backoff_localize_attempt','recovery_done','translation_step','turn_last_resort','turn_last_resort_noop','scan_after_turn_done','scan_after_turn_failed','boundary_pan_filtered','boundary_safe_turn','boundary_recovery_target_selected','boundary_blind_nav_start','boundary_blind_nav_step','boundary_blind_nav_arrived','boundary_blind_nav_failed','harvest_skipped_boundary_outward','localize_skipped_boundary_outward','localize_harvest_done','localize_harvest_failed','head_recenter_after_scan','head_recenter_failed','initial_discovery_scan_start','initial_discovery_scan_turn','initial_discovery_scan_relocalize_start','initial_discovery_scan_relocalize_done','initial_discovery_scan_done','opportunistic_harvest','route_passby_stop_selected','route_passby_scan_start','route_passby_scan_done','action','pose_update']);
   let rows='';
   events.slice().reverse().forEach(e=>{
     const detail=Object.assign({}, e); delete detail.t; delete detail.event;
     const cls=important.has(e.event)?'warn':'';
-    rows+=`<tr class="${cls}"><td>${esc(new Date((e.t||0)*1000).toLocaleTimeString())}</td><td>${esc(e.event)}</td><td><pre>${esc(JSON.stringify(detail,null,2))}</pre></td></tr>`;
+    rows+=`<tr class="${cls}"><td>${esc(new Date((e.t||0)*1000).toLocaleTimeString())}</td><td>${esc(bi(e.event,eventZh))}</td><td><pre>${esc(JSON.stringify(detail,null,2))}</pre></td></tr>`;
   });
   document.getElementById('events').innerHTML =
-    '<table><tr><th>time</th><th>event</th><th>detail</th></tr>'+rows+'</table>';
+    '<table><tr><th>时间 / Time</th><th>事件 / Event</th><th>详情 / Detail</th></tr>'+rows+'</table>';
 }
 function renderEventsFromStateOrLog(data){
   const inline=data&&data.recent_events?data.recent_events:[];
@@ -187,15 +194,16 @@ function refresh(){
 setInterval(refresh,800);
 </script></head>
 <body onload="refresh()">
-<h2>TonyPi Debug</h2>
+<h2>TonyPi 调试面板 / Debug Dashboard</h2>
+<div class="muted">中文用于现场阅读，英文字段保留用于日志定位和代码检索。/ Chinese is provided for field use; English identifiers remain for log and code lookup.</div>
 <div><img id="ann" src="latest_annotated.jpg"><img id="map" src="latest_map.jpg"></div>
 <div class="grid">
-  <div class="card"><h3>State</h3><div id="summary"></div></div>
-  <div class="card"><h3>Physical Interaction / Worker</h3><div id="interaction"></div></div>
-  <div class="card" style="grid-column:1/3"><h3>Last Vote Summary</h3><div id="votes"></div></div>
-  <div class="card" style="grid-column:1/3"><h3>Screen Status</h3><div id="screens"></div></div>
-  <div class="card" style="grid-column:1/3"><h3>Recent Events</h3><div id="events"></div></div>
-  <div class="card" style="grid-column:1/3"><h3>Raw State JSON</h3><pre id="state"></pre></div>
+  <div class="card"><h3>运行状态 / State</h3><div id="summary"></div></div>
+  <div class="card"><h3>实体交互与 Worker / Physical Interaction</h3><div id="interaction"></div></div>
+  <div class="card" style="grid-column:1/3"><h3>最近投票汇总 / Last Vote Summary</h3><div id="votes"></div></div>
+  <div class="card" style="grid-column:1/3"><h3>屏幕状态 / Screen Status</h3><div id="screens"></div></div>
+  <div class="card" style="grid-column:1/3"><h3>最近事件 / Recent Events</h3><div id="events"></div></div>
+  <div class="card" style="grid-column:1/3"><h3>原始状态 JSON / Raw State JSON</h3><pre id="state"></pre></div>
 </div>
 </body></html>
 """
