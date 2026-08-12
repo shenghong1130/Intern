@@ -23,6 +23,23 @@ class ScreenStatus(str, Enum):
     FAILED = "FAILED"
 
 
+class MissionState(str, Enum):
+    IDLE = "IDLE"
+    LOCALIZE = "LOCALIZE"
+    SELECT_NEAREST_TARGET = "SELECT_NEAREST_TARGET"
+    NAVIGATE_TO_TARGET = "NAVIGATE_TO_TARGET"
+    ARRIVED_AT_TARGET = "ARRIVED_AT_TARGET"
+    CAPTURE_TARGET_SCREEN = "CAPTURE_TARGET_SCREEN"
+    CLASSIFY_TARGET_FLOWER = "CLASSIFY_TARGET_FLOWER"
+    TARGET_ALREADY_CORRECT = "TARGET_ALREADY_CORRECT"
+    NEEDS_CHANGE = "NEEDS_CHANGE"
+    ALIGN_FOR_INTERACTION = "ALIGN_FOR_INTERACTION"
+    EXECUTE_CHANGE = "EXECUTE_CHANGE"
+    MARK_TARGET_COMPLETE = "MARK_TARGET_COMPLETE"
+    MISSION_COMPLETE = "MISSION_COMPLETE"
+    FAILED = "FAILED"
+
+
 @dataclass
 class RobotPose:
     x_cm: float
@@ -53,7 +70,7 @@ class Screen:
     center_xy: Tuple[float, float]
     normal_xy: Tuple[float, float]
     normal_yaw_deg: float
-    observation_xy: Tuple[float, float]
+    target_xy: Tuple[float, float]
     interaction_xy: Tuple[float, float]
     interaction_yaw_deg: float
     reader_xy: Tuple[float, float]
@@ -66,11 +83,13 @@ class Screen:
     last_classification: Optional[str] = None
     last_confidence: float = 0.0
     notes: List[str] = field(default_factory=list)
+    transit_visible: bool = False
+    last_binding_s: float = 0.0
 
     def done(self) -> bool:
         # ALREADY_TARGET needs no physical transaction, so it is complete for
         # target selection even though completed_count() tracks actual changes.
-        return self.status in (ScreenStatus.CHANGED, ScreenStatus.ALREADY_TARGET)
+        return self.status in (ScreenStatus.CHANGED, ScreenStatus.ALREADY_TARGET, ScreenStatus.FAILED)
 
     def successful(self) -> bool:
         return self.status == ScreenStatus.CHANGED
@@ -84,7 +103,7 @@ class Screen:
             "center_xy": list(self.center_xy),
             "normal_xy": list(self.normal_xy),
             "normal_yaw_deg": self.normal_yaw_deg,
-            "observation_xy": list(self.observation_xy),
+            "target_xy": list(self.target_xy),
             "interaction_xy": list(self.interaction_xy),
             "interaction_yaw_deg": self.interaction_yaw_deg,
             "reader_xy": list(self.reader_xy),
@@ -96,6 +115,8 @@ class Screen:
             "last_seen_s": self.last_seen_s,
             "last_classification": self.last_classification,
             "last_confidence": self.last_confidence,
+            "transit_visible": self.transit_visible,
+            "last_binding_s": self.last_binding_s,
             "notes": self.notes[-5:],
         }
 

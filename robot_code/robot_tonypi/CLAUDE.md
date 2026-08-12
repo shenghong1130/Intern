@@ -4,7 +4,7 @@ TonyPi competition controller for a 300 × 300 cm field. Read `robot_decision_tr
 
 ## Non-negotiable interaction boundary
 
-Visual detection/classification/voting only updates `Screen` observations. `harvest_visible`, opportunistic/passby scans, `scan_after_turn`, and `harvest_during_localize` must never call `send_request`.
+Transit vision is geometry-only: `observe_transit_bindings()` may detect a screen quad and bind its left-upper Tag, but it must use `extract_crops=False` and cannot classify, vote, update flower state, lift the hand, or call a Worker. `classify_arrived_target()` is the only task-level classifier entry and requires the locked target plus `ARRIVED_AT_TARGET`.
 
 Physical flower change is exclusively:
 
@@ -50,10 +50,12 @@ interaction_logic.py → pure observation/state and pose-gate rules
 RobotInteractionClient → robotall.act + robotall.send_request
 ```
 
-The two navigation targets are deliberately distinct:
+Task navigation and physical interaction targets are deliberately distinct:
 
-- `observation_xy`: remote camera observation.
+- `target_xy`: direct task destination used by nearest-target selection and arrival.
 - `interaction_staging_xy` then `interaction_xy`: physical Worker interaction.
+
+Mission target selection is recomputed after every processed screen using Euclidean distance from the latest pose to `target_xy`, with `screen_id` (the bound Tag ID) as the stable tie-breaker. Do not restore pass-by/opportunistic classification, discovery scans, task-level observation stops, or fixed routes.
 
 `normal_xy` points from the screen into its visible/front side. Viewer-left is `(normal.y, -normal.x)` and a robot facing the screen uses `normal_yaw_deg + 180°`.
 

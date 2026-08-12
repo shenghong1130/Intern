@@ -59,41 +59,32 @@ const statusZh={UNKNOWN:'未知',NEEDS_CHANGE:'需要换花',INTERACTING:'交互
 const modeZh={mission:'完整任务',localize:'仅定位',harvest:'仅扫描识别'};
 const phaseZh={idle:'空闲',transaction_start:'交互开始',stand:'站立',left_hand_lifted:'左手已举起',worker_request_sent:'已发送 Worker 请求',worker_response:'收到 Worker 响应',transaction_end:'交互结束'};
 const reasonZh={distance:'距离不合格',yaw:'身体朝向不合格',lateral:'横向位置不合格',pose_missing:'缺少定位',pose_stale:'定位已过期',flower_unknown:'花朵未知',already_target:'已是目标花',worker_mapping_missing:'缺少 Worker 映射',flower_changed_since_alignment:'对准后花朵结果改变'};
-const eventZh={flower_observed:'观察到花朵',screen_needs_change:'屏幕需要换花',already_target:'已是目标花',classification_failed:'分类失败',classification_low_confidence:'分类置信度低',target_selected:'已选择目标',interaction_alignment_check:'交互对准检查',interaction_safety_gate_blocked:'交互安全门阻止',interaction_changed:'换花成功',interaction_not_changed:'换花未成功',interaction_exception:'交互异常',left_hand_lifted:'左手已举起',worker_request_sent:'已发送 Worker 请求',worker_response:'收到 Worker 响应',navigate_failed:'导航失败',localize_failed:'定位失败',pose_update:'定位已更新',action:'执行动作',recovery_start:'开始恢复',recovery_done:'恢复完成',initial_discovery_scan_start:'开始初始发现扫描',initial_discovery_scan_done:'初始发现扫描完成',opportunistic_harvest:'路过识别'};
+const eventZh={mission_state:'任务状态',transit_bindings_updated:'途中几何绑定更新',arrived_at_target:'已到达当前目标',target_classification_failed:'当前目标分类失败',classifier_gate_blocked:'分类安全门阻止',flower_observed:'观察到花朵',screen_needs_change:'屏幕需要换花',already_target:'已是目标花',classification_failed:'分类失败',classification_low_confidence:'分类置信度低',target_selected:'已选择最近目标',interaction_alignment_check:'交互对准检查',interaction_safety_gate_blocked:'交互安全门阻止',interaction_changed:'换花成功',interaction_not_changed:'换花未成功',interaction_exception:'交互异常',left_hand_lifted:'左手已举起',worker_request_sent:'已发送 Worker 请求',worker_response:'收到 Worker 响应',navigate_failed:'导航失败',localize_failed:'定位失败',pose_update:'定位已更新',action:'执行动作',recovery_start:'开始恢复',recovery_done:'恢复完成'};
 function bi(value,dict){const raw=String(value===null||value===undefined?'':value); return dict[raw]?`${dict[raw]} / ${raw}`:raw;}
 function reasonsBi(values){return (values||[]).map(x=>bi(x,reasonZh)).join(',')||'-';}
 function renderSummary(data){
   const pose=data.robot&&data.robot.pose?data.robot.pose:{};
   const plan=data.last_target_plan||{};
-  const passby=data.active_passby_stop||data.last_passby_plan||{};
   const health=data.localization_health||{};
   const recovery=data.recovery||{};
   const lastRecovery=recovery.last||{};
   const targetScreen=data.target_screen||{};
   const interaction=data.interaction||{};
   const check=interaction.last_check||{};
-  const routeScreens=(plan.route_screen_ids||[]).join(',');
-  const passbyScreens=(passby.screen_ids||[]).join(',');
-  const passbyPans=(passby.pan_angles||[]).join(',');
+  const bindings=data.transit_bindings||{};
   document.getElementById('summary').innerHTML =
     '<b>运行模式 / Mode</b>: '+esc(bi(data.mode,modeZh))+' &nbsp; <b>目标花 / Target</b>: '+esc(data.target_flower)+
-    ' &nbsp; <b>实际换花数 / Changed</b>: '+esc(data.completed_count)+' &nbsp; <b>剩余时间 / Time left</b>: '+esc(data.time_left_s)+'s<br>'+
+    ' &nbsp; <b>实际换花数 / Changed</b>: '+esc(data.completed_count)+' &nbsp; <b>已处理 / Processed</b>: '+esc(data.processed_count)+' &nbsp; <b>剩余时间 / Time left</b>: '+esc(data.time_left_s)+'s<br>'+
     '<b>机器人位姿 / Pose</b>: x='+esc(fmt(pose.x_cm))+
     ', y='+esc(fmt(pose.y_cm))+
     ', yaw='+esc(fmt(pose.yaw_deg))+
     ', 置信度/conf='+esc(pose.confidence||'')+'<br>'+
-    '<b>当前目标 / Current target</b>: '+esc(targetScreen.screen_id||'-')+
+    '<b>任务状态 / Mission state</b>: '+esc(data.mission_state||'-')+'<br>'+
+    '<b>当前目标 / Current target</b>: Tag '+esc(data.current_target_tag_id||'-')+', Screen '+esc(targetScreen.screen_id||'-')+
     ' '+(targetScreen.status?`<span class="${clsForStatus(targetScreen.status)}">${esc(bi(targetScreen.status,statusZh))}</span>`:'')+'<br>'+
-    '<b>导航计划 / Plan</b>: 评分/score='+esc(plan.score||'-')+
-    ', 路程/travel='+esc(plan.travel_cm||'-')+
-    'cm, 转向/turn='+esc(plan.turn_deg||'-')+
-    'deg, 转向代价/turnCost='+esc(plan.turn_cost||0)+
-    ', 路过奖励/routeBonus='+esc(plan.route_bonus||0)+
-    ', 路线屏幕/route screens='+esc(routeScreens||'-')+'<br>'+
-    '<b>路过停靠点 / Passby stop</b>: 屏幕/screens='+esc(passbyScreens||'-')+
-    ', 方向/sides='+esc((passby.sides||[]).join(',')||'-')+
-    ', 头部角度/pans='+esc(passbyPans||'-')+
-    ', xy='+esc(passby.xy?passby.xy.join(','):'-')+'<br>'+
+    '<b>最近目标选择 / Nearest selection</b>: 距离/distance='+esc(fmt(data.current_target_distance_cm,1))+'cm, target_xy='+esc((plan.target_xy||[]).join(','))+', 剩余/remaining='+esc((data.remaining_target_ids||[]).join(','))+'<br>'+
+    '<b>到达与分类门 / Arrival & classifier gate</b>: arrived='+esc(data.arrived_at_target)+', classifierAllowed='+esc(data.classifier_allowed)+'<br>'+
+    '<b>途中几何绑定 / Transit bindings</b>: '+esc(Object.keys(bindings).join(',')||'-')+'（只框屏幕并绑定左上 Tag，不分类 / geometry only）<br>'+
     '<b>Tag/定位健康 / Localization health</b>: 无Tag扫描/noTagScans='+esc(health.consecutive_no_tag_scans||0)+
     ', 定位失败/locFailures='+esc(health.consecutive_localize_failures||0)+
     ', 距上次Tag/sinceTag='+esc(fmt(health.seconds_since_any_tag,1))+'s'+
@@ -154,15 +145,15 @@ function renderScreens(data){
   let rows='';
   Object.values(screens).sort((a,b)=>a.screen_id-b.screen_id).forEach(s=>{
     const status=s.status||'';
-    rows+=`<tr><td>${esc(s.screen_id)}</td><td>${esc(s.worker_id||'-')}</td><td class="${clsForStatus(status)}">${esc(bi(status,statusZh))}</td><td>${esc(s.attempts)}</td><td>${esc(s.last_classification||'-')}</td><td>${esc(fmt(s.last_confidence,3))}</td><td>${esc((s.observation_xy||[]).join(','))}</td><td>${esc((s.interaction_xy||[]).join(','))} @ ${esc(fmt(s.interaction_yaw_deg,1))}deg</td><td>${esc((s.notes||[]).join('; '))}</td></tr>`;
+    rows+=`<tr><td>${esc(s.screen_id)}</td><td>${esc(s.worker_id||'-')}</td><td class="${clsForStatus(status)}">${esc(bi(status,statusZh))}</td><td>${esc(s.attempts)}</td><td>${esc(s.last_classification||'-')}</td><td>${esc(fmt(s.last_confidence,3))}</td><td>${esc((s.target_xy||[]).join(','))}</td><td>${esc((s.interaction_xy||[]).join(','))} @ ${esc(fmt(s.interaction_yaw_deg,1))}deg</td><td>${esc((s.notes||[]).join('; '))}</td></tr>`;
   });
   document.getElementById('screens').innerHTML =
-    '<table><tr><th>屏幕 / Screen</th><th>Worker</th><th>状态 / Status</th><th>尝试 / Attempts</th><th>花朵 / Flower</th><th>置信度 / Conf</th><th>观察点 / Observation XY</th><th>交互位姿 / Interaction XY/yaw</th><th>备注 / Notes</th></tr>'+rows+'</table>';
+    '<table><tr><th>屏幕 / Screen</th><th>Worker</th><th>状态 / Status</th><th>尝试 / Attempts</th><th>花朵 / Flower</th><th>置信度 / Conf</th><th>任务目标 / Target XY</th><th>交互位姿 / Interaction XY/yaw</th><th>备注 / Notes</th></tr>'+rows+'</table>';
 }
 function renderEvents(events){
   events=events||[];
   if(!events.length){document.getElementById('events').innerHTML='暂无事件 / No events yet.';return;}
-    const important=new Set(['flower_observed','interaction_alignment_check','interaction_safety_gate_blocked','interaction_changed','interaction_not_changed','interaction_exception','left_hand_lifted','worker_request_sent','worker_response','already_target','classification_failed','classification_low_confidence','target_selected','target_body_reaim','target_body_reaim_skipped','target_not_completed_after_arrival','navigate_failed','near_wall_recover','front_obstacle_recover','forward_blocked_by_map','forward_no_progress','visual_forward_no_progress','visual_progress_check_inconclusive','visual_forward_progress_restored','no_tag_recovery_triggered','recovery_start','recovery_backoff_localize_attempt','recovery_done','translation_step','turn_last_resort','turn_last_resort_noop','scan_after_turn_done','scan_after_turn_failed','boundary_pan_filtered','boundary_safe_turn','boundary_recovery_target_selected','boundary_blind_nav_start','boundary_blind_nav_step','boundary_blind_nav_arrived','boundary_blind_nav_failed','harvest_skipped_boundary_outward','localize_skipped_boundary_outward','localize_harvest_done','localize_harvest_failed','head_recenter_after_scan','head_recenter_failed','initial_discovery_scan_start','initial_discovery_scan_turn','initial_discovery_scan_relocalize_start','initial_discovery_scan_relocalize_done','initial_discovery_scan_done','opportunistic_harvest','route_passby_stop_selected','route_passby_scan_start','route_passby_scan_done','action','pose_update']);
+    const important=new Set(['mission_state','transit_bindings_updated','arrived_at_target','target_classification_failed','classifier_gate_blocked','interaction_alignment_check','interaction_safety_gate_blocked','interaction_changed','interaction_not_changed','interaction_exception','left_hand_lifted','worker_request_sent','worker_response','already_target','classification_failed','classification_low_confidence','target_selected','target_body_reaim','target_body_reaim_skipped','target_not_completed_after_arrival','navigate_failed','target_failed','mission_complete','near_wall_recover','front_obstacle_recover','forward_blocked_by_map','forward_no_progress','visual_forward_no_progress','visual_progress_check_inconclusive','visual_forward_progress_restored','no_tag_recovery_triggered','recovery_start','recovery_backoff_localize_attempt','recovery_done','translation_step','turn_last_resort','turn_last_resort_noop','scan_after_turn_done','scan_after_turn_failed','boundary_pan_filtered','boundary_safe_turn','boundary_recovery_target_selected','boundary_blind_nav_start','boundary_blind_nav_step','boundary_blind_nav_arrived','boundary_blind_nav_failed','localize_skipped_boundary_outward','head_recenter_after_scan','head_recenter_failed','action','pose_update']);
   let rows='';
   events.slice().reverse().forEach(e=>{
     const detail=Object.assign({}, e); delete detail.t; delete detail.event;
@@ -274,11 +265,11 @@ setInterval(refresh,800);
             if target_screen is not None and screen.screen_id == target_screen.screen_id:
                 color = (40, 80, 240)
             c = self._map_pt(screen.center_xy, scale, img.shape[0])
-            observation = self._map_pt(screen.observation_xy, scale, img.shape[0])
+            target = self._map_pt(screen.target_xy, scale, img.shape[0])
             interaction = self._map_pt(screen.interaction_xy, scale, img.shape[0])
             reader = self._map_pt(screen.reader_xy, scale, img.shape[0])
             cv2.circle(img, c, 4, color, -1)
-            cv2.circle(img, observation, 3, (0, 160, 220), -1)
+            cv2.circle(img, target, 3, (0, 160, 220), -1)
             cv2.circle(img, interaction, 3, (220, 80, 40), -1)
             cv2.circle(img, reader, 2, (180, 0, 180), -1)
             cv2.putText(img, str(screen.screen_id), (c[0] + 4, c[1] - 4), cv2.FONT_HERSHEY_SIMPLEX, 0.35, color, 1)

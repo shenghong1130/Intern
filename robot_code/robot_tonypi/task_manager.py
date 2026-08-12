@@ -7,7 +7,7 @@ import json
 import math
 import time
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from .classifier import ClassifierClient
 from .debug import DebugReporter
@@ -16,7 +16,7 @@ from .interaction_client import RobotInteractionClient
 from .interaction_logic import apply_worker_change_result, evaluate_interaction_pose, store_flower_observation
 from .localizer import AprilTagDetector, Localizer
 from .map_model import MapModel, load_tag_positions
-from .models import Confidence, InteractionPoseCheck, RobotPose, Screen, ScreenStatus
+from .models import Confidence, InteractionPoseCheck, MissionState, RobotPose, Screen, ScreenStatus
 from .motion import MotionController, RobotState
 from .utils import angle_diff_deg, distance_xy, ensure_dir, normalize_angle_deg, now_s
 from .vision import ScreenDetector
@@ -65,14 +65,12 @@ class TaskManager:
         self.interaction_phase = "idle"
         self.left_hand_lifted = False
         self.last_target_plan = {}
-        self.last_opportunistic_s = 0.0
-        self.last_opportunistic_xy = None
-        self.last_full_scan_s = 0.0
+        self.mission_state = MissionState.IDLE
+        self.current_target_screen_id = None
+        self.arrived_at_target = False
+        self.classifier_allowed = False
+        self.transit_bindings = {}
         self.last_scan_after_turn_s = 0.0
-        self.active_passby_stop = None
-        self.last_route_scan_stops = []
-        self.last_passby_plan = {}
-        self.passby_scan_records = {}
         self.last_any_tag_seen_s = now_s()
         self.last_localize_success_s = 0.0
         self.consecutive_no_tag_scans = 0
@@ -80,7 +78,6 @@ class TaskManager:
         self.last_no_tag_recovery_s = 0.0
         self.recovery_count = 0
         self.last_recovery = {}
-        self.last_initial_discovery_scan = {}
         self.pending_progress_check = None
         self.no_progress_count = 0
         self.visual_no_progress_count = 0
@@ -138,53 +135,60 @@ class TaskManager:
             if self.args.mode == "harvest":
                 if self.state.pose is None and not self.initial_localize():
                     return False
-                self.harvest_visible()
-                return True
+                return self.run_harvest_mode()
             return self.run_mission()
         finally:
             self.close()
 
     def run_mission(self) -> bool:
+        self.set_mission_state(MissionState.LOCALIZE)
         if self.state.pose is None:
             if not self.initial_localize():
                 self.debug.event("mission_abort", reason="initial_localize_failed")
                 return False
-        self.run_initial_discovery_scan()
         loops = 0
         while loops < int(self.config["mission"]["max_main_loops"]):
             loops += 1
             if self.time_left_s() <= 0:
                 self.debug.event("mission_stop", reason="time_limit")
                 break
-            observed = self.harvest_opportunistic(reason="loop_start")
-            if observed == 0 and self.should_periodic_full_scan():
-                observed = self.harvest_visible(reason="periodic_full_scan")
-                self.last_full_scan_s = now_s()
             if self.target_reached():
                 self.debug.event("mission_success", completed=self.map.completed_count())
                 break
-            target = self.choose_next_screen()
+            self.set_mission_state(MissionState.SELECT_NEAREST_TARGET)
+            target = self.choose_nearest_screen()
             if target is None:
-                self.debug.event("mission_stop", reason="no_unfinished_screen")
+                self.set_mission_state(MissionState.MISSION_COMPLETE)
+                self.debug.event("mission_complete", processed=self.map.processed_count(), changed=self.map.completed_count())
                 break
-            target_mode = "interaction" if target.needs_interaction() else "observation"
-            target_xy = target.interaction_staging_xy if target.needs_interaction() else target.observation_xy
-            self.debug.event("target_selected", screen_id=target.screen_id, target_mode=target_mode, target_xy=target_xy, plan=self.last_target_plan)
-            if target.needs_interaction():
-                self.process_screen_interaction(target)
-                self.publish_state(target)
-                continue
+            self.current_target_screen_id = target.screen_id
+            self.arrived_at_target = False
+            self.classifier_allowed = False
+            self.set_mission_state(MissionState.NAVIGATE_TO_TARGET)
+            self.debug.event("target_selected", tag_id=target.screen_id, screen_id=target.screen_id, target_xy=target.target_xy, plan=self.last_target_plan)
             ok = self.navigate_to_screen(target)
             if not ok:
                 target.attempts += 1
                 target.notes.append("navigation_failed")
                 target.status = ScreenStatus.FAILED
+                self.debug.event("target_failed", screen_id=target.screen_id, reason="navigation_failed")
                 continue
-            self.harvest_visible(prefer_screen_id=target.screen_id, reason="arrived_target")
-            if target.status == ScreenStatus.UNKNOWN and self.body_reaim_to_screen(target, reason="arrived_target_no_detection"):
-                self.harvest_visible(pan_angles=[100], frames=1, reason="arrived_target_body_reaim")
+            self.arrived_at_target = True
+            self.set_mission_state(MissionState.ARRIVED_AT_TARGET)
+            observed = self.classify_arrived_target(target)
+            if not observed and self.body_reaim_to_screen(target, reason="arrived_target_no_detection"):
+                observed = self.classify_arrived_target(target, pan_angles=[100])
             if target.needs_interaction():
-                self.process_screen_interaction(target)
+                self.set_mission_state(MissionState.NEEDS_CHANGE)
+                attempts_before = target.attempts
+                changed = self.process_screen_interaction(target)
+                if not changed and target.status == ScreenStatus.NEEDS_CHANGE:
+                    if target.attempts == attempts_before:
+                        target.attempts += 1
+                    if target.attempts >= int(self.config["mission"].get("max_target_attempts", 2)):
+                        target.status = ScreenStatus.FAILED
+                        target.notes.append("interaction_retry_limit")
+                        self.debug.event("target_failed", screen_id=target.screen_id, reason="interaction_retry_limit")
             elif target.status == ScreenStatus.UNKNOWN:
                 target.notes.append("arrived_without_stable_decision")
                 target.status = ScreenStatus.FAILED
@@ -194,8 +198,30 @@ class TaskManager:
                     attempts=target.attempts,
                     status=target.status.value,
                 )
+            self.set_mission_state(MissionState.MARK_TARGET_COMPLETE)
             self.publish_state(target)
-        return self.map.completed_count() > 0
+            self.current_target_screen_id = None
+            self.arrived_at_target = False
+            self.classifier_allowed = False
+        return self.mission_state == MissionState.MISSION_COMPLETE or self.map.processed_count() > 0
+
+    def set_mission_state(self, state: MissionState) -> None:
+        self.mission_state = state
+        self.debug.event("mission_state", state=state.value)
+
+    def run_harvest_mode(self) -> bool:
+        """Navigate to one nearest target and classify it under the arrival gate."""
+        self.set_mission_state(MissionState.SELECT_NEAREST_TARGET)
+        target = self.choose_nearest_screen()
+        if target is None:
+            return True
+        self.current_target_screen_id = target.screen_id
+        self.set_mission_state(MissionState.NAVIGATE_TO_TARGET)
+        if not self.navigate_to_screen(target):
+            return False
+        self.arrived_at_target = True
+        self.set_mission_state(MissionState.ARRIVED_AT_TARGET)
+        return bool(self.classify_arrived_target(target))
 
     def time_left_s(self) -> float:
         return float(self.args.time_limit_s or self.config["mission"]["time_limit_s"]) - (time.monotonic() - self.start_time)
@@ -214,71 +240,6 @@ class TaskManager:
         if self.map.completed_count() < goal:
             return False
         return True
-
-    def run_initial_discovery_scan(self) -> int:
-        """One optional body/head scan after initial localization.
-
-        This is independent of the removed four-waypoint scripted route and may
-        only update visual observations; it never performs a flower interaction.
-        """
-        if not bool(self.config["mission"].get("initial_discovery_scan_enabled", True)):
-            return 0
-        if self.time_left_s() <= 0:
-            return 0
-        mission_cfg = self.config["mission"]
-        pan_angles = self.unique_pan_angles(
-            list(mission_cfg.get("initial_discovery_scan_pan_angles", [130, 100, 70]))
-        )
-        frames = max(1, int(mission_cfg.get("initial_discovery_scan_frames", 1)))
-        left_cycles = max(1, int(mission_cfg.get("initial_discovery_scan_left_turn_cycles", 4)))
-        right_cycles = max(1, int(mission_cfg.get("initial_discovery_scan_right_turn_cycles", 5)))
-        self.last_initial_discovery_scan = {
-            "started_s": round(now_s(), 3),
-            "pan_angles": pan_angles,
-            "frames": frames,
-            "left_turn_cycles": left_cycles,
-            "right_turn_cycles": right_cycles,
-            "relocalize_after": bool(mission_cfg.get("initial_discovery_scan_relocalize_after", True)),
-            "relocalized": None,
-            "observed": 0,
-        }
-        self.debug.event(
-            "initial_discovery_scan_start",
-            pan_angles=pan_angles,
-            frames=frames,
-            left_turn_cycles=left_cycles,
-            right_turn_cycles=right_cycles,
-            pose=None if self.state.pose is None else self.state.pose.as_dict(),
-        )
-        total_observed = 0
-        self.hardware.center_head()
-        self.debug.event("initial_discovery_scan_turn", direction="left", key="turn_left_fast", cycles=left_cycles)
-        result = self.motion.run("turn_left_fast", times_override=left_cycles)
-        self.scan_after_turn("initial_discovery_scan_left_turn", "turn_left_fast", result)
-        total_observed += int(self.harvest_visible(pan_angles=pan_angles, frames=frames, reason="initial_discovery_scan_left"))
-        if self.time_left_s() > 0:
-            self.debug.event("initial_discovery_scan_turn", direction="right", key="turn_right_fast", cycles=right_cycles)
-            result = self.motion.run("turn_right_fast", times_override=right_cycles)
-            self.scan_after_turn("initial_discovery_scan_right_turn", "turn_right_fast", result)
-            total_observed += int(self.harvest_visible(pan_angles=pan_angles, frames=frames, reason="initial_discovery_scan_right"))
-        if self.time_left_s() > 0 and bool(mission_cfg.get("initial_discovery_scan_relocalize_after", True)):
-            self.debug.event("initial_discovery_scan_relocalize_start")
-            relocalized = self.localize_scan()
-            self.last_initial_discovery_scan["relocalized"] = bool(relocalized)
-            self.debug.event(
-                "initial_discovery_scan_relocalize_done",
-                ok=bool(relocalized),
-                pose=None if self.state.pose is None else self.state.pose.as_dict(),
-            )
-        self.last_initial_discovery_scan["observed"] = total_observed
-        self.last_initial_discovery_scan["done_s"] = round(now_s(), 3)
-        self.debug.event(
-            "initial_discovery_scan_done",
-            observed=total_observed,
-            pose=None if self.state.pose is None else self.state.pose.as_dict(),
-        )
-        self.publish_state()
-        return total_observed
 
     def initial_localize(self) -> bool:
         if self.args.dry_run and self.state.pose is None:
@@ -324,7 +285,7 @@ class TaskManager:
                     self.consecutive_no_tag_scans = 0
                     self.evaluate_pending_progress(pose)
                     self.debug.event("pose_update", **pose.as_dict(), head_pan_angle=pan)
-                    annotated = self.harvest_during_localize(frame, tags, annotated, pan)
+                    annotated = self.observe_transit_bindings(frame, tags, annotated, pan, "localize_scan")
                     self.debug.save_image("latest_annotated.jpg", annotated, force=True)
                     self.publish_state()
                     return True
@@ -494,54 +455,43 @@ class TaskManager:
         scored.sort(key=lambda item: item[1], reverse=True)
         return scored
 
-    def should_periodic_full_scan(self) -> bool:
-        period = float(self.config["vision"].get("periodic_full_scan_s", 0.0))
-        if period <= 0.0:
-            return False
-        return now_s() - self.last_full_scan_s >= period
-
-    def should_recheck_completed_screens(self, reason: str) -> bool:
-        vision_cfg = self.config.get("vision", {})
-        if not bool(vision_cfg.get("recheck_completed_screens_enabled", True)):
-            return False
-        prefixes = vision_cfg.get(
-            "recheck_completed_screen_reasons",
-            ["route_passby", "navigate_step", "loop_start", "periodic_full_scan"],
-        )
-        return any(str(reason).startswith(str(prefix)) for prefix in prefixes)
-
-    def harvest_opportunistic(self, reason: str = "opportunistic") -> int:
-        if self.args.dry_run or not bool(self.config["vision"].get("opportunistic_enabled", True)):
-            return 0
-        pose = self.state.pose
-        if pose is None:
-            return 0
-        pan_angles = list(self.config["vision"].get("opportunistic_pan_angles", [100]))
-        include_done = self.should_recheck_completed_screens(reason)
-        predicted = self.predict_visible_screens(pose, pan_angles=pan_angles, include_done=include_done)
-        if not predicted:
-            return 0
-        t = now_s()
-        if t - self.last_opportunistic_s < float(self.config["vision"].get("opportunistic_min_interval_s", 2.0)):
-            return 0
-        if self.last_opportunistic_xy is not None:
-            moved = distance_xy(self.last_opportunistic_xy, pose.xy())
-            if moved < float(self.config["vision"].get("opportunistic_min_move_cm", 12.0)):
-                return 0
-        max_pans = max(1, int(self.config["vision"].get("opportunistic_max_pans", 1)))
-        best_pans = self.unique_pan_angles([item[2] for item in predicted[:max_pans]])
-        if not best_pans:
-            best_pans = self.unique_pan_angles(pan_angles)
+    def observe_transit_bindings(self, frame, tags, annotated, pan: float, reason: str):
+        """Update geometry-only screen/Tag bindings; classification is impossible here."""
+        try:
+            candidates = self.screen_detector.detect(frame, tags, self.state.pose, extract_crops=False)
+            annotated = self.screen_detector.annotate(annotated, candidates, tags)
+        except Exception as exc:
+            # Geometry enrichment must never change localization success/failure.
+            self.debug.event("transit_binding_failed", reason=reason, pan=pan, error=str(exc))
+            return annotated
+        seen = set()
+        timestamp = now_s()
+        for cand in candidates:
+            screen = self.map.screens.get(cand.screen_id)
+            if screen is None:
+                continue
+            seen.add(cand.screen_id)
+            screen.transit_visible = True
+            screen.last_binding_s = timestamp
+            self.transit_bindings[str(cand.screen_id)] = {
+                "tag_id": int(cand.tag.tag_id),
+                "screen_id": cand.screen_id,
+                "pan": float(pan),
+                "reason": reason,
+                "last_seen_s": round(timestamp, 3),
+                "quad": [[round(float(x), 1), round(float(y), 1)] for x, y in cand.quad],
+            }
+        for screen in self.map.screens.values():
+            if screen.screen_id not in seen:
+                screen.transit_visible = False
         self.debug.event(
-            "opportunistic_harvest",
+            "transit_bindings_updated",
             reason=reason,
-            include_done=include_done,
-            predicted=[{"screen_id": sid, "score": round(score, 3), "pan": pan} for sid, score, pan in predicted[:6]],
-            pan_angles=best_pans,
+            pan=pan,
+            bindings=[self.transit_bindings[str(c.screen_id)] for c in candidates if str(c.screen_id) in self.transit_bindings],
+            classifier_called=False,
         )
-        self.last_opportunistic_s = t
-        self.last_opportunistic_xy = pose.xy()
-        return self.harvest_visible(pan_angles=best_pans, frames=1, reason=reason)
+        return annotated
 
     def record_flower_observation(self, screen: Screen, flower: str, confidence: float, vote_entry=None) -> None:
         """Persist a reliable visual result without performing physical interaction."""
@@ -563,227 +513,113 @@ class TaskManager:
             vote_entry["decision"] = decision
             vote_entry["interaction_requested"] = False
 
-    def observe_frame(
-        self,
-        frame,
-        tags,
-        annotated,
-        pan: float,
-        include_completed_screens: bool = False,
-        vote_summary: Optional[dict] = None,
-    ) -> Tuple[object, int]:
-        """Detect and classify screens, updating observations only.
+    def classifier_gate_open(self, screen: Screen) -> bool:
+        pose = self.state.pose
+        if pose is None:
+            return False
+        within_arrival = distance_xy(pose.xy(), screen.target_xy) <= float(self.config["navigation"]["arrival_radius_cm"])
+        facing_target = abs(angle_diff_deg(screen.interaction_yaw_deg, pose.yaw_deg)) <= float(
+            self.config["navigation"].get("arrival_yaw_tolerance_deg", 30.0)
+        )
+        return bool(
+            self.arrived_at_target
+            and self.current_target_screen_id == screen.screen_id
+            and within_arrival
+            and facing_target
+            and self.mission_state in (
+                MissionState.ARRIVED_AT_TARGET,
+                MissionState.CAPTURE_TARGET_SCREEN,
+                MissionState.CLASSIFY_TARGET_FLOWER,
+            )
+        )
 
-        Returns (annotated_frame, observed_count). This function is deliberately
-        incapable of lifting the hand or sending a Worker request.
-        """
+    def classify_arrived_target(self, screen: Screen, pan_angles: Optional[List[float]] = None) -> int:
+        """Freshly capture and classify only the locked target after arrival."""
+        if not self.classifier_gate_open(screen):
+            self.debug.event("classifier_gate_blocked", screen_id=screen.screen_id, state=self.mission_state.value)
+            return 0
+        if self.args.dry_run:
+            return 0
+        self.classifier_allowed = True
+        self.set_mission_state(MissionState.CAPTURE_TARGET_SCREEN)
+        pans = self.pan_angles_for_screen(screen.screen_id, fallback=pan_angles or self.config["vision"]["harvest_pan_angles"])
+        rounds = max(1, int(self.config["vision"].get("vote_frames", 1)))
+        min_votes = max(1, int(self.config["vision"].get("min_votes", 1)))
         min_conf = float(self.config["vision"]["min_confidence"])
-        candidates = self.screen_detector.detect(frame, tags, self.state.pose)
-        annotated = self.screen_detector.annotate(annotated, candidates, tags)
-        self.debug.save_image("latest_annotated.jpg", annotated, force=True)
-        observed = 0
-        for cand in candidates:
-            screen = self.map.screens.get(cand.screen_id)
-            if screen is None or (screen.done() and not include_completed_screens):
-                continue
-            # Skip screens already being processed in this scan
-            if screen.done() and not include_completed_screens:
-                continue
-            result = self.classifier.classify_crop(cand.crop_28x28)
-            suffix = "imm_{}".format(pan)
-            self.debug.save_crop(cand.screen_id, cand.crop_28x28, suffix)
-            if vote_summary is not None:
-                vote_entry = self._vote_entry(vote_summary, cand.screen_id)
-                vote_entry["observations"].append(
-                    {
+        votes = collections.defaultdict(list)
+        summary = {
+            "started_s": round(now_s(), 3),
+            "reason": "arrived_target_only",
+            "target_screen_id": screen.screen_id,
+            "target_tag_id": screen.screen_id,
+            "pan_angles": pans,
+            "vote_frames": rounds,
+            "min_votes": min_votes,
+            "min_confidence": min_conf,
+            "screens": {},
+        }
+        entry = self._vote_entry(summary, screen.screen_id)
+        try:
+            for round_idx in range(rounds):
+                for pan in pans:
+                    if not self.classifier_gate_open(screen):
+                        return 0
+                    frame, tags = self.capture_with_tags(pan)
+                    if frame is None:
+                        continue
+                    pose, annotated = self.localizer.estimate_from_frame(frame, tags, head_pan_angle=pan, annotate=True)
+                    if pose is not None:
+                        self.state.set_pose(pose)
+                        self.debug.event("pose_update", **pose.as_dict(), head_pan_angle=pan, reason="arrived_target_capture")
+                    candidates = self.screen_detector.detect(frame, tags, self.state.pose, extract_crops=True)
+                    annotated = self.screen_detector.annotate(annotated, candidates, tags)
+                    self.debug.save_image("latest_annotated.jpg", annotated, force=True)
+                    matches = [candidate for candidate in candidates if candidate.screen_id == screen.screen_id]
+                    if not matches:
+                        entry["observations"].append({"round": round_idx, "pan": pan, "ok": False, "error": "target_binding_missing"})
+                        continue
+                    candidate = matches[0]
+                    self.set_mission_state(MissionState.CLASSIFY_TARGET_FLOWER)
+                    if not self.classifier_gate_open(screen):
+                        entry["observations"].append({"round": round_idx, "pan": pan, "ok": False, "error": "arrival_gate_changed"})
+                        self.debug.event("classifier_gate_blocked", screen_id=screen.screen_id, state=self.mission_state.value, reason="pose_changed_after_capture")
+                        continue
+                    result = self.classifier.classify_crop(candidate.crop_28x28)
+                    self.debug.save_crop(screen.screen_id, candidate.crop_28x28, "target_{}_{}".format(round_idx, pan))
+                    observation = {
+                        "round": round_idx,
                         "pan": pan,
                         "ok": result.ok,
                         "flower": result.flower_api if result.ok else None,
-                        "flower_cn": result.flower_cn if result.ok else None,
                         "confidence": round(float(result.confidence), 4) if result.ok else 0.0,
                         "error": result.error if not result.ok else "",
                     }
-                )
-            if not result.ok:
-                self.debug.event("classification_failed", screen_id=cand.screen_id, error=result.error)
-                continue
-            self.debug.event(
-                "classified",
-                screen_id=cand.screen_id,
-                flower=result.flower_api,
-                flower_cn=result.flower_cn,
-                confidence=result.confidence,
-            )
-            if float(result.confidence) < min_conf:
-                self.debug.event(
-                    "classification_low_confidence",
-                    screen_id=cand.screen_id,
-                    flower=result.flower_api,
-                    flower_cn=result.flower_cn,
-                    confidence=result.confidence,
-                    threshold=min_conf,
-                )
-                continue
-            entry = self._vote_entry(vote_summary, cand.screen_id) if vote_summary else None
-            if entry is not None:
-                entry["best"] = {
-                    "flower": result.flower_api,
-                    "count": 1,
-                    "avg_confidence": round(float(result.confidence), 4),
-                }
-            self.record_flower_observation(screen, result.flower_api, float(result.confidence), entry)
-            observed += 1
-        return annotated, observed
-
-    def collect_harvest_votes_from_frame(
-        self,
-        frame,
-        tags,
-        annotated,
-        votes,
-        confs,
-        vote_summary,
-        round_idx: int,
-        pan: float,
-        min_conf: float,
-        include_completed_screens: bool = False,
-    ):
-        candidates = self.screen_detector.detect(frame, tags, self.state.pose)
-        annotated = self.screen_detector.annotate(annotated, candidates, tags)
-        self.debug.save_image("latest_annotated.jpg", annotated, force=True)
-        for cand in candidates:
-            screen = self.map.screens.get(cand.screen_id)
-            if screen is None or (screen.done() and not include_completed_screens):
-                continue
-            result = self.classifier.classify_crop(cand.crop_28x28)
-            suffix = "{}_{}".format(round_idx, pan)
-            self.debug.save_crop(cand.screen_id, cand.crop_28x28, suffix)
-            vote_entry = self._vote_entry(vote_summary, cand.screen_id)
-            if not result.ok:
-                vote_entry["observations"].append(
-                    {
-                        "round": round_idx,
-                        "pan": pan,
-                        "ok": False,
-                        "error": result.error,
-                    }
-                )
-                self.debug.event("classification_failed", screen_id=cand.screen_id, error=result.error)
-                continue
-            flower_vote = vote_entry["votes"].setdefault(
-                result.flower_api,
-                {"count": 0, "confidences": []},
-            )
-            observation = {
-                "round": round_idx,
-                "pan": pan,
-                "ok": True,
-                "flower": result.flower_api,
-                "flower_cn": result.flower_cn,
-                "confidence": round(float(result.confidence), 4),
-            }
-            if float(result.confidence) < min_conf:
-                observation["accepted_vote"] = False
-                observation["reject_reason"] = "low_confidence"
-                vote_entry["observations"].append(observation)
-                self.debug.event(
-                    "classification_low_confidence",
-                    screen_id=cand.screen_id,
-                    flower=result.flower_api,
-                    flower_cn=result.flower_cn,
-                    confidence=result.confidence,
-                    threshold=min_conf,
-                )
-                continue
-            votes[cand.screen_id][result.flower_api] += 1
-            confs[cand.screen_id][result.flower_api].append(result.confidence)
-            flower_vote["count"] += 1
-            flower_vote["confidences"].append(round(float(result.confidence), 4))
-            observation["accepted_vote"] = True
-            vote_entry["observations"].append(observation)
-            self.debug.event(
-                "classified",
-                screen_id=cand.screen_id,
-                flower=result.flower_api,
-                flower_cn=result.flower_cn,
-                confidence=result.confidence,
-            )
-        return annotated
-
-    def finalize_harvest_votes(self, votes, confs, vote_summary, min_conf: float, publish: bool = True) -> int:
-        observed = 0
-        min_votes = int(self.config["vision"]["min_votes"])
-        for screen_id, counter in votes.items():
-            flower = max(
-                counter,
-                key=lambda name: (
-                    int(counter[name]),
-                    sum(confs[screen_id][name]) / max(1, len(confs[screen_id][name])),
-                ),
-            )
-            count = counter[flower]
-            avg_conf = sum(confs[screen_id][flower]) / max(1, len(confs[screen_id][flower]))
-            screen = self.map.screens[screen_id]
-            vote_entry = self._vote_entry(vote_summary, screen_id)
-            vote_entry["best"] = {
-                "flower": flower,
-                "count": int(count),
-                "avg_confidence": round(float(avg_conf), 4),
-            }
-            screen.last_seen_s = now_s()
-            screen.last_classification = flower
-            screen.last_confidence = avg_conf
-            if count < min_votes or avg_conf < min_conf:
-                if screen.status not in (ScreenStatus.NEEDS_CHANGE, ScreenStatus.CHANGED, ScreenStatus.ALREADY_TARGET):
-                    screen.status = ScreenStatus.FAILED
-                screen.notes.append("unstable_vote:{}x conf={:.2f}".format(count, avg_conf))
-                vote_entry["decision"] = "unstable"
-                continue
-            self.record_flower_observation(screen, flower, avg_conf, vote_entry)
-            observed += 1
-        for entry in vote_summary["screens"].values():
-            if entry["best"] is None and entry["observations"]:
+                    entry["observations"].append(observation)
+                    if result.ok and float(result.confidence) >= min_conf:
+                        votes[result.flower_api].append(float(result.confidence))
+                        bucket = entry["votes"].setdefault(result.flower_api, {"count": 0, "confidences": []})
+                        bucket["count"] += 1
+                        bucket["confidences"].append(round(float(result.confidence), 4))
+            if not votes:
                 entry["decision"] = "no_stable_success"
-            for item in entry["votes"].values():
-                values = item.get("confidences", [])
-                item["avg_confidence"] = round(sum(values) / max(1, len(values)), 4) if values else 0.0
-        self.last_vote_summary = vote_summary
-        if publish:
-            self.publish_state()
-        return observed
-
-    def harvest_during_localize(self, frame, tags, annotated, pan: float):
-        if self.args.dry_run or not bool(self.config["vision"].get("harvest_during_localize_enabled", True)):
-            return annotated
-        include_done = bool(self.config["vision"].get("harvest_during_localize_recheck_completed", True))
-        vote_summary = {
-            "started_s": round(now_s(), 3),
-            "reason": "localize_scan",
-            "prefer_screen_id": None,
-            "pan_angles": [pan],
-            "min_confidence": float(self.config["vision"]["min_confidence"]),
-            "source": "localize_scan",
-            "include_completed_screens": include_done,
-            "screens": {},
-        }
-        try:
-            annotated, observed = self.observe_frame(
-                frame,
-                tags,
-                annotated,
-                pan=pan,
-                include_completed_screens=include_done,
-                vote_summary=vote_summary,
-            )
-            self.debug.event(
-                "localize_harvest_done",
-                pan=pan,
-                observed=observed,
-                screens=len(vote_summary["screens"]),
-            )
-        except Exception as exc:
-            self.debug.event("localize_harvest_failed", pan=pan, error=str(exc))
-        return annotated
+                self.debug.event("target_classification_failed", screen_id=screen.screen_id, reason="no_accepted_votes")
+                return 0
+            flower = max(votes, key=lambda name: (len(votes[name]), sum(votes[name]) / len(votes[name]), name))
+            avg_conf = sum(votes[flower]) / len(votes[flower])
+            count = len(votes[flower])
+            entry["best"] = {"flower": flower, "count": count, "avg_confidence": round(avg_conf, 4)}
+            if count < min_votes:
+                entry["decision"] = "unstable"
+                self.debug.event("target_classification_failed", screen_id=screen.screen_id, reason="insufficient_votes", votes=count)
+                return 0
+            self.record_flower_observation(screen, flower, avg_conf, entry)
+            self.set_mission_state(MissionState.TARGET_ALREADY_CORRECT if flower == self.target_flower else MissionState.NEEDS_CHANGE)
+            return 1
+        finally:
+            self.classifier_allowed = False
+            self.last_vote_summary = summary
+            self.center_head_after_scan("classify_arrived_target", pans[-1] if pans else None)
+            self.publish_state(screen)
 
     def scan_after_turn(self, reason: str, action_key: str = "", action_result=None) -> int:
         if self.args.dry_run or not bool(self.config["vision"].get("scan_after_turn_enabled", True)):
@@ -809,27 +645,7 @@ class TaskManager:
             self.consecutive_no_tag_scans = 0
             self.evaluate_pending_progress(pose)
             self.debug.event("pose_update", **pose.as_dict(), head_pan_angle=center, reason="scan_after_turn")
-        include_done = self.should_recheck_completed_screens("scan_after_turn")
-        vote_summary = {
-            "started_s": round(now_s(), 3),
-            "reason": "scan_after_turn",
-            "turn_reason": reason,
-            "action_key": action_key,
-            "action_times": None if action_result is None else int(getattr(action_result, "times", 0)),
-            "prefer_screen_id": None,
-            "pan_angles": [center],
-            "min_confidence": float(self.config["vision"]["min_confidence"]),
-            "include_completed_screens": include_done,
-            "screens": {},
-        }
-        annotated, observed = self.observe_frame(
-            frame,
-            tags,
-            annotated,
-            pan=center,
-            include_completed_screens=include_done,
-            vote_summary=vote_summary,
-        )
+        annotated = self.observe_transit_bindings(frame, tags, annotated, center, "scan_after_turn:" + reason)
         self.debug.save_image("latest_annotated.jpg", annotated, force=True)
         self.debug.event(
             "scan_after_turn_done",
@@ -837,73 +653,11 @@ class TaskManager:
             action_key=action_key,
             localized=localized,
             tag_count=len(tags),
-            observed=observed,
-            screens=len(vote_summary["screens"]),
-            include_done=include_done,
+            bindings=len(self.transit_bindings),
+            classifier_called=False,
         )
         self.publish_state()
-        return int(observed)
-
-    def harvest_visible(
-        self,
-        prefer_screen_id: Optional[int] = None,
-        pan_angles: Optional[List[float]] = None,
-        frames: Optional[int] = None,
-        reason: str = "harvest_visible",
-    ) -> int:
-        if self.args.dry_run:
-            return 0
-        last_scan_pan = None
-        if pan_angles is None:
-            pan_angles = list(self.config["vision"]["harvest_pan_angles"])
-        else:
-            pan_angles = list(pan_angles)
-        include_done = self.should_recheck_completed_screens(reason)
-        if prefer_screen_id is not None:
-            pan_angles = self.pan_angles_for_screen(prefer_screen_id, fallback=pan_angles)
-        pan_angles = self.boundary_safe_pan_angles(pan_angles, reason=reason)
-        if not pan_angles:
-            self.debug.event(
-                "harvest_skipped_boundary_outward",
-                reason=reason,
-                prefer_screen_id=prefer_screen_id,
-                pose=None if self.state.pose is None else self.state.pose.as_dict(),
-            )
-            return 0
-        vote_summary = {
-            "started_s": round(now_s(), 3),
-            "reason": reason,
-            "prefer_screen_id": prefer_screen_id,
-            "pan_angles": pan_angles,
-            "min_confidence": float(self.config["vision"]["min_confidence"]),
-            "include_completed_screens": include_done,
-            "screens": {},
-        }
-
-        total_observed = 0
-        for pan in pan_angles:
-            last_scan_pan = pan
-            frame, tags = self.capture_with_tags(pan)
-            if frame is None:
-                continue
-            pose, loc_annotated = self.localizer.estimate_from_frame(frame, tags, head_pan_angle=pan, annotate=True)
-            if pose is not None:
-                self.state.set_pose(pose)
-                self.debug.event("pose_update", **pose.as_dict(), head_pan_angle=pan)
-            annotated, observed = self.observe_frame(
-                frame,
-                tags,
-                loc_annotated,
-                pan=pan,
-                include_completed_screens=include_done,
-                vote_summary=vote_summary,
-            )
-            total_observed += observed
-
-        self.last_vote_summary = vote_summary
-        self.center_head_after_scan("harvest_visible:{}".format(reason), last_scan_pan)
-        self.publish_state()
-        return total_observed
+        return len(self.transit_bindings)
 
     def _vote_entry(self, vote_summary, screen_id: int):
         key = str(int(screen_id))
@@ -992,6 +746,7 @@ class TaskManager:
         )
 
     def process_screen_interaction(self, screen: Screen) -> bool:
+        self.set_mission_state(MissionState.ALIGN_FOR_INTERACTION)
         worker_id = self.worker_id_for_screen(screen)
         if not screen.last_classification or screen.last_classification == self.target_flower:
             self.debug.event("interaction_skipped", screen_id=screen.screen_id, reason="flower_not_changeable")
@@ -1008,9 +763,8 @@ class TaskManager:
             return False
         if bool(self.config["interaction"].get("interaction_relocalize_before_action", True)) and not self.args.dry_run:
             self.localize_scan()
-        # Navigation/relocalization may have produced a newer visual result.
-        # Bind the transaction to that final flower and require it to remain
-        # unchanged through the lower-level pre-send safety gate.
+        # Bind the transaction to the arrived-target result and require it to
+        # remain unchanged through the lower-level pre-send safety gate.
         from_flower = screen.last_classification
         if not from_flower or from_flower == self.target_flower:
             self.debug.event("interaction_skipped", screen_id=screen.screen_id, reason="flower_changed_before_action")
@@ -1023,6 +777,7 @@ class TaskManager:
 
         pose_snapshot = None if self.state.pose is None else self.state.pose.as_dict()
         screen.status = ScreenStatus.INTERACTING
+        self.set_mission_state(MissionState.EXECUTE_CHANGE)
         result = self.interaction.change_flower(
             screen_id=screen.screen_id,
             worker_id=worker_id,
@@ -1211,333 +966,27 @@ class TaskManager:
             return last_actionable
         return last_clear or fallback
 
-    def predict_route_screen_ids(
-        self,
-        pose: RobotPose,
-        path: List[Tuple[float, float]],
-        exclude_id: Optional[int] = None,
-    ) -> Set[int]:
-        if not path:
-            return set()
-        points = [pose.xy()] + list(path)
-        found: Set[int] = set()
-        sample_step = float(self.config["navigation"].get("route_sample_step_cm", 24.0))
-        pans = list(self.config["vision"].get("opportunistic_pan_angles", [100]))
-        for idx in range(1, len(points)):
-            start = points[idx - 1]
-            end = points[idx]
-            seg_len = distance_xy(start, end)
-            if seg_len < 1e-6:
-                continue
-            yaw = math.degrees(math.atan2(end[1] - start[1], end[0] - start[0]))
-            samples = max(1, int(seg_len / max(5.0, sample_step)))
-            for sample_idx in range(samples + 1):
-                t = sample_idx / float(samples)
-                x = start[0] + (end[0] - start[0]) * t
-                y = start[1] + (end[1] - start[1]) * t
-                sample_pose = RobotPose(x, y, yaw, confidence=pose.confidence, source="ROUTE_PREDICT")
-                for sid, _, _ in self.predict_visible_screens(sample_pose, pan_angles=pans):
-                    if exclude_id is not None and sid == int(exclude_id):
-                        continue
-                    found.add(int(sid))
-        return found
-
-    def passby_recently_scanned(self, screen_id: int, xy: Tuple[float, float]) -> bool:
-        record = self.passby_scan_records.get(int(screen_id))
-        if not record:
-            return False
-        cooldown = float(self.config["navigation"].get("route_passby_cooldown_s", 22.0))
-        repeat_dist = float(self.config["navigation"].get("route_passby_repeat_distance_cm", 45.0))
-        if now_s() - float(record.get("t", 0.0)) < cooldown:
-            return True
-        last_xy = tuple(record.get("xy", xy))
-        return distance_xy(last_xy, xy) < repeat_dist
-
-    def mark_passby_scan_attempt(self, stop) -> None:
-        pose = self.state.pose
-        xy = pose.xy() if pose is not None else tuple(stop.get("xy", (0.0, 0.0)))
-        t = now_s()
-        for screen_id in stop.get("screen_ids", []):
-            self.passby_scan_records[int(screen_id)] = {"t": t, "xy": xy}
-
-    def describe_passby_side(self, rel_angle: float) -> str:
-        if rel_angle > 22.0:
-            return "left"
-        if rel_angle < -22.0:
-            return "right"
-        return "front"
-
-    def merge_passby_stops(self, raw_stops: List[dict]) -> List[dict]:
-        if not raw_stops:
-            return []
-        merge_dist = float(self.config["navigation"].get("route_passby_merge_distance_cm", 28.0))
-        max_pans = max(1, int(self.config["navigation"].get("route_passby_max_pans", 2)))
-        merged = []
-        for stop in sorted(raw_stops, key=lambda item: item["ahead_cm"]):
-            if merged and abs(stop["ahead_cm"] - merged[-1]["ahead_cm"]) <= merge_dist:
-                current = merged[-1]
-                current["score"] = max(current["score"], stop["score"])
-                current["screen_ids"] = sorted(set(current["screen_ids"]) | set(stop["screen_ids"]))
-                current["sides"] = sorted(set(current["sides"]) | set(stop["sides"]))
-                current["pan_angles"] = self.unique_pan_angles(current["pan_angles"] + stop["pan_angles"])[:max_pans]
-                current["predicted"] = (current.get("predicted", []) + stop.get("predicted", []))[:10]
-                continue
-            stop = dict(stop)
-            stop["pan_angles"] = self.unique_pan_angles(stop["pan_angles"])[:max_pans]
-            merged.append(stop)
-        return merged
-
-    def find_passby_stops_for_segment(
-        self,
-        pose: RobotPose,
-        start_xy: Tuple[float, float],
-        end_xy: Tuple[float, float],
-        target_screen_id: Optional[int] = None,
-    ) -> List[dict]:
-        if not bool(self.config["navigation"].get("route_passby_scan_enabled", True)):
-            return []
-        seg_len = distance_xy(start_xy, end_xy)
-        if seg_len < 1e-6:
-            return []
-        min_ahead = float(self.config["navigation"].get("route_passby_min_ahead_cm", 50.0))
-        max_ahead = min(seg_len, float(self.config["navigation"].get("route_passby_max_ahead_cm", 95.0)))
-        if max_ahead < min_ahead:
-            return []
-        sample_step = max(6.0, float(self.config["navigation"].get("route_sample_step_cm", 24.0)))
-        min_score = float(self.config["navigation"].get("route_passby_min_score", 0.22))
-        pans = list(self.config["navigation"].get("route_passby_pan_angles", [130, 70, 100]))
-        include_done = bool(self.config["navigation"].get("route_passby_include_completed_screens", True))
-        yaw = math.degrees(math.atan2(end_xy[1] - start_xy[1], end_xy[0] - start_xy[0]))
-        samples = max(1, int(math.ceil((max_ahead - min_ahead) / sample_step)))
-        raw_stops = []
-        for sample_idx in range(samples + 1):
-            ahead = min_ahead + (max_ahead - min_ahead) * sample_idx / float(samples)
-            t = ahead / seg_len
-            x = start_xy[0] + (end_xy[0] - start_xy[0]) * t
-            y = start_xy[1] + (end_xy[1] - start_xy[1]) * t
-            sample_pose = RobotPose(x, y, yaw, confidence=pose.confidence, source="ROUTE_PASSBY")
-            visible = self.predict_visible_screens(sample_pose, pan_angles=pans, include_done=include_done)
-            predicted = []
-            screen_ids = []
-            pan_angles = []
-            sides = []
-            best_score = 0.0
-            for sid, score, pan in visible:
-                if score < min_score:
-                    continue
-                screen = self.map.screens.get(int(sid))
-                if screen is None or (screen.done() and not include_done):
-                    continue
-                if self.passby_recently_scanned(int(sid), (x, y)):
-                    continue
-                dx = screen.center_xy[0] - x
-                dy = screen.center_xy[1] - y
-                rel = angle_diff_deg(math.degrees(math.atan2(dy, dx)), yaw)
-                side = self.describe_passby_side(rel)
-                screen_ids.append(int(sid))
-                pan_angles.append(float(pan))
-                sides.append(side)
-                best_score = max(best_score, float(score))
-                predicted.append(
-                    {
-                        "screen_id": int(sid),
-                        "score": round(float(score), 3),
-                        "pan": round(float(pan), 1),
-                        "side": side,
-                        "rel_angle": round(float(rel), 1),
-                    }
-                )
-            if screen_ids:
-                if bool(self.config["navigation"].get("route_passby_require_side", True)) and not any(side in ("left", "right") for side in sides):
-                    continue
-                raw_stops.append(
-                    {
-                        "xy": (round(float(x), 2), round(float(y), 2)),
-                        "ahead_cm": round(float(ahead), 1),
-                        "yaw_deg": round(float(yaw), 1),
-                        "score": round(float(best_score), 3),
-                        "screen_ids": sorted(set(screen_ids)),
-                        "pan_angles": self.unique_pan_angles(pan_angles),
-                        "sides": sorted(set(sides)),
-                        "target_screen_id": None if target_screen_id is None else int(target_screen_id),
-                        "predicted": predicted[:10],
-                    }
-                )
-        return self.merge_passby_stops(raw_stops)
-
-    def find_passby_stops_for_path(
-        self,
-        pose: RobotPose,
-        path: List[Tuple[float, float]],
-        target_screen_id: Optional[int] = None,
-    ) -> List[dict]:
-        if not bool(self.config["navigation"].get("route_passby_scan_enabled", True)):
-            return []
-        points = [pose.xy()] + [tuple(item) for item in path]
-        segments = []
-        total_len = 0.0
-        for idx in range(1, len(points)):
-            start = points[idx - 1]
-            end = points[idx]
-            seg_len = distance_xy(start, end)
-            if seg_len < 1e-6:
-                continue
-            segments.append((total_len, total_len + seg_len, start, end, seg_len))
-            total_len += seg_len
-        if not segments:
-            return []
-        min_ahead = float(self.config["navigation"].get("route_passby_min_ahead_cm", 50.0))
-        max_ahead = min(total_len, float(self.config["navigation"].get("route_passby_max_ahead_cm", 95.0)))
-        if max_ahead < min_ahead:
-            return []
-        sample_step = max(6.0, float(self.config["navigation"].get("route_sample_step_cm", 24.0)))
-        min_score = float(self.config["navigation"].get("route_passby_min_score", 0.22))
-        pans = list(self.config["navigation"].get("route_passby_pan_angles", [130, 70, 100]))
-        include_done = bool(self.config["navigation"].get("route_passby_include_completed_screens", True))
-        samples = max(1, int(math.ceil((max_ahead - min_ahead) / sample_step)))
-        raw_stops = []
-        for sample_idx in range(samples + 1):
-            ahead = min_ahead + (max_ahead - min_ahead) * sample_idx / float(samples)
-            seg = segments[-1]
-            for candidate in segments:
-                if ahead <= candidate[1] + 1e-6:
-                    seg = candidate
-                    break
-            seg_start, _, start_xy, end_xy, seg_len = seg
-            t = max(0.0, min(1.0, (ahead - seg_start) / seg_len))
-            x = start_xy[0] + (end_xy[0] - start_xy[0]) * t
-            y = start_xy[1] + (end_xy[1] - start_xy[1]) * t
-            yaw = math.degrees(math.atan2(end_xy[1] - start_xy[1], end_xy[0] - start_xy[0]))
-            sample_pose = RobotPose(x, y, yaw, confidence=pose.confidence, source="ROUTE_PASSBY")
-            visible = self.predict_visible_screens(sample_pose, pan_angles=pans, include_done=include_done)
-            predicted = []
-            screen_ids = []
-            pan_angles = []
-            sides = []
-            best_score = 0.0
-            for sid, score, pan in visible:
-                if score < min_score:
-                    continue
-                screen = self.map.screens.get(int(sid))
-                if screen is None or (screen.done() and not include_done):
-                    continue
-                if self.passby_recently_scanned(int(sid), (x, y)):
-                    continue
-                dx = screen.center_xy[0] - x
-                dy = screen.center_xy[1] - y
-                rel = angle_diff_deg(math.degrees(math.atan2(dy, dx)), yaw)
-                side = self.describe_passby_side(rel)
-                screen_ids.append(int(sid))
-                pan_angles.append(float(pan))
-                sides.append(side)
-                best_score = max(best_score, float(score))
-                predicted.append(
-                    {
-                        "screen_id": int(sid),
-                        "score": round(float(score), 3),
-                        "pan": round(float(pan), 1),
-                        "side": side,
-                        "rel_angle": round(float(rel), 1),
-                    }
-                )
-            if screen_ids:
-                if bool(self.config["navigation"].get("route_passby_require_side", True)) and not any(side in ("left", "right") for side in sides):
-                    continue
-                raw_stops.append(
-                    {
-                        "xy": (round(float(x), 2), round(float(y), 2)),
-                        "ahead_cm": round(float(ahead), 1),
-                        "yaw_deg": round(float(yaw), 1),
-                        "score": round(float(best_score), 3),
-                        "screen_ids": sorted(set(screen_ids)),
-                        "pan_angles": self.unique_pan_angles(pan_angles),
-                        "sides": sorted(set(sides)),
-                        "target_screen_id": None if target_screen_id is None else int(target_screen_id),
-                        "predicted": predicted[:10],
-                    }
-                )
-        return self.merge_passby_stops(raw_stops)
-
-    def current_passby_stop_valid(self, pose: RobotPose, target_screen_id: int) -> bool:
-        stop = self.active_passby_stop
-        if not stop:
-            return False
-        if int(stop.get("target_screen_id", target_screen_id)) != int(target_screen_id):
-            return False
-        stop_xy = tuple(stop["xy"])
-        desired = math.degrees(math.atan2(stop_xy[1] - pose.y_cm, stop_xy[0] - pose.x_cm))
-        if abs(angle_diff_deg(desired, pose.yaw_deg)) > 115.0 and distance_xy(pose.xy(), stop_xy) > 20.0:
-            return False
-        return True
-
-    def plan_next_passby_stop(self, pose: RobotPose, path: List[Tuple[float, float]], target_screen_id: int):
-        if not path:
-            self.last_route_scan_stops = []
-            return None
-        stops = self.find_passby_stops_for_path(pose, path, target_screen_id=target_screen_id)
-        self.last_route_scan_stops = stops[:5]
-        if stops:
-            self.debug.event(
-                "route_passby_candidates",
-                target_screen_id=target_screen_id,
-                stops=stops[:5],
-            )
-            return stops[0]
-        return None
-
-    def execute_passby_scan(self, stop) -> int:
-        pan_angles = self.unique_pan_angles(list(stop.get("pan_angles", [])))
-        if not pan_angles:
-            pan_angles = self.unique_pan_angles(list(self.config["navigation"].get("route_passby_pan_angles", [130, 70, 100])))
-        self.debug.event(
-            "route_passby_scan_start",
-            screen_ids=stop.get("screen_ids", []),
-            sides=stop.get("sides", []),
-            pan_angles=pan_angles,
-            xy=stop.get("xy"),
-            predicted=stop.get("predicted", []),
-        )
-        self.mark_passby_scan_attempt(stop)
-        observed = self.harvest_visible(pan_angles=pan_angles, frames=1, reason="route_passby")
-        self.debug.event(
-            "route_passby_scan_done",
-            observed=observed,
-            screen_ids=stop.get("screen_ids", []),
-        )
-        return observed
-
-    def choose_next_screen(self) -> Optional[Screen]:
+    def choose_nearest_screen(self) -> Optional[Screen]:
         if self.state.pose is None:
             return None
         pose = self.state.pose
-        best = None
-        best_score = float("inf")
-        best_plan = {}
-        for screen in self.map.unfinished_screens():
-            goal = screen.interaction_staging_xy if screen.needs_interaction() else screen.observation_xy
-            path = self.plan_navigation_path(pose, goal)
-            travel = self.path_length_cm(path, fallback_start=pose.xy(), fallback_goal=goal)
-            route_screens = self.predict_route_screen_ids(pose, path, exclude_id=screen.screen_id)
-            desired_yaw = math.degrees(math.atan2(goal[1] - pose.y_cm, goal[0] - pose.x_cm))
-            turn = abs(angle_diff_deg(desired_yaw, pose.yaw_deg))
-            route_bonus = float(self.config["navigation"].get("route_screen_bonus_cm", 55.0)) * len(route_screens)
-            turn_cost = float(self.config["navigation"].get("turn_cost_cm_per_deg", 0.65))
-            score = travel + turn_cost * turn - route_bonus
-            if score < best_score:
-                best = screen
-                best_score = score
-                best_plan = {
-                    "score": round(float(score), 2),
-                    "travel_cm": round(float(travel), 1),
-                    "turn_deg": round(float(turn), 1),
-                    "turn_cost": round(float(turn_cost * turn), 1),
-                    "route_bonus": round(float(route_bonus), 1),
-                    "route_screen_ids": sorted(route_screens),
-                    "path_points": len(path),
-                    "target_mode": "interaction" if screen.needs_interaction() else "observation",
-                    "target_xy": [round(float(goal[0]), 2), round(float(goal[1]), 2)],
-                }
-        self.last_target_plan = best_plan
+        ranked = sorted(
+            self.map.unfinished_screens(),
+            key=lambda screen: (distance_xy(pose.xy(), screen.target_xy), int(screen.screen_id)),
+        )
+        if not ranked:
+            self.last_target_plan = {}
+            return None
+        best = ranked[0]
+        distance = distance_xy(pose.xy(), best.target_xy)
+        self.last_target_plan = {
+            "selection_rule": "euclidean_current_pose_to_target_xy_then_tag_id",
+            "tag_id": best.screen_id,
+            "screen_id": best.screen_id,
+            "distance_cm": round(distance, 2),
+            "target_xy": [round(float(best.target_xy[0]), 2), round(float(best.target_xy[1]), 2)],
+            "remaining_ids": [screen.screen_id for screen in ranked],
+        }
         return best
 
     def body_reaim_to_screen(self, screen: Screen, reason: str = "body_reaim") -> bool:
@@ -1708,7 +1157,6 @@ class TaskManager:
                 }
             )
             self.debug.event("forward_blocked_by_map", **block_detail)
-            self.active_passby_stop = None
             if self.forward_map_block_count < int(self.config["navigation"].get("forward_map_block_recover_limit", 2)):
                 self.localize_scan()
             else:
@@ -1731,8 +1179,7 @@ class TaskManager:
             visual_before = self.capture_visual_progress_frame()
         result = self.motion.move_forward(forward_dist)
         self.set_pending_forward_progress(pose_before_forward, abs(float(result.model_forward_cm)))
-        if self.evaluate_visual_forward_progress(visual_before, abs(float(result.model_forward_cm))):
-            self.active_passby_stop = None
+        self.evaluate_visual_forward_progress(visual_before, abs(float(result.model_forward_cm)))
         if self.collision_recovery_pending:
             reason = str(context.get("reason", "visual_forward_no_progress"))
             self.recover_toward_field_center(reason + ":visual_forward_no_progress", backoff=True)
@@ -1933,7 +1380,7 @@ class TaskManager:
                     "distance_cm": path_dist,
                 }
         for screen in self.map.screens.values():
-            target_xy = screen.observation_xy
+            target_xy = screen.target_xy
             dx = target_xy[0] - pose.x_cm
             dy = target_xy[1] - pose.y_cm
             dist = math.hypot(dx, dy)
@@ -2024,7 +1471,6 @@ class TaskManager:
         if not bool(self.config["navigation"].get("collision_recovery_enabled", True)):
             return False
         pose = self.state.pose
-        self.active_passby_stop = None
         self.pending_progress_check = None
         self.collision_recovery_pending = False
         self.visual_no_progress_count = 0
@@ -2279,7 +1725,6 @@ class TaskManager:
             target_xy = adjusted
         radius = float(arrival_radius_cm if arrival_radius_cm is not None else self.config["navigation"]["arrival_radius_cm"])
         max_steps = int(max_steps if max_steps is not None else self.config["navigation"]["max_steps_per_target"])
-        self.active_passby_stop = None
         for step in range(max_steps):
             if self.time_left_s() <= 0:
                 self.debug.event("navigate_xy_stop", reason=reason, stop_reason="time_limit", target_xy=target_xy, step=step)
@@ -2289,8 +1734,6 @@ class TaskManager:
                     self.recover_from_no_tag_if_needed(reason + ":pose_missing")
                 if self.state.pose is None:
                     return False
-            pose = self.state.pose
-            self.harvest_opportunistic(reason=reason + "_step")
             pose = self.state.pose
             if pose is None:
                 continue
@@ -2375,8 +1818,6 @@ class TaskManager:
 
     def navigate_to_screen(self, screen: Screen) -> bool:
         max_steps = int(self.config["navigation"]["max_steps_per_target"])
-        self.active_passby_stop = None
-        self.last_route_scan_stops = []
         for step in range(max_steps):
             if self.state.pose is None:
                 if not self.localize_scan():
@@ -2384,24 +1825,12 @@ class TaskManager:
                 if self.state.pose is None:
                     return False
             pose = self.state.pose
-            self.harvest_opportunistic(reason="navigate_step")
-            pose = self.state.pose
             if pose is None:
                 continue
             if self.collision_recovery_pending:
                 self.recover_toward_field_center("forward_no_progress", backoff=True)
                 continue
-            if self.active_passby_stop is not None:
-                if not self.current_passby_stop_valid(pose, screen.screen_id):
-                    self.debug.event("route_passby_stop_cleared", reason="invalid_or_behind", stop=self.active_passby_stop)
-                    self.active_passby_stop = None
-                else:
-                    stop_dist = distance_xy(pose.xy(), tuple(self.active_passby_stop["xy"]))
-                    if stop_dist <= float(self.config["navigation"].get("route_passby_arrival_radius_cm", 12.0)):
-                        self.execute_passby_scan(self.active_passby_stop)
-                        self.active_passby_stop = None
-                        continue
-            goal = screen.observation_xy
+            goal = screen.target_xy
             dist = distance_xy(pose.xy(), goal)
             if dist <= float(self.config["navigation"]["arrival_radius_cm"]):
                 # Check facing direction: robot must be roughly facing the screen
@@ -2421,7 +1850,7 @@ class TaskManager:
                     self.turn_toward_yaw_boundary_aware(desired_yaw)
                     continue
                 self.clear_navigation_noop()
-                self.debug.event("arrived_viewpoint", screen_id=screen.screen_id, distance_cm=round(dist, 1), yaw_diff=round(yaw_diff, 1))
+                self.debug.event("arrived_at_target", tag_id=screen.screen_id, screen_id=screen.screen_id, distance_cm=round(dist, 1), yaw_diff=round(yaw_diff, 1))
                 return True
             if self.map.is_dangerously_close_to_wall(pose.xy(), pose.yaw_deg, float(self.config["navigation"]["safe_wall_distance_cm"])):
                 self.debug.event(
@@ -2433,20 +1862,9 @@ class TaskManager:
                 continue
             path = self.plan_navigation_path(pose, goal)
             waypoint = self.select_navigation_waypoint(pose, path, goal)
-            if self.active_passby_stop is None:
-                self.active_passby_stop = self.plan_next_passby_stop(pose, path, screen.screen_id)
-                if self.active_passby_stop is not None:
-                    self.last_passby_plan = dict(self.active_passby_stop)
-                    self.debug.event(
-                        "route_passby_stop_selected",
-                        target_screen_id=screen.screen_id,
-                        stop=self.active_passby_stop,
-                    )
-            if self.active_passby_stop is not None:
-                waypoint = tuple(self.active_passby_stop["xy"])
             desired_yaw = math.degrees(math.atan2(waypoint[1] - pose.y_cm, waypoint[0] - pose.x_cm))
             diff = angle_diff_deg(desired_yaw, pose.yaw_deg)
-            self.debug.render_map(self.map, pose=pose, path=path, target_screen=screen, scan_stops=self.last_route_scan_stops)
+            self.debug.render_map(self.map, pose=pose, path=path, target_screen=screen)
             self.publish_state(screen, path)
             action = self.choose_translation_action(pose, waypoint)
             if action is not None:
@@ -2551,11 +1969,24 @@ class TaskManager:
         return False
 
     def publish_state(self, target_screen: Optional[Screen] = None, path=None):
+        target_screen = target_screen or self.map.screens.get(self.current_target_screen_id)
+        target_distance = None
+        if target_screen is not None and self.state.pose is not None:
+            target_distance = round(distance_xy(self.state.pose.xy(), target_screen.target_xy), 2)
         data = {
             "mode": self.args.mode,
             "target_flower": self.target_flower,
             "time_left_s": round(self.time_left_s(), 1),
             "completed_count": self.map.completed_count(),
+            "processed_count": self.map.processed_count(),
+            "remaining_target_ids": [screen.screen_id for screen in self.map.unfinished_screens()],
+            "mission_state": self.mission_state.value,
+            "current_target_tag_id": self.current_target_screen_id,
+            "current_target_screen_id": self.current_target_screen_id,
+            "current_target_distance_cm": target_distance,
+            "arrived_at_target": self.arrived_at_target,
+            "classifier_allowed": self.classifier_allowed,
+            "transit_bindings": self.transit_bindings,
             "robot": self.state.as_dict(),
             "target_screen": None if target_screen is None else target_screen.as_dict(),
             "last_vote_summary": self.last_vote_summary,
@@ -2568,10 +1999,6 @@ class TaskManager:
                 "last_check": self.last_interaction_check,
             },
             "last_target_plan": self.last_target_plan,
-            "initial_discovery_scan": self.last_initial_discovery_scan,
-            "last_passby_plan": self.last_passby_plan,
-            "active_passby_stop": self.active_passby_stop,
-            "route_scan_stops": self.last_route_scan_stops,
             "localization_health": {
                 "seconds_since_any_tag": round(now_s() - self.last_any_tag_seen_s, 2),
                 "seconds_since_localize": None if self.last_localize_success_s <= 0 else round(now_s() - self.last_localize_success_s, 2),
@@ -2592,7 +2019,7 @@ class TaskManager:
             "screens": {sid: screen.as_dict() for sid, screen in sorted(self.map.screens.items())},
         }
         self.debug.state(data)
-        self.debug.render_map(self.map, pose=self.state.pose, path=path, target_screen=target_screen, scan_stops=self.last_route_scan_stops)
+        self.debug.render_map(self.map, pose=self.state.pose, path=path, target_screen=target_screen)
 
     def close(self):
         try:

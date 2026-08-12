@@ -1,306 +1,32 @@
 <!doctype html>
 <html lang="zh-CN">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>TonyPi 比赛程序：真实决策树与交互安全门</title>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>TonyPi 最近目标任务决策树</title>
   <style>
-    :root{--bg:#0b1020;--card:#151d33;--line:#33436b;--text:#eef3ff;--muted:#aebbd8;--blue:#65b5ff;--green:#68dc9c;--yellow:#ffd166;--red:#ff7b7b;--purple:#c5a3ff}
-    *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:15px/1.65 system-ui,-apple-system,"Segoe UI",sans-serif}
-    main{max-width:1120px;margin:auto;padding:28px 20px 72px}h1{font-size:30px}h2{margin-top:42px;padding-top:12px;border-top:1px solid var(--line)}h3{color:var(--blue)}
-    a{color:var(--blue)}code,pre{font-family:ui-monospace,SFMono-Regular,Consolas,monospace}code{background:#222c49;padding:2px 5px;border-radius:4px}
-    pre{background:#090e1a;border:1px solid var(--line);border-radius:8px;padding:16px;overflow:auto;color:#dce7ff}
-    .card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:18px;margin:14px 0}.warn{border-left:5px solid var(--yellow)}.safe{border-left:5px solid var(--green)}.danger{border-left:5px solid var(--red)}
-    .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px}.tag{display:inline-block;border:1px solid var(--line);border-radius:99px;padding:1px 9px;margin:2px;color:var(--muted)}
-    table{width:100%;border-collapse:collapse;background:var(--card)}th,td{border:1px solid var(--line);padding:8px;text-align:left}th{color:var(--blue)}.muted{color:var(--muted)}
+    :root{--bg:#f7f9fb;--ink:#17212b;--muted:#5a6673;--line:#d8e0e8;--panel:#fff;--blue:#2563eb;--green:#0f8a5f;--orange:#b45309;--red:#b42318;--purple:#6d28d9;--cyan:#087990}
+    *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--ink);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",Arial,sans-serif;line-height:1.62}header{background:#102033;color:#fff;padding:32px 22px 28px;border-bottom:6px solid #2fb477}header .wrap,main{max-width:1180px;margin:auto}main{padding:22px}h1{margin:0 0 10px;font-size:30px}h2{margin:34px 0 12px;font-size:24px;border-bottom:2px solid var(--line);padding-bottom:6px}h3{margin:24px 0 8px}p{margin:8px 0}code{background:#edf1f5;border:1px solid #d9e1e8;border-radius:4px;padding:1px 5px;font-family:Consolas,monospace}.lead{max-width:940px;color:#d9e9f8}.toc,.grid,.dataflow{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin:18px 0 24px}.toc a,.card,.tree,.step,.notice{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:12px 14px;box-shadow:0 1px 2px #0f172a0a}.toc a{color:var(--ink);text-decoration:none;border-left:5px solid var(--blue)}.step{border-top:4px solid var(--cyan);min-height:76px}.notice{border-left:6px solid var(--orange);background:#fffdf8}.tree ul{list-style:none;margin-left:12px;padding-left:18px;border-left:2px solid var(--line)}.tree li{margin:8px 0;position:relative}.tree li:before{content:"";position:absolute;left:-18px;top:13px;width:12px;border-top:2px solid var(--line)}.node{display:inline-block;background:#f8fafc;border:1px solid var(--line);border-radius:6px;padding:5px 8px}.decision{border-left:5px solid var(--blue)}.action{border-left:5px solid var(--green)}.guard{border-left:5px solid var(--orange)}.error{border-left:5px solid var(--red)}.state{border-left:5px solid var(--purple)}table{border-collapse:collapse;width:100%;background:#fff;margin:10px 0}th,td{border:1px solid var(--line);padding:8px;vertical-align:top}th{background:#eef3f8;text-align:left}.formula{background:#102033;color:#eef7ff;border-radius:7px;padding:12px;overflow:auto;font-family:Consolas,monospace}.ok{color:var(--green);font-weight:700}.bad{color:var(--red);font-weight:700}.warn{color:var(--orange);font-weight:700}.small{font-size:13px;color:var(--muted)}.toolbar{position:fixed;right:14px;bottom:14px;display:flex;gap:6px;z-index:5}.toolbar button{border:1px solid var(--line);background:#fff;border-radius:6px;padding:7px 10px;cursor:pointer}@media(max-width:650px){main{padding:14px}.toolbar{display:none}}
   </style>
 </head>
-<body><main>
-  <h1>TonyPi 比赛程序：真实任务决策树</h1>
-  <p class="muted">本文与当前代码同步。核心边界是：远距离视觉只能产生观察；只有通过近距离实体交互安全门，才允许举左手和发送 Worker 请求。</p>
+<body><header><div class="wrap"><h1>TonyPi 最近目标任务决策树</h1><p class="lead">本页对应当前代码：保留原初始定位与底层导航恢复；任务层按最新位姿选择最近目标，途中只做屏幕框与左上 AprilTag 几何绑定，到达当前目标后才允许裁剪和 FPGA 分类。</p><p class="small">状态来源：<code>MissionState</code>；主流程：<code>TaskManager.run_mission()</code>。</p></div></header>
+<main id="page">
+  <nav class="toc"><a href="#overview">1. 总流程</a><a href="#localize">2. 原定位树</a><a href="#select">3. 最近目标</a><a href="#transit">4. 直达与途中视觉</a><a href="#classify">5. 到达后分类</a><a href="#change">6. 实体换花</a><a href="#modes">7. 模式与终止</a><a href="#modules">8. 状态/模块对应</a></nav>
 
-  <nav class="card">
-    <strong>目录</strong>
-    <ol>
-      <li><a href="#overview">总决策树</a></li>
-      <li><a href="#entry">入口与组件</a></li>
-      <li><a href="#map">地图、Screen 与坐标语义</a></li>
-      <li><a href="#localize">AprilTag 定位</a></li>
-      <li><a href="#start">起始发现扫描</a></li>
-      <li><a href="#select">目标选择与导航</a></li>
-      <li><a href="#identify">Phase A：视觉识别与投票</a></li>
-      <li><a href="#interaction">Phase B：近距离实体换花</a></li>
-      <li><a href="#worker">robotall / Worker 事务</a></li>
-      <li><a href="#passby">路过顺手识别</a></li>
-      <li><a href="#debug">状态、调试与配置</a></li>
-    </ol>
-  </nav>
+  <section id="overview"><h2>1. 总体状态机</h2><div class="dataflow"><div class="step"><b>LOCALIZE</b><br>执行原初始定位</div><div class="step"><b>SELECT_NEAREST_TARGET</b><br>动态选最近未处理 Tag</div><div class="step"><b>NAVIGATE_TO_TARGET</b><br>直达 <code>target_xy</code></div><div class="step"><b>ARRIVED_AT_TARGET</b><br>位置和身体 yaw 到达门</div><div class="step"><b>CLASSIFY_TARGET_FLOWER</b><br>只识别锁定目标</div><div class="step"><b>ALREADY / NEEDS_CHANGE</b><br>正确则完成，否则交互</div><div class="step"><b>MARK_TARGET_COMPLETE</b><br>用最新 pose 重新选择</div><div class="step"><b>MISSION_COMPLETE</b><br>没有未处理目标后退出</div></div><div class="notice"><b>不可跨越的边界：</b>看到屏幕 ≠ 到达；Tag 绑定 ≠ 花朵识别；非目标花 ≠ 可立即换花；只有到达门和实体 interaction pose 双重安全体系均通过，才能请求 Worker。</div></section>
 
-  <section id="overview">
-    <h2>总决策树</h2>
-    <pre>START
-  ↓
-初始化配置 / 地图 / 相机 / 动作 / FPGA / Debug
-  ↓
-RobotPose 有效？
-  ├─ 否 → AprilTag 头部扫描
-  │          ├─ 定位成功 → 保存 HIGH pose
-  │          └─ 定位失败 → 搜索转身/后退 → 重试
-  └─ 是
-       ↓
-可选 initial discovery（只观察）
-       ↓
-发现并稳定识别 Screen？
-  ├─ 否 → 选择 UNKNOWN Screen 的 observation pose → 导航/扫描
-  └─ 是
-       ↓
-当前 flower == target flower？
-  ├─ 是 → ALREADY_TARGET → 不举手、不请求
-  └─ 否 → NEEDS_CHANGE
-               ↓
-       Worker 映射存在？
-          ├─ 否 → 阻止交互并记录原因
-          └─ 是
-               ↓
-       导航至 interaction staging pose
-          ├─ 失败 → 记录并保留重试机会
-          └─ 成功
-               ↓
-       FINAL ALIGN：重新定位并检查
-          ├─ distance 不合格 → 前进/后退微调 → 再定位
-          ├─ yaw 不合格 → 身体微转 → 再定位
-          ├─ lateral 不合格 → 左右平移 → 再定位
-          ├─ pose 无效/过期 → 禁止交互
-          └─ 全部合格
-               ↓
-       TaskManager 最终安全门
-          ├─ 失败 → 不举手、不请求
-          └─ 通过
-               ↓
-       Client 举手前安全门
-          ├─ 失败 → 不举手、不请求
-          └─ 通过 → stand → lift_left_hand(stand=False)
-                                ↓
-                       发送前再次安全门
-                          ├─ 失败 → finally stand
-                          └─ 通过 → send_request → 等待 Worker
-                                                    ↓
-                                         result['ok'] == True？
-                                            ├─ 是 → CHANGED
-                                            └─ 否/异常 → NEEDS_CHANGE
-                                                    ↓
-                                              finally stand
-                                                    ↓
-                                           继续下一 Screen / 超时结束</pre>
-    <div class="card warn"><strong>三条不能混淆的“左侧”：</strong>视觉绑定使用屏幕图像左侧 AprilTag；实体交互使用屏幕左侧约 5 cm reader；机器人使用左手读卡。三者当前物理方向一致，但在代码中属于独立判断，不能相互替代。</div>
-  </section>
+  <section id="localize"><h2>2. 初始定位决策树（保持原行为）</h2><div class="tree"><span class="node state">LOCALIZE / <code>initial_localize()</code></span><ul><li>无 pose 时按原顺序扫描头部 pan：<code>[100,135,65,155,45]</code>；靠边过滤朝场外视角。</li><li>每个角度拍照并检测 AprilTag；ID、边缘距离和面积通过原质量门后，以 <code>solvePnP</code> 求位姿。</li><li>按头部 pan 修正身体 yaw，扣除相机前置偏移，并执行原场地范围判断。</li><li><span class="node decision">得到 pose？</span><ul><li><span class="ok">是：</span>写入 HIGH pose，清零失败计数，保持原进展检查；同帧只更新屏幕/左上 Tag 几何绑定，<b>不裁花、不分类</b>。</li><li>看到 Tag 但无 pose：增加定位失败计数。</li><li>完全无 Tag：增加 no-tag 计数。</li></ul></li><li>失败后仍按原 <code>startup_search_actions</code> 搜索；转身后的 <code>scan_after_turn()</code> 仍可定位和更新几何绑定，但不分类。</li></ul></div><p class="small">未修改 <code>localizer.py</code>；扫描顺序、头部动作、PnP、置信度、恢复条件、坐标系及 yaw 定义保持不变。</p></section>
 
-  <section id="entry">
-    <h2>1. 入口与组件</h2>
-    <pre>main.py
-  └─ load_config()
-  └─ TaskManager
-      ├─ MapModel / Screen
-      ├─ AprilTagDetector + Localizer
-      ├─ ScreenDetector + ClassifierClient
-      ├─ MotionController + TonyPiHardware
-      ├─ RobotInteractionClient (robotall)
-      └─ DebugReporter</pre>
-    <p><code>run_mission()</code> 不再运行四个预设 waypoint。旧 <code>run_scripted_route()</code>、<code>mission.scripted_route</code> 及其专用状态和配置已经删除。</p>
-  </section>
+  <section id="select"><h2>3. 最近未处理 Tag 选择</h2><div class="formula">distance = hypot(robot.x - screen.target_xy.x,
+                 robot.y - screen.target_xy.y)
+stable_key = (distance, screen_id /* binding Tag ID */)</div><div class="tree"><span class="node state">SELECT_NEAREST_TARGET / <code>choose_nearest_screen()</code></span><ul><li>候选来自 <code>MapModel.unfinished_screens()</code>；地图排除 ID、<code>CHANGED</code>、<code>ALREADY_TARGET</code>、<code>FAILED</code> 不再入选。</li><li>按当前世界 pose 到每个 <code>target_xy</code> 的二维欧氏直线距离升序。该点默认在屏幕正前方 34cm，是直达并拍摄的目标，不是旧的远距离观察停靠点。</li><li>同距离按 <code>screen_id</code>（屏幕绑定 Tag ID）升序，结果稳定可复现。</li><li>锁定 <code>current_target_screen_id</code> 后，途中看到其他屏幕不能抢占。</li><li>当前目标处理后清锁，并从机器人最新 pose 重新计算，绝不预生成固定访问序列。</li></ul></div><p><code>screen_id</code> 来自屏幕左上绑定 Tag；<code>worker_id</code> 只通过显式 <code>interaction.worker_mapping</code> 解析，绝不假设与 screen/tag 相等。</p></section>
 
-  <section id="map">
-    <h2>2. 地图、Screen 与坐标语义</h2>
-    <p>场地坐标以 cm 为单位。每个 Screen 明确区分观察位姿和实体交互位姿：</p>
-    <pre>Screen
-├─ center_xy                  屏幕中心
-├─ normal_xy / normal_yaw    屏幕平面指向可见正面的单位法向
-├─ observation_xy            约 48 cm 的视觉观察点
-├─ screen_left_tangent_xy     站在正面看屏幕时的屏幕左方向
-├─ reader_xy                 屏幕中心左侧约 5 cm
-├─ interaction_xy            机器人身体中心的交互目标
-├─ interaction_yaw_deg       身体正面朝向屏幕
-├─ interaction_staging_xy    A* 导航使用的近屏幕预备点
-└─ worker_id                 显式 screen → Worker 映射</pre>
-    <div class="card safe"><strong>法向已按现有代码语义确认：</strong> <code>normal</code> 从屏幕平面指向可见正面，因此机器人正对屏幕的身体 yaw 是 <code>normal_yaw + 180°</code>，而不是 <code>normal_yaw</code>。</div>
-    <h3>交互几何</h3>
-    <pre>n = normalize(normal_xy)                         # 屏幕 → 正面
-left = (n.y, -n.x)                              # 观察者看到的屏幕左侧
-reader = center + left * sensor_left_offset_cm
-body_lateral = sensor_left_offset_cm - left_hand_body_offset_cm
-interaction = center + n * interaction_distance_cm
-                     + left * body_lateral
-interaction_yaw = atan2(n.y, n.x) + 180°</pre>
-    <p><code>left_hand_body_offset_cm</code> 是左手相对身体中心沿身体左侧的真实偏移；仓库没有可靠机械尺寸，默认 0，仅作为待现场标定入口，不代表精确测量值。</p>
-  </section>
+  <section id="transit"><h2>4. 直接导航与途中视觉边界</h2><div class="grid"><div class="card"><h3>NAVIGATE_TO_TARGET</h3><p>导航主体继续使用现有 action-level A* / A*、waypoint、前进/平移/转向动作、重定位、边界/障碍/无进展恢复。任务目标始终是当前屏幕 <code>target_xy</code>。</p><p>已删除 pass-by stop、opportunistic harvest、周期完整扫描、起点发现扫描和观察识别中途点。</p></div><div class="card"><h3>geometry-only</h3><p><code>observe_transit_bindings()</code> 调用 <code>ScreenDetector.detect(..., extract_crops=False)</code>：检测屏幕四边形，在屏幕中心左侧寻找距离左上角最近的 1～36 Tag，更新 quad/可见性/绑定时间。</p><p class="bad">该接口无法生成 28×28 crop，也没有分类器、投票、花朵状态或 Worker 调用。</p></div></div><div class="tree"><span class="node decision">当前位置进入 target 到达半径且身体朝向屏幕？</span><ul><li>否：继续底层导航；需要时按原策略重定位/恢复。</li><li><span class="ok">是：</span>记录 <code>arrived_at_target</code>，进入 <code>ARRIVED_AT_TARGET</code>；此前 <code>classifier_allowed=false</code>。</li></ul></div></section>
 
-  <section id="localize">
-    <h2>3. AprilTag 定位</h2>
-    <p><code>localize_scan()</code> 依次转动头部，检测 AprilTag，并由 <code>Localizer</code> 更新 <code>RobotPose</code>。定位成功时仍可通过 <code>harvest_during_localize()</code> 顺便识别屏幕，但该函数只调用 <code>observe_frame()</code> 更新观察，无法触发 Worker 事务。</p>
-    <div class="card danger">RobotPose 缺失、置信度不足或超过 <code>interaction_pose_max_age_s</code> 时，交互安全门必定拒绝。</div>
-    <pre>每个扫描角度
-→ 控制头部舵机
-→ 等待稳定并丢弃旧帧
-→ AprilTag detect
-→ 质量门：面积 / 画面边缘 / ID
-→ solvePnP
-→ 场地范围检查
-→ 更新 RobotPose</pre>
-  </section>
+  <section id="classify"><h2>5. 到达当前目标后才分类</h2><div class="tree"><span class="node state">ARRIVED_AT_TARGET → CAPTURE_TARGET_SCREEN</span><ul><li><span class="node guard"><code>classifier_gate_open(screen)</code></span> 同时要求：已到达、screen 是锁定目标、MissionState 属于到达/捕获/分类状态。</li><li>在目标地点重新拍照和定位，调用 crop-enabled 屏幕检测。</li><li>画面中的候选必须满足 <code>candidate.screen_id == current_target_screen_id</code>；其他屏幕只被忽略，绝不写入当前目标。</li><li><span class="node state">CLASSIFY_TARGET_FLOWER</span> 仅此函数调用 <code>ClassifierClient.classify_crop()</code>，保留置信度、投票和重拍结构。</li><li>没有当前目标绑定、HTTP/结果失败、低置信或票数不足：有限拍摄结束后失败，不编造类别、不进入换花。</li><li><span class="node decision">稳定结果 == target_flower？</span><ul><li><span class="ok">是：</span><code>ALREADY_TARGET</code>，不举手、不请求 Worker，作为已处理完成。</li><li><span class="warn">否：</span><code>NEEDS_CHANGE</code>，才进入实体接近。</li></ul></li></ul></div></section>
 
-  <section id="start">
-    <h2>4. 起始发现扫描</h2>
-    <p>保留了与四点巡航独立、对初始发现仍有价值的一次扫描，并重命名为 <code>run_initial_discovery_scan()</code>。它执行原地身体转向、头部扫描和可选重定位，只收集观察结果。</p>
-    <pre>initial_localize
-→ initial_discovery_scan（可配置关闭）
-→ 自动选择未完成 Screen</pre>
-  </section>
+  <section id="change"><h2>6. 最终对准与实体换花</h2><div class="dataflow"><div class="step"><b>NEEDS_CHANGE</b><br>已有可靠 from_flower</div><div class="step"><b>interaction staging</b><br>导航到安全接近点</div><div class="step"><b>ALIGN_FOR_INTERACTION</b><br>反复定位和微调</div><div class="step"><b>TaskManager gate</b><br>pose/15cm/yaw/lateral/worker</div><div class="step"><b>stand + lift</b><br><code>stand=False</code></div><div class="step"><b>第二次 gate</b><br>举手后再次检查</div><div class="step"><b>send_request</b><br>等待 Worker 响应</div><div class="step"><b>finally stand</b><br>成功/失败/异常都收手</div></div><table><tr><th>门控项</th><th>不满足时</th></tr><tr><td>有效且新鲜的 RobotPose、显式 worker mapping</td><td>拒绝交互</td></tr><tr><td>约 15cm 法向距离、身体 yaw、屏幕左侧 reader 横向误差</td><td>继续微调或失败退出</td></tr><tr><td>花朵仍与已绑定 from_flower 一致</td><td>拒绝请求</td></tr><tr><td>Worker <code>result['ok'] == True</code></td><td>仅此条件标记 <code>CHANGED</code>；失败保持 NEEDS_CHANGE</td></tr></table></section>
 
-  <section id="select">
-    <h2>5. 目标选择与导航</h2>
-    <p><code>choose_next_screen()</code> 根据 Screen 状态选择不同目标：</p>
-    <table><tr><th>状态</th><th>导航目标</th><th>目的</th></tr>
-      <tr><td>UNKNOWN / FAILED</td><td><code>observation_xy</code></td><td>观察、分类与投票</td></tr>
-      <tr><td>NEEDS_CHANGE</td><td><code>interaction_staging_xy</code></td><td>进入最终实体对准</td></tr>
-      <tr><td>ALREADY_TARGET / CHANGED</td><td>不再作为普通目标</td><td>已完成或无需换花</td></tr>
-    </table>
-    <p>长距离部分继续复用 action-level A*、普通 A*、碰撞/无进展检测、动态障碍和边界恢复。15 cm 交互点没有冒充原观察点；A* 先到 staging point，再由小动作完成贴近对准。</p>
-  </section>
+  <section id="modes"><h2>7. 模式、安全选项和结束</h2><table><tr><th>入口</th><th>当前语义</th></tr><tr><td><code>--mode mission</code></td><td>完整最近目标循环；无未处理目标时 <code>MISSION_COMPLETE</code>。</td></tr><tr><td><code>--mode localize</code></td><td>只执行原初始定位并退出；几何绑定不会分类。</td></tr><tr><td><code>--mode harvest</code></td><td>定位后选择最近目标、导航并通过到达门后只分类该目标；不执行实体换花。</td></tr><tr><td><code>--dry-run</code></td><td>不连接相机、动作组、FPGA 或 Worker。</td></tr><tr><td><code>--skip-change</code> / <code>--skip-api</code></td><td>真实定位/视觉/分类/导航与对准，但模拟举手和 Worker 事务。</td></tr></table></section>
 
-  <section id="identify">
-    <h2>6. Phase A：视觉识别与投票</h2>
-    <pre>发现 Screen / AprilTag 绑定（花朵屏幕左上附近的 1～36 号 Tag）
-→ FPGA classify
-→ 置信度检查 / 多帧 vote
-→ store_flower_observation()
-   ├─ flower == target → ALREADY_TARGET（不举手、不请求）
-   └─ flower != target → NEEDS_CHANGE（仅排入实体交互）</pre>
-    <p><code>observe_frame()</code>、<code>finalize_harvest_votes()</code>、<code>harvest_visible()</code>、<code>harvest_opportunistic()</code>、<code>scan_after_turn()</code> 和 <code>harvest_during_localize()</code> 都只负责观察。</p>
-    <div class="card warn"><strong>远距离识别成功 ≠ 换花授权。</strong> 分类结果只说明 Screen 当前大概率显示什么花。</div>
-    <pre>屏幕候选四边形
-→ 顺序固定为 TL / TR / BR / BL
-→ 寻找左上角附近 Tag
-→ Tag ID 在 1～36？
-→ Tag center 位于屏幕 center 左侧？
-→ 距离小于 max(tag_bind_max_px, diagonal × ratio)？
-→ 选择距离 TL 最近的 Tag
-→ map.screens 中存在该 ID？
-→ 绑定为 screen_id</pre>
-  </section>
-
-  <section id="interaction">
-    <h2>7. Phase B：近距离实体换花</h2>
-    <pre>NEEDS_CHANGE
-↓
-navigate_to_interaction_pose() → staging XY + target yaw
-↓
-align_for_screen_interaction()
-  ├─ 重新 AprilTag 定位
-  ├─ yaw 不合格 → 微转
-  ├─ lateral 不合格 → 左右平移
-  ├─ distance 不合格 → 小步前进/后退
-  └─ 再定位、再检查（最多 N 步）
-↓
-TaskManager 最终 safety gate
-↓
-RobotInteractionClient 底层 safety gate
-↓
-实体事务</pre>
-    <p><code>evaluate_interaction_pose()</code> 集中检查以下全部条件：</p>
-    <div class="grid">
-      <div class="card"><span class="tag">pose</span> 存在、够新、置信度满足配置</div>
-      <div class="card"><span class="tag">flower</span> 已可靠识别且不是目标花</div>
-      <div class="card"><span class="tag">distance</span> 平面法向距离约 15 cm</div>
-      <div class="card"><span class="tag">yaw</span> 身体朝向屏幕，误差在容差内</div>
-      <div class="card"><span class="tag">lateral</span> 左手对应左侧读卡区</div>
-      <div class="card"><span class="tag">mapping</span> screen_id 有显式 worker_id</div>
-    </div>
-    <p>任何条件失败都不会举手或发送请求。上层对准完成后检查一次；底层交互函数在举手前检查，并在发送前再次检查，防止状态机错误绕过。</p>
-  </section>
-
-  <section id="worker">
-    <h2>8. robotall / Worker 原子事务</h2>
-    <p>旧 HTTP <code>ApiClient</code> 已淘汰。正式流程严格采用提供的 notebook 调用方式：</p>
-    <pre>act('stand')
-try:
-    act('lift_left_hand', stand=False)
-    wait 0.5 s
-    safety_gate()                 # 举手后的第二次检查
-    send_request(
-        team, secret, robot_id, worker_id,
-        from_flower, to_flower,
-        clear_first=True,
-        read_response=True,
-        wait_response=True,
-        scan_timeout_s=配置值,
-        verbose_wait=True,
-    )
-finally:
-    act('stand')</pre>
-    <p>只有 <code>result['ok']</code> 为真才标记 <code>CHANGED</code>。<code>ok=False</code>、超时或异常均恢复为 <code>NEEDS_CHANGE</code>，保留后续重试；<code>finally</code> 始终收手站立。事务期间硬件层禁止普通导航动作。</p>
-    <div class="card danger"><strong>worker_id 不默认等于 screen_id。</strong> 当前资料只有 notebook 的 Worker 12 样例，不能证明通用一一映射，因此必须在 <code>interaction.worker_mapping</code> 中显式配置；缺映射时安全拒绝。</div>
-  </section>
-
-  <section id="passby">
-    <h2>9. 路过顺手识别</h2>
-    <pre>路过 / opportunistic / passby
-→ 发现屏幕
-→ classify / vote
-→ 更新 Screen 花朵缓存
-→ 最多标记 NEEDS_CHANGE
-→ 不举手、不 send_request</pre>
-    <p>本轮只完成必要的安全重构，保留现有路过扫描策略；其完整最优调度策略留待后续优化。它不具有实体换花能力。</p>
-  </section>
-
-  <section id="debug">
-    <h2>10. 状态、调试与配置</h2>
-    <p>Dashboard 和 JSON 状态现在显示 <code>interaction_xy</code>、目标 yaw、distance/yaw/lateral error、ready、当前 phase、left hand、worker request/response，以及交互审计日志路径。地图图区分 observation point、interaction point 和 reader point。</p>
-    <p>集中配置项：</p>
-    <pre>interaction_distance_cm: 15
-interaction_distance_tolerance_cm: 4
-interaction_yaw_tolerance_deg: 10
-sensor_left_offset_cm: 5
-interaction_lateral_tolerance_cm: 4
-left_hand_body_offset_cm: 0        # 必须现场标定
-interaction_staging_distance_cm: 34
-interaction_pose_max_age_s: 3
-interaction_pose_min_confidence: HIGH
-interaction_relocalize_before_action: true
-interaction_relocalize_each_step: true
-interaction_max_alignment_steps: 20
-flower_change_scan_timeout_s: 0
-worker_mapping: {}</pre>
-    <p>使用者执行、测试、打开 8090 和故障处理步骤集中记录在 <code>README.md</code>；全部文件职责记录在 <code>FILES.md</code>。本页面只描述程序内部决策，不作为命令手册。</p>
-  </section>
-
-  <section>
-    <h2>完整新状态机</h2>
-    <pre>LOCALIZE
-↓
-INITIAL DISCOVERY（可选、只观察）
-↓
-DISCOVER / IDENTIFY / VOTE
-↓
-SELECT SCREEN
-├─ 已是目标花 → ALREADY_TARGET
-└─ 非目标花 → NEEDS_CHANGE
-                 ↓
-          NAVIGATE TO INTERACTION STAGING
-                 ↓
-             FINAL ALIGN
-                 ↓
-          TASK SAFETY GATE
-                 ↓
-         CLIENT SAFETY GATE
-                 ↓
-       STAND → LIFT LEFT HAND
-                 ↓
-       SECOND CLIENT SAFETY GATE
-                 ↓
-        SEND / WAIT WORKER RESPONSE
-                 ↓
-            FINALLY STAND
-                 ↓
-       CHANGED / NEEDS_CHANGE RETRY</pre>
-  </section>
-</main></body></html>
+  <section id="modules"><h2>8. 代码与状态对应</h2><table><tr><th>代码</th><th>职责</th></tr><tr><td><code>TaskManager.run_mission</code></td><td>状态转移、目标锁定、完成后动态重选。</td></tr><tr><td><code>choose_nearest_screen</code></td><td>欧氏距离 + ID 稳定平局。</td></tr><tr><td><code>navigate_to_screen</code></td><td>直达当前 target；无任务级途中识别点。</td></tr><tr><td><code>observe_transit_bindings</code></td><td>途中 geometry-only 屏幕框/左上 Tag 绑定。</td></tr><tr><td><code>classify_arrived_target</code></td><td>唯一 TaskManager 分类入口，只接受当前锁定目标。</td></tr><tr><td><code>interaction_logic.py</code></td><td>花朵状态与集中 pose gate。</td></tr><tr><td><code>RobotInteractionClient</code></td><td>举手、第二安全门、Worker 请求和 finally stand。</td></tr><tr><td><code>DebugReporter</code></td><td>显示状态、最近目标、距离、到达/分类门、途中绑定和交互。</td></tr></table></section>
+</main><div class="toolbar"><button onclick="zoom(-.1)">−</button><button onclick="zoom(0)">100%</button><button onclick="zoom(.1)">＋</button><button onclick="scrollTo({top:0,behavior:'smooth'})">顶部</button></div><script>let z=1;function zoom(d){z=d===0?1:Math.max(.7,Math.min(1.5,z+d));document.getElementById('page').style.zoom=z}</script></body></html>

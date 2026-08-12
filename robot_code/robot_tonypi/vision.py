@@ -46,7 +46,20 @@ class ScreenDetector:
         self.cfg = config
         self.map = map_model
 
-    def detect(self, frame, tags: Iterable[TagDetection], pose: Optional[RobotPose] = None):
+    def detect(
+        self,
+        frame,
+        tags: Iterable[TagDetection],
+        pose: Optional[RobotPose] = None,
+        *,
+        extract_crops: bool = True,
+    ):
+        """Detect screen geometry and bind its left-upper Tag.
+
+        ``extract_crops=False`` is the navigation/localization boundary: it
+        returns geometry-only candidates and never creates classifier input.
+        Flower crops are produced only by the arrived-target path.
+        """
         tags = list(tags)
         candidates = []
         for quad, area, aspect in self._detect_quads(frame):
@@ -63,7 +76,7 @@ class ScreenDetector:
             if self._center_white_ratio(frame, quad) > float(self.cfg["vision"].get("max_tagged_center_white_ratio", 0.96)):
                 continue
             map_score = self._map_score(int(tag.tag_id), pose)
-            crop = warp_to_28x28(frame, quad)
+            crop = warp_to_28x28(frame, quad) if extract_crops else None
             candidates.append(
                 ScreenCandidate(
                     screen_id=int(tag.tag_id),

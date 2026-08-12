@@ -33,7 +33,7 @@ def make_screen(worker_id=12):
         center_xy=(0.0, 0.0),
         normal_xy=(1.0, 0.0),
         normal_yaw_deg=0.0,
-        observation_xy=(48.0, 0.0),
+        target_xy=(48.0, 0.0),
         interaction_xy=(15.0, -5.0),
         interaction_yaw_deg=180.0,
         reader_xy=(0.0, -5.0),
@@ -193,23 +193,23 @@ class InteractionFlowTests(unittest.TestCase):
         self.assertIn("timeout", result.error)
         self.assertEqual(actions[-1], ("act", "stand", {}))
 
-    def test_case_7_passby_has_no_interaction_call_path(self):
+    def test_removed_passby_has_no_call_path(self):
         source = (Path(__file__).resolve().parents[1] / "task_manager.py").read_text(encoding="utf-8")
         tree = ast.parse(source)
-        fn = next(node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef) and node.name == "execute_passby_scan")
-        calls = {getattr(node.func, "attr", "") for node in ast.walk(fn) if isinstance(node, ast.Call)}
-        self.assertNotIn("change_flower", calls)
-        self.assertNotIn("send_request", calls)
-        self.assertIn("harvest_visible", calls)
+        functions = {node.name for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)}
+        self.assertNotIn("execute_passby_scan", functions)
+        self.assertNotIn("harvest_opportunistic", functions)
+        self.assertNotIn("harvest_visible", functions)
 
-    def test_case_8_localize_scan_has_no_interaction_call_path(self):
+    def test_localize_geometry_path_has_no_classifier_or_interaction(self):
         source = (Path(__file__).resolve().parents[1] / "task_manager.py").read_text(encoding="utf-8")
         tree = ast.parse(source)
-        fn = next(node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef) and node.name == "harvest_during_localize")
+        fn = next(node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef) and node.name == "observe_transit_bindings")
         calls = {getattr(node.func, "attr", "") for node in ast.walk(fn) if isinstance(node, ast.Call)}
+        self.assertNotIn("classify_crop", calls)
         self.assertNotIn("change_flower", calls)
         self.assertNotIn("send_request", calls)
-        self.assertIn("observe_frame", calls)
+        self.assertIn("detect", calls)
 
     def test_safety_gate_is_rechecked_and_blocks_before_send(self):
         actions = []

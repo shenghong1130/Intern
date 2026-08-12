@@ -11,7 +11,7 @@ main.py
    ├─ hardware.py：相机、舵机和动作组硬件接口
    ├─ motion.py：动作选择、次数计算、推算位姿
    ├─ localizer.py + load_pos.py：AprilTag 世界定位
-   ├─ vision.py：屏幕检测、左侧 Tag 绑定和裁剪
+   ├─ vision.py：途中几何检测/左上 Tag 绑定，以及到达后的目标裁剪
    ├─ classifier.py：调用 FPGA 花朵分类服务
    ├─ map_model.py：Screen 几何、障碍地图和 A*
    ├─ interaction_logic.py：纯交互几何和安全判断
@@ -82,9 +82,10 @@ python3 -m robot_tonypi.main ...
 所有模块共享的数据模型：
 
 - `Confidence`：定位置信度；
-- `ScreenStatus`：`UNKNOWN`、`NEEDS_CHANGE`、`INTERACTING`、`CHANGED` 等状态；
+- `MissionState`：定位、最近目标选择、直达、到达门、当前目标分类、交互和完成等任务状态；
+- `ScreenStatus`：`UNKNOWN`、`NEEDS_CHANGE`、`INTERACTING`、`CHANGED` 等目标处理状态；
 - `RobotPose`：机器人世界坐标、yaw、来源和时间；
-- `Screen`：屏幕中心、normal、观察点、交互点、reader 点和 worker_id；
+- `Screen`：屏幕中心、normal、任务目标点、交互点、reader 点和 worker_id；
 - `TagDetection`：AprilTag 检测结果；
 - `ScreenCandidate`：视觉屏幕候选；
 - `ClassificationResult`：FPGA 分类结果；
@@ -103,11 +104,11 @@ python3 -m robot_tonypi.main ...
 中央调度器，也是项目最大的业务文件。主要职责：
 
 1. 创建地图、相机、AprilTag、视觉、FPGA、动作、交互和 Debug 组件；
-2. 初始定位和可选起始发现扫描；
-3. 扫描屏幕、分类并投票；
-4. 将非目标花标记为 `NEEDS_CHANGE`，但不在识别路径直接换花；
-5. 根据 Screen 状态选择 observation 或 interaction 导航目标；
-6. 执行 A* 导航、passby 观察、障碍和边界恢复；
+2. 执行原初始定位，然后从最新 pose 动态选择最近未处理目标；
+3. 锁定目标并直达 `target_xy`，途中只更新屏幕框与左上 Tag 几何绑定；
+4. 到达门通过后，只裁剪和分类当前锁定目标，并执行投票；
+5. 将非目标花标记为 `NEEDS_CHANGE`，将目标花标记为 `ALREADY_TARGET`；
+6. 执行 A* 导航、障碍和边界恢复，不插入 passby/观察识别停靠；
 7. 在交互前反复定位并修正距离、身体 yaw 和横向误差；
 8. 通过最终安全门后调用 `RobotInteractionClient`；
 9. 发布 Dashboard 状态并写交互审计日志；
@@ -154,7 +155,7 @@ python3 -m robot_tonypi.main ...
 3. 排除 AprilTag 落在屏幕四边形内部的错误候选；
 4. 将候选与其左上附近、且位于屏幕图像中心左侧的 1～36 号 AprilTag 绑定；
 5. 使用 tag_id 作为 screen_id，并保留地图有效性检查；
-6. 透视变换为 28×28 分类图；
+6. 只有到达当前锁定目标时才透视变换为 28×28 分类图；途中调用使用 `extract_crops=False`；
 7. 绘制候选框和 Tag 标注。
 
 屏幕左侧 Tag 绑定与实体换花的左侧读卡区是两个独立概念。
@@ -174,7 +175,7 @@ FPGA 分类服务客户端。它把 28×28 屏幕裁剪编码为 JPEG，通过 H
 构造 300×300 cm 场地模型并负责路径规划：
 
 - 根据 Tag 世界坐标生成 Screen；
-- 计算屏幕 normal、observation point、interaction point、reader point 和 interaction yaw；
+- 计算屏幕 normal、任务 target point、interaction point、reader point 和 interaction yaw；
 - 建立建筑物障碍、软膨胀 cost 和动态机器人障碍；
 - 提供网格 A*、路径平滑和直线可通行检查；
 - 提供考虑机器人转向/横移宏动作的 action-level A*；
@@ -243,7 +244,7 @@ turn_right_small_step_s85.d6a
 - 输出结构化事件；
 - 保存相机标注图和屏幕裁剪；
 - 保存 `latest_state.json`；
-- 绘制机器人、路线、observation、interaction 和 reader 的场地图；
+- 绘制机器人、路线、task target、interaction 和 reader 的场地图；
 - 启动内置 HTTP Server，默认端口 8090；
 - 在网页显示 pose、投票、Screen 状态、安全门误差和 Worker 响应。
 
@@ -255,12 +256,14 @@ Debug 目录默认在 `/home/pi/TonyPi/debug_runs/<timestamp>/`。
 
 使用 Python `unittest` 测试：
 
-- 远距离识别不能换花；
+- 到达门前不能识别或换花；
 - 距离、yaw、lateral 不满足时安全门拒绝；
 - 正确事务顺序和 notebook 参数；
 - `ok=False` 和异常不能标记成功；
 - `finally` 必须 stand；
-- passby 和 localize_scan 没有换花旁路；
+- 途中几何绑定不调用分类器或换花；
+- 最近目标动态选择、平局规则和完成后重选；
+- 分类器只有到达当前锁定目标后才能调用；
 - from_flower 在发送前发生变化时拒绝请求。
 
 ### `tests/test_vision_tag_binding.py`

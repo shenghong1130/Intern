@@ -50,7 +50,7 @@ class MapModel:
         self.screens: Dict[int, Screen] = {}
         self._build_screens()
         self._build_obstacles()
-        self._fix_observation_points()
+        self._fix_target_points()
         # Save static map layers so dynamic obstacles can be cleared
         self._static_grid = self.grid.copy()
         self._static_cost = self.cost.copy()
@@ -72,7 +72,7 @@ class MapModel:
             group_id: np.mean(np.vstack(points), axis=0)
             for group_id, points in centers_by_group.items()
         }
-        observe = float(self.cfg["map"]["observe_distance_cm"])
+        target_distance = float(self.cfg["map"]["target_arrival_distance_cm"])
         interaction_cfg = self.cfg["interaction"]
         worker_mapping = interaction_cfg.get("worker_mapping", {})
         margin = float(self.cfg["map"].get("approach_margin_cm", max(5.0, float(self.cfg["navigation"]["safe_wall_distance_cm"]) + 10.0)))
@@ -85,11 +85,11 @@ class MapModel:
                 normal = self._plane_normal_xy(self.tag_poses[str(tag_id)])
                 norm = np.linalg.norm(normal)
             normal = normal / max(norm, 1e-6)
-            observation = center + normal * observe
-            observation = np.array(
+            target = center + normal * target_distance
+            target = np.array(
                 [
-                    clamp(float(observation[0]), margin, self.width_cm - margin),
-                    clamp(float(observation[1]), margin, self.height_cm - margin),
+                    clamp(float(target[0]), margin, self.width_cm - margin),
+                    clamp(float(target[1]), margin, self.height_cm - margin),
                 ],
                 dtype=np.float64,
             )
@@ -107,7 +107,7 @@ class MapModel:
                 center_xy=(float(center[0]), float(center[1])),
                 normal_xy=geometry["normal_xy"],
                 normal_yaw_deg=geometry["normal_yaw_deg"],
-                observation_xy=(float(observation[0]), float(observation[1])),
+                target_xy=(float(target[0]), float(target[1])),
                 interaction_xy=geometry["interaction_xy"],
                 interaction_yaw_deg=geometry["interaction_yaw_deg"],
                 reader_xy=geometry["reader_xy"],
@@ -182,14 +182,14 @@ class MapModel:
         power = max(0.1, float(map_cfg.get("obstacle_cost_power", 2.0)))
         return max_cost * max(0.0, ratio) ** power
 
-    def _fix_observation_points(self) -> None:
+    def _fix_target_points(self) -> None:
         for screen in self.screens.values():
-            if self.is_traversable_xy(screen.observation_xy):
+            if self.is_traversable_xy(screen.target_xy):
                 continue
-            # Observation navigation may move to a nearby free cell, but never
+            # Target navigation may move to a nearby free cell, but never
             # flip the physical screen normal: interaction yaw/reader geometry
             # must continue to describe the screen's actual visible front.
-            screen.observation_xy = self.nearest_traversable_xy(screen.observation_xy)
+            screen.target_xy = self.nearest_traversable_xy(screen.target_xy)
 
     def clear_dynamic_obstacles(self) -> None:
         """Remove all dynamic obstacles, restoring the static map layers."""
@@ -576,3 +576,6 @@ class MapModel:
 
     def completed_count(self) -> int:
         return sum(1 for screen in self.screens.values() if screen.successful())
+
+    def processed_count(self) -> int:
+        return sum(1 for screen in self.screens.values() if screen.done())
