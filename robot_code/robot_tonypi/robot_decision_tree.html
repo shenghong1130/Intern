@@ -22,6 +22,7 @@
   <nav class="card">
     <strong>目录</strong>
     <ol>
+      <li><a href="#overview">总决策树</a></li>
       <li><a href="#entry">入口与组件</a></li>
       <li><a href="#map">地图、Screen 与坐标语义</a></li>
       <li><a href="#localize">AprilTag 定位</a></li>
@@ -34,6 +35,65 @@
       <li><a href="#debug">状态、调试与配置</a></li>
     </ol>
   </nav>
+
+  <section id="overview">
+    <h2>总决策树</h2>
+    <pre>START
+  ↓
+初始化配置 / 地图 / 相机 / 动作 / FPGA / Debug
+  ↓
+RobotPose 有效？
+  ├─ 否 → AprilTag 头部扫描
+  │          ├─ 定位成功 → 保存 HIGH pose
+  │          └─ 定位失败 → 搜索转身/后退 → 重试
+  └─ 是
+       ↓
+可选 initial discovery（只观察）
+       ↓
+发现并稳定识别 Screen？
+  ├─ 否 → 选择 UNKNOWN Screen 的 observation pose → 导航/扫描
+  └─ 是
+       ↓
+当前 flower == target flower？
+  ├─ 是 → ALREADY_TARGET → 不举手、不请求
+  └─ 否 → NEEDS_CHANGE
+               ↓
+       Worker 映射存在？
+          ├─ 否 → 阻止交互并记录原因
+          └─ 是
+               ↓
+       导航至 interaction staging pose
+          ├─ 失败 → 记录并保留重试机会
+          └─ 成功
+               ↓
+       FINAL ALIGN：重新定位并检查
+          ├─ distance 不合格 → 前进/后退微调 → 再定位
+          ├─ yaw 不合格 → 身体微转 → 再定位
+          ├─ lateral 不合格 → 左右平移 → 再定位
+          ├─ pose 无效/过期 → 禁止交互
+          └─ 全部合格
+               ↓
+       TaskManager 最终安全门
+          ├─ 失败 → 不举手、不请求
+          └─ 通过
+               ↓
+       Client 举手前安全门
+          ├─ 失败 → 不举手、不请求
+          └─ 通过 → stand → lift_left_hand(stand=False)
+                                ↓
+                       发送前再次安全门
+                          ├─ 失败 → finally stand
+                          └─ 通过 → send_request → 等待 Worker
+                                                    ↓
+                                         result['ok'] == True？
+                                            ├─ 是 → CHANGED
+                                            └─ 否/异常 → NEEDS_CHANGE
+                                                    ↓
+                                              finally stand
+                                                    ↓
+                                           继续下一 Screen / 超时结束</pre>
+    <div class="card warn"><strong>三条不能混淆的“左侧”：</strong>视觉绑定使用屏幕图像左侧 AprilTag；实体交互使用屏幕左侧约 5 cm reader；机器人使用左手读卡。三者当前物理方向一致，但在代码中属于独立判断，不能相互替代。</div>
+  </section>
 
   <section id="entry">
     <h2>1. 入口与组件</h2>
@@ -78,6 +138,14 @@ interaction_yaw = atan2(n.y, n.x) + 180°</pre>
     <h2>3. AprilTag 定位</h2>
     <p><code>localize_scan()</code> 依次转动头部，检测 AprilTag，并由 <code>Localizer</code> 更新 <code>RobotPose</code>。定位成功时仍可通过 <code>harvest_during_localize()</code> 顺便识别屏幕，但该函数只调用 <code>observe_frame()</code> 更新观察，无法触发 Worker 事务。</p>
     <div class="card danger">RobotPose 缺失、置信度不足或超过 <code>interaction_pose_max_age_s</code> 时，交互安全门必定拒绝。</div>
+    <pre>每个扫描角度
+→ 控制头部舵机
+→ 等待稳定并丢弃旧帧
+→ AprilTag detect
+→ 质量门：面积 / 画面边缘 / ID
+→ solvePnP
+→ 场地范围检查
+→ 更新 RobotPose</pre>
   </section>
 
   <section id="start">
@@ -109,6 +177,15 @@ interaction_yaw = atan2(n.y, n.x) + 180°</pre>
    └─ flower != target → NEEDS_CHANGE（仅排入实体交互）</pre>
     <p><code>observe_frame()</code>、<code>finalize_harvest_votes()</code>、<code>harvest_visible()</code>、<code>harvest_opportunistic()</code>、<code>scan_after_turn()</code> 和 <code>harvest_during_localize()</code> 都只负责观察。</p>
     <div class="card warn"><strong>远距离识别成功 ≠ 换花授权。</strong> 分类结果只说明 Screen 当前大概率显示什么花。</div>
+    <pre>屏幕候选四边形
+→ 顺序固定为 TL / TR / BR / BL
+→ 寻找左上角附近 Tag
+→ Tag ID 在 1～36？
+→ Tag center 位于屏幕 center 左侧？
+→ 距离小于 max(tag_bind_max_px, diagonal × ratio)？
+→ 选择距离 TL 最近的 Tag
+→ map.screens 中存在该 ID？
+→ 绑定为 screen_id</pre>
   </section>
 
   <section id="interaction">
@@ -193,6 +270,7 @@ interaction_relocalize_each_step: true
 interaction_max_alignment_steps: 20
 flower_change_scan_timeout_s: 0
 worker_mapping: {}</pre>
+    <p>使用者执行、测试、打开 8090 和故障处理步骤集中记录在 <code>README.md</code>；全部文件职责记录在 <code>FILES.md</code>。本页面只描述程序内部决策，不作为命令手册。</p>
   </section>
 
   <section>
