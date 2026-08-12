@@ -170,7 +170,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
                     {"group": "back_end", "times": 1, "with_stand": False}
                 ],
                 "times": 2,
-                "forward_cm": -2.0,
+                "forward_cm": -2.5,
                 "settle_s": 0.35
             },
             "turn_left_large": {
@@ -178,7 +178,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
                     {"group": "turn_left_small_step_s80", "times": 4, "repeat": True, "with_stand": False}
                 ],
                 "times": 1,
-                "yaw_deg": 30.0,
+                "yaw_deg": 15.0,
                 "settle_s": 0.12
             },
             "turn_right_large": {
@@ -186,15 +186,15 @@ DEFAULT_CONFIG: Dict[str, Any] = {
                     {"group": "turn_right_small_step_s80", "times": 4, "repeat": True, "with_stand": False}
                 ],
                 "times": 1,
-                "yaw_deg": -45.0,
+                "yaw_deg": -18.0,
                 "settle_s": 0.12
             },
             "turn_left_fast": {"group": "turn_left_small_step_s80", "times": 1, "with_stand": False, "yaw_deg": 7.5, "settle_s": 0.12},
-            "turn_right_fast": {"group": "turn_right_small_step_s80", "times": 1, "with_stand": False, "yaw_deg": -11.25, "settle_s": 0.12},
+            "turn_right_fast": {"group": "turn_right_small_step_s80", "times": 1, "with_stand": False, "yaw_deg": -7.5, "settle_s": 0.12},
             "turn_left_micro": {"group": "turn_left_small_step_s80", "times": 1, "with_stand": False, "yaw_deg": 7.5, "settle_s": 0.10},
             "turn_right_micro": {"group": "turn_right_small_step_s80", "times": 1, "with_stand": False, "yaw_deg": -11.25, "settle_s": 0.10},
             "strafe_left_fast": {"group": "left_move_fast", "times": 1, "with_stand": False, "lateral_cm": 4.0, "settle_s": 0.35},
-            "strafe_right_fast": {"group": "right_move_fast", "times": 1, "with_stand": False, "lateral_cm": -4.0, "settle_s": 0.35}
+            "strafe_right_fast": {"group": "right_move_fast", "times": 1, "with_stand": False, "lateral_cm": -3.0, "settle_s": 0.35}
         },
     },
     "interaction": {
