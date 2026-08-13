@@ -68,7 +68,7 @@ target_yaw = atan2(-ny, -nx)</div>
       <li>锁定后，途中看到其他屏幕或 Tag 只更新几何信息，不能抢占目标。</li>
       <li>每处理完一个目标，清锁并用最新定位重新计算，不生成固定路线。</li>
     </ul></div>
-    <p>Dashboard 记录 screen/tag ID、面方向、外法向、15 cm 基础点、补偿后身体点、目标 yaw、当前距离和完整排序结果。Worker 仍由显式映射解析，绝不假设 <code>screen_id == worker_id</code>。</p>
+    <p>Dashboard 记录 screen/tag ID、面方向、外法向、15 cm 基础点、补偿后身体点、目标 yaw、当前距离和完整排序结果。比赛编号一致：AprilTag ID、<code>screen_id</code> 与 NFC <code>worker_id</code> 使用同一编号。</p>
   </section>
 
   <section id="navigate"><h2>5. 常规接近与最终闭环对准</h2>

@@ -235,8 +235,7 @@
     "interaction_relocalize_each_step": true,
     "interaction_max_alignment_steps": 20,
     "flower_change_scan_timeout_s": 0.0,
-    "left_hand_settle_s": 0.5,
-    "worker_mapping": {}
+    "left_hand_settle_s": 0.5
   },
   "mission": {
     "max_target_attempts": 2

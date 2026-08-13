@@ -13,8 +13,6 @@ import json
 import sys
 import time
 from pathlib import Path
-from typing import Optional
-
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
     from robot_tonypi.classifier import ClassifierClient
@@ -65,11 +63,9 @@ def parse_args(argv=None):
     return parser.parse_args(argv)
 
 
-def worker_id_for_screen(config: dict, screen_id: int) -> Optional[int]:
-    """Resolve the explicit mapping without assuming screen_id == worker_id."""
-    mapping = config["interaction"].get("worker_mapping", {})
-    value = mapping.get(str(screen_id), mapping.get(screen_id))
-    return None if value is None else int(value)
+def worker_id_for_screen(screen_id: int) -> int:
+    """Competition numbering is identical: Tag ID == screen ID == Worker ID."""
+    return int(screen_id)
 
 
 def manual_operator_gate(confirmed: bool) -> InteractionPoseCheck:
@@ -120,14 +116,14 @@ def main(argv=None) -> int:
     args = parse_args(argv)
     validate_args(args)
     config = load_config(args.config)
-    worker_id = worker_id_for_screen(config, args.screen_id)
+    worker_id = worker_id_for_screen(args.screen_id)
     real_change_enabled = bool(args.execute and not args.skip_change and not args.dry_run)
 
     print("=== Capture / FPGA / Flower Change Integration Test ===")
     print("screen_id={}".format(args.screen_id))
     print("target_flower={}".format(args.target_flower))
     print("classifier_url={}".format(args.classifier_url))
-    print("worker_id={}".format(worker_id if worker_id is not None else "MISSING"))
+    print("worker_id={}".format(worker_id))
     print("real_change_enabled={}".format(real_change_enabled))
     print(
         "SAFETY: this script performs no localization/navigation/alignment. "
@@ -201,7 +197,7 @@ def main(argv=None) -> int:
         min_confidence = float(config["vision"]["min_confidence"])
         print("\n=== Recognition Result ===")
         print("screen_id={}".format(args.screen_id))
-        print("worker_id={}".format(worker_id if worker_id is not None else "MISSING"))
+        print("worker_id={}".format(worker_id))
         print("from_flower={}".format(from_flower))
         print("to_flower={}".format(args.target_flower))
         print("confidence={:.4f} (minimum={:.4f})".format(confidence, min_confidence))
@@ -214,10 +210,6 @@ def main(argv=None) -> int:
         if from_flower == args.target_flower:
             print("DONE: screen already shows the target flower; no hand or Worker action")
             return 0
-        if worker_id is None:
-            print("STOP: explicit screen_id -> worker_id mapping is missing; no hand or Worker action")
-            return 6
-
         if not real_change_enabled:
             print("SIMULATION: recognition completed; --execute was not supplied, so no real hand/NFC action is allowed")
 

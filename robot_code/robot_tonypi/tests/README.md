@@ -153,7 +153,7 @@ python3 -u -m robot_tonypi.tests.test_capture_fpga_change \
 
 - 机器人已由操作者放在正确目标点并正对屏幕；
 - FPGA 服务可访问；
-- `competition_config.json` 已配置真实的 `screen_id → worker_id` 映射；
+- 已确认视觉绑定到正确的 `screen_id`；程序会把相同编号直接作为 `worker_id`；
 - Team、Robot ID 和 Secret 正确；
 - 操作者理解这里使用的是人工确认门，不是真实 AprilTag 定位安全门。
 

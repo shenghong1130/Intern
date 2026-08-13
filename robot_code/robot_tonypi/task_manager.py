@@ -858,9 +858,9 @@ class TaskManager:
             }
         return vote_summary["screens"][key]
 
-    def worker_id_for_screen(self, screen: Screen) -> Optional[int]:
-        """Resolve the explicit screen-to-Worker mapping; never assume identity."""
-        return screen.worker_id
+    def worker_id_for_screen(self, screen: Screen) -> int:
+        """Competition numbering is identical: Tag ID == screen ID == Worker ID."""
+        return int(screen.screen_id)
 
     def interaction_pose_check(
         self,
@@ -981,10 +981,6 @@ class TaskManager:
         worker_id = self.worker_id_for_screen(screen)
         if not screen.last_classification or screen.last_classification == self.target_flower:
             self.debug.event("interaction_skipped", screen_id=screen.screen_id, reason="flower_not_changeable")
-            return False
-        if worker_id is None:
-            screen.notes.append("worker_mapping_missing")
-            self.debug.event("interaction_skipped", screen_id=screen.screen_id, reason="worker_mapping_missing")
             return False
         # Classification already required the same 15 cm geometry.  If a
         # fresh capture or arm preparation invalidated it, only realign here;

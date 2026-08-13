@@ -104,22 +104,15 @@ cp /home/pi/robot_tonypi/action_groups/*.d6a /home/pi/TonyPi/ActionGroups/
 /home/pi/robot_tonypi/config/competition_config.json
 ```
 
-### 4.1 配置 screen → worker 映射
+### 4.1 确认 screen → worker 编号
 
-视觉看到的是 `screen_id`，实体请求使用的是 `worker_id`。程序不会假设二者相同。
+比赛编号规则已经确认：视觉绑定的 AprilTag ID、`screen_id` 和 NFC `worker_id` 完全相同。
 
-在配置文件中填写真实映射：
-
-```json
-"interaction": {
-  "worker_mapping": {
-    "2": 12,
-    "3": 13
-  }
-}
+```text
+Tag 25 → screen_id 25 → worker_id 25
 ```
 
-左边是 `screen_id`，右边是 `worker_id`。以上数字只是格式示例，不代表比赛真实映射。映射缺失时，程序会拒绝实体换花。
+程序直接使用 `worker_id = screen_id`，不需要在配置文件中填写手动映射。
 
 ### 4.2 检查现场标定参数
 
@@ -235,7 +228,7 @@ python3 -u -m robot_tonypi.main \
 - 相机画面和 AprilTag 定位稳定；
 - FPGA 分类服务可访问；
 - 导航动作组都能执行；
-- `worker_mapping` 已按比赛真实编号配置；
+- 已确认视觉绑定到正确的 `screen_id`；程序会使用相同编号作为 `worker_id`；
 - team、robot-id 和 secret 与机器人注册信息一致；
 - 15 cm、身体 yaw、横向读卡位置和左手偏移已现场验证；
 - 场地周围安全，操作员可以随时停止机器人。
@@ -329,10 +322,6 @@ Ctrl+C
 ### 无法打开 8090
 
 确认程序仍在运行、启动时带了 `--debug-host 0.0.0.0`，并使用机器人当前 IP 访问。
-
-### `worker_mapping_missing`
-
-说明视觉 screen_id 没有配置对应 worker_id。补充真实映射后再进行实体交互。
 
 ## 8. 参数速查
 

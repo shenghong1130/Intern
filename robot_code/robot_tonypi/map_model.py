@@ -74,7 +74,6 @@ class MapModel:
         }
         target_distance = float(self.cfg["map"]["target_arrival_distance_cm"])
         interaction_cfg = self.cfg["interaction"]
-        worker_mapping = interaction_cfg.get("worker_mapping", {})
         margin = float(self.cfg["map"].get("approach_margin_cm", max(5.0, float(self.cfg["navigation"]["safe_wall_distance_cm"]) + 10.0)))
 
         for tag_id, center in centers_by_id.items():
@@ -100,7 +99,6 @@ class MapModel:
                 (float(normal[0]), float(normal[1])),
                 interaction_cfg,
             )
-            worker_id = worker_mapping.get(str(tag_id), worker_mapping.get(tag_id))
             self.screens[tag_id] = Screen(
                 screen_id=tag_id,
                 tag_corners_3d=self.tag_poses[str(tag_id)],
@@ -113,7 +111,7 @@ class MapModel:
                 reader_xy=geometry["reader_xy"],
                 screen_left_tangent_xy=geometry["screen_left_tangent_xy"],
                 interaction_staging_xy=geometry["interaction_staging_xy"],
-                worker_id=None if worker_id is None else int(worker_id),
+                worker_id=int(tag_id),
             )
 
     def _plane_normal_xy(self, corners: np.ndarray) -> np.ndarray:

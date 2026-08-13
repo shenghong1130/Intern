@@ -215,9 +215,6 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "interaction_max_alignment_steps": 20,
         "flower_change_scan_timeout_s": 0.0,
         "left_hand_settle_s": 0.5,
-        # screen_id -> worker_id. Empty by default because this repository does
-        # not prove that visual screen IDs and Worker IDs are identical.
-        "worker_mapping": {},
     },
     "mission": {
         "time_limit_s": 570.0,

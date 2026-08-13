@@ -14,7 +14,7 @@ NEEDS_CHANGE → recheck/near-target realignment when needed
 → second pose gate → robotall.send_request → finally stand
 ```
 
-Do not restore the deleted HTTP `ApiClient` or the deleted four-waypoint scripted route. `screen_id` must map explicitly to `worker_id` in `interaction.worker_mapping`; do not assume equality.
+Do not restore the deleted HTTP `ApiClient` or the deleted four-waypoint scripted route. Competition numbering is identical: AprilTag ID == `screen_id` == NFC `worker_id`; use `worker_id = screen_id` and do not restore manual mapping configuration.
 
 ## Run
 
@@ -28,7 +28,7 @@ python3 -u -m robot_tonypi.main \
   --skip-change --debug --debug-host 0.0.0.0 --debug-port 8090
 ```
 
-Remove `--skip-change` only after explicit Worker mapping and physical calibration are confirmed. `--dry-run` means no hardware. `--skip-api` is only a deprecated alias for `--skip-change`.
+Remove `--skip-change` only after screen binding and physical calibration are confirmed. `--dry-run` means no hardware. `--skip-api` is only a deprecated alias for `--skip-change`.
 
 ## Tests
 
@@ -61,7 +61,7 @@ Mission target selection is recomputed after every processed screen using Euclid
 
 The task layer derives each Tag face from its four immutable world corners: fixed X means west/east and fixed Y means south/north. The outward `normal_xy` must be exactly one of `(-1,0)`, `(1,0)`, `(0,-1)`, `(0,1)`; final yaw must be `0°`, `-180°`, `+90°`, or `-90°`. Viewer-left is `(normal.y, -normal.x)`.
 
-The pre-classification arrival geometry gate checks only pose confidence/freshness, 15 cm normal distance, cardinal body yaw, and tangent alignment. The full interaction gate reuses those checks and additionally requires a non-target flower, stable `from_flower`, and explicit Worker mapping.
+The pre-classification arrival geometry gate checks only pose confidence/freshness, 15 cm normal distance, cardinal body yaw, and tangent alignment. The full interaction gate reuses those checks and additionally requires a non-target flower and stable `from_flower`; Worker ID is the already-bound screen ID.
 
 ## Conventions
 

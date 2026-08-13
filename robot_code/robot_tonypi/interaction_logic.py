@@ -228,7 +228,7 @@ def evaluate_interaction_pose(
     elif expected_from_flower is not None and screen.last_classification != expected_from_flower:
         reasons.append("flower_changed_since_alignment")
     if worker_id is None:
-        reasons.append("worker_mapping_missing")
+        reasons.append("worker_id_missing")
 
     return InteractionPoseCheck(
         ready=geometry.pose_valid and not reasons,

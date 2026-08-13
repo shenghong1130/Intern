@@ -71,7 +71,7 @@ class RobotInteractionClient:
         safety_gate: Callable[[], InteractionPoseCheck],
     ) -> WorkerChangeResult:
         if worker_id is None:
-            return WorkerChangeResult(success=False, error="worker_mapping_missing")
+            return WorkerChangeResult(success=False, error="worker_id_missing")
         if not from_flower or not to_flower or from_flower == to_flower:
             return WorkerChangeResult(success=False, worker_id=worker_id, error="invalid_flower_transition")
 

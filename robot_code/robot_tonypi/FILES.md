@@ -36,7 +36,7 @@ main.py
 
 ### `CLAUDE.md`
 
-面向代码维护工具的仓库约束。它强调识别与实体换花必须分离、禁止恢复旧 HTTP ApiClient、禁止假设 `screen_id == worker_id`，并记录开发约定。
+面向代码维护工具的仓库约束。它强调识别与实体换花必须分离、禁止恢复旧 HTTP ApiClient，并记录 `AprilTag ID == screen_id == worker_id` 等开发约定。
 
 ### `__init__.py`
 

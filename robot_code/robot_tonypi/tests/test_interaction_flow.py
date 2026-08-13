@@ -162,7 +162,7 @@ class InteractionFlowTests(unittest.TestCase):
         )
         self.assertTrue(check.ready)
         self.assertNotIn("flower_unknown", check.reasons)
-        self.assertNotIn("worker_mapping_missing", check.reasons)
+        self.assertNotIn("worker_id_missing", check.reasons)
 
     def test_arrival_geometry_uses_face_center_instead_of_tag_center(self):
         screen = make_screen()

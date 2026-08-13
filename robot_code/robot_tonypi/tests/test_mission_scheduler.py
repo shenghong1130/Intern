@@ -13,6 +13,8 @@ from robot_tonypi.config import load_config
 from robot_tonypi.main import parse_args
 from robot_tonypi.interaction_logic import store_flower_observation
 from robot_tonypi.load_pos import load_tag_pos
+from robot_tonypi.map_model import MapModel
+from robot_tonypi.tests.test_capture_fpga_change import worker_id_for_screen as capture_worker_id_for_screen
 
 
 def screen(screen_id, xy):
@@ -51,6 +53,19 @@ def manager_at(x, y, screens):
 
 
 class MissionSchedulerTests(unittest.TestCase):
+    def test_screen_and_worker_ids_are_identical_without_manual_mapping(self):
+        config = load_config(None)
+        self.assertNotIn("worker_mapping", config["interaction"])
+        model = MapModel(load_tag_pos(), config)
+        for item in model.screens.values():
+            self.assertEqual(item.worker_id, item.screen_id)
+
+        target = screen(25, (10.0, 0.0))
+        target.worker_id = None  # A stale object cannot override the competition rule.
+        manager = TaskManager.__new__(TaskManager)
+        self.assertEqual(manager.worker_id_for_screen(target), 25)
+        self.assertEqual(capture_worker_id_for_screen(25), 25)
+
     def test_map_and_tag_reference_coordinates_are_unchanged(self):
         config = load_config(None)
         tags = load_tag_pos()
