@@ -7,7 +7,7 @@ import unittest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from robot_tonypi.models import Confidence, MissionState, RobotPose, Screen, ScreenStatus
-from robot_tonypi.task_manager import TaskManager
+from robot_tonypi.task_manager import TaskManager, evaluate_turn_progress
 from robot_tonypi.config import load_config
 from robot_tonypi.main import parse_args
 from robot_tonypi.interaction_logic import store_flower_observation
@@ -47,6 +47,129 @@ def manager_at(x, y, screens):
 
 
 class MissionSchedulerTests(unittest.TestCase):
+    def test_turn_progress_accepts_clear_yaw_change(self):
+        result = evaluate_turn_progress(
+            RobotPose(10, 10, 0, Confidence.HIGH, "BEFORE", 1),
+            RobotPose(10, 10, 8, Confidence.HIGH, "AFTER", 2),
+            expected_delta=7.5,
+            target_yaw=30,
+        )
+        self.assertFalse(result["turn_no_progress"])
+        self.assertFalse(result["direction_conflict"])
+        self.assertFalse(result["reject_visual_pose"])
+
+    def test_turn_progress_uses_wrapped_yaw_delta(self):
+        result = evaluate_turn_progress(
+            RobotPose(10, 10, 179, Confidence.HIGH, "BEFORE", 1),
+            RobotPose(10, 10, -173, Confidence.HIGH, "AFTER", 2),
+            expected_delta=7.5,
+            target_yaw=-160,
+        )
+        self.assertAlmostEqual(result["actual_delta"], 8.0)
+        self.assertFalse(result["reject_visual_pose"])
+
+    def test_stale_visual_turn_pose_is_rejected(self):
+        result = evaluate_turn_progress(
+            RobotPose(10, 10, 20, Confidence.HIGH, "BEFORE", 1),
+            RobotPose(10.2, 10.1, 20.4, Confidence.HIGH, "AFTER", 2),
+            expected_delta=15,
+            target_yaw=80,
+        )
+        self.assertTrue(result["suspect_stale_pose"])
+        self.assertTrue(result["turn_no_progress"])
+        self.assertTrue(result["reject_visual_pose"])
+
+    def test_scan_after_turn_stale_pose_keeps_dead_reckoning(self):
+        manager = TaskManager.__new__(TaskManager)
+        before = RobotPose(10, 10, 0, Confidence.HIGH, "BEFORE", 1)
+        dead_reckoning = RobotPose(10, 10, 15, Confidence.HIGH, "DEAD_RECKONING", 2)
+        stale_visual = RobotPose(10.1, 10.1, 0.2, Confidence.HIGH, "VISION", 3)
+        manager.args = SimpleNamespace(dry_run=False)
+        manager.config = {
+            "vision": {"scan_after_turn_enabled": True, "scan_after_turn_min_interval_s": 0},
+            "camera": {"head_center_angle": 100},
+        }
+        manager.start_time = 0
+        manager.time_left_s = lambda: 100
+        manager.last_scan_after_turn_s = 0
+        manager.capture_with_tags = lambda center: (SimpleNamespace(), [])
+        manager.localizer = SimpleNamespace(
+            estimate_from_frame=lambda *args, **kwargs: (stale_visual, SimpleNamespace())
+        )
+        manager.state = SimpleNamespace(pose=dead_reckoning, set_pose=lambda pose: setattr(manager.state, "pose", pose))
+        manager.debug = SimpleNamespace(
+            event=lambda *args, **kwargs: None,
+            save_image=lambda *args, **kwargs: None,
+        )
+        manager.observe_transit_bindings = lambda frame, tags, annotated, center, reason: annotated
+        manager.transit_bindings = {}
+        manager.publish_state = lambda *args, **kwargs: None
+        manager.last_localize_success_s = 0
+        manager.consecutive_localize_failures = 0
+        manager.consecutive_no_tag_scans = 0
+        manager.evaluate_pending_progress = lambda pose: None
+        result = manager.scan_after_turn(
+            "test",
+            "turn_left_large",
+            SimpleNamespace(model_yaw_deg=15.0),
+            before_pose=before,
+            target_yaw=60.0,
+        )
+        self.assertTrue(result["suspect_stale_pose"])
+        self.assertFalse(result["accepted"])
+        self.assertEqual(manager.state.pose.yaw_deg, 15.0)
+        self.assertEqual(manager.state.pose.source, "DEAD_RECKONING")
+        self.assertEqual(manager.state.pose.confidence, Confidence.LOW)
+
+    def test_wrong_direction_turn_is_rejected(self):
+        result = evaluate_turn_progress(
+            RobotPose(10, 10, 20, Confidence.HIGH, "BEFORE", 1),
+            RobotPose(10, 10, 12, Confidence.HIGH, "AFTER", 2),
+            expected_delta=7.5,
+            target_yaw=80,
+        )
+        self.assertTrue(result["direction_conflict"])
+        self.assertTrue(result["reject_visual_pose"])
+
+    def test_successful_turn_clears_counter(self):
+        manager = TaskManager.__new__(TaskManager)
+        manager.turn_no_progress_count = 2
+        manager.turn_progress_failure_start_diff = 40.0
+        manager.debug = SimpleNamespace(event=lambda *args, **kwargs: None)
+        manager.clear_turn_progress_watchdog("test")
+        self.assertEqual(manager.turn_no_progress_count, 0)
+        self.assertIsNone(manager.turn_progress_failure_start_diff)
+
+    def test_two_failed_turns_abort_navigation(self):
+        manager = TaskManager.__new__(TaskManager)
+        manager.turn_no_progress_count = 1
+        manager.turn_progress_failure_start_diff = 60.0
+        manager.turn_navigation_abort = False
+        manager.debug = SimpleNamespace(event=lambda *args, **kwargs: None)
+        manager.state = SimpleNamespace(pose=RobotPose(0, 0, 1, Confidence.HIGH, "RELOCALIZED", 3))
+        manager.scan_after_turn = lambda *args, **kwargs: {
+            "accepted": False,
+            "turn_no_progress": True,
+            "direction_conflict": False,
+            "before_yaw": 0.0,
+            "after_yaw": 0.2,
+            "expected_delta": 15.0,
+            "actual_delta": 0.2,
+            "diff_before": 60.0,
+            "target_improvement_deg": 0.2,
+        }
+        manager.localize_scan = lambda reset_turn_watchdog=True: True
+        action_result = SimpleNamespace(key="turn_left_large", model_yaw_deg=15.0)
+        ok = manager.monitor_turn_result(
+            RobotPose(0, 0, 0, Confidence.HIGH, "BEFORE", 1),
+            60.0,
+            action_result,
+            "test",
+        )
+        self.assertFalse(ok)
+        self.assertTrue(manager.turn_navigation_abort)
+        self.assertEqual(manager.turn_no_progress_count, 2)
+
     def test_nearest_target_uses_current_pose_to_target_xy(self):
         manager = manager_at(0.0, 0.0, [screen(3, (30.0, 0.0)), screen(2, (10.0, 0.0))])
         self.assertEqual(manager.choose_nearest_screen().screen_id, 2)
