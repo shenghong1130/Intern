@@ -53,7 +53,8 @@ RobotInteractionClient → robotall.act + robotall.send_request
 Task arrival and the map-safe approach point are deliberately distinct:
 
 - `target_xy`: legacy/map-safe ~34 cm approach point used only as an internal A* waypoint. It cannot set `ARRIVED_AT_TARGET` or open classification.
-- `tag_front_xy`: Tag center plus 15 cm along the quantized outward normal, before hand/body lateral compensation.
+- `face_center_xy`: center of the Tag's complete rectangular building face, derived from the building bounds; the Tag only selects the face.
+- `tag_front_xy`: face center plus 15 cm along the quantized outward normal, before hand/body lateral compensation.
 - `task_target_xy` / `interaction_xy`: the unique 15 cm body target after the existing reader/left-hand tangent compensation.
 
 Mission target selection is recomputed after every processed screen using Euclidean distance from the latest pose to `task_target_xy`, with `screen_id` (the bound Tag ID) as the stable tie-breaker. Do not restore pass-by/opportunistic classification, discovery scans, task-level observation stops, or fixed routes.

@@ -43,20 +43,20 @@
       <li>Tag 四角 Y 基本相同：这是南/北侧面；比较 Tag 中心 Y 与建筑物中心 Y。</li>
       <li>外法向严格量化为 <code>(-1,0)</code>、<code>(+1,0)</code>、<code>(0,-1)</code>、<code>(0,+1)</code>，不使用斜向中心差。</li>
     </ul></div>
-    <table><tr><th>Tag 面</th><th>外法向 n</th><th>Tag 正前方基础点</th><th>身体目标 yaw</th></tr>
+    <table><tr><th>Tag 面</th><th>外法向 n</th><th>所在面中心正前方基础点</th><th>身体目标 yaw</th></tr>
       <tr><td>WEST / 西侧</td><td>(-1, 0)</td><td>(cx − 15, cy)</td><td>0°</td></tr>
       <tr><td>EAST / 东侧</td><td>(+1, 0)</td><td>(cx + 15, cy)</td><td>-180°（等价 180°）</td></tr>
       <tr><td>SOUTH / 南侧</td><td>(0, -1)</td><td>(cx, cy − 15)</td><td>+90°</td></tr>
       <tr><td>NORTH / 北侧</td><td>(0, +1)</td><td>(cx, cy + 15)</td><td>-90°</td></tr>
     </table>
-    <div class="formula">C = Tag center
+    <div class="formula">C = center of the complete rectangular face selected by the Tag
 n = quantized outward normal
 tag_front_xy = C + 15cm × n
 screen_left_tangent = (ny, -nx)
 body_lateral = sensor_left_offset_cm - left_hand_body_offset_cm
 task_target_xy = tag_front_xy + body_lateral × screen_left_tangent
 target_yaw = atan2(-ny, -nx)</div>
-    <p><code>tag_front_xy</code> 是纯粹的 Tag 正前方 15 cm 基础点；<code>task_target_xy</code> 是叠加既有左手/读卡器切向补偿后的机器人身体点。补偿只改变切向位置，不改变 15 cm 法向距离和四向 yaw。</p>
+    <p>Tag 只用于判断西/东/南/北面。<code>tag_front_xy</code> 是整个四方形对应面中心正前方 15 cm 的基础点；<code>task_target_xy</code> 是叠加既有左手/读卡器切向补偿后的机器人身体点。补偿只改变切向位置，不改变 15 cm 法向距离和四向 yaw。</p>
   </section>
 
   <section id="select"><h2>4. 最近未处理目标选择</h2>

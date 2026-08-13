@@ -10,10 +10,12 @@ from robot_tonypi.interaction_client import RobotInteractionClient
 from robot_tonypi.interaction_logic import (
     apply_worker_change_result,
     build_interaction_geometry,
+    building_bounds_from_tags,
     building_centers_from_tags,
     cardinal_surface_from_tag,
     evaluate_arrival_geometry,
     evaluate_interaction_pose,
+    face_center_from_bounds,
     store_flower_observation,
 )
 from robot_tonypi.models import (
@@ -126,21 +128,24 @@ class InteractionFlowTests(unittest.TestCase):
     def test_four_tag_planes_quantize_to_cardinal_faces_and_15cm_targets(self):
         tag_poses = load_tag_pos()
         centers = building_centers_from_tags(tag_poses)
+        bounds = building_bounds_from_tags(tag_poses)
         expected = {
-            1: ("WEST", (-1.0, 0.0), (181.0, 27.5), (181.0, 32.5), 0.0),
-            2: ("SOUTH", (0.0, -1.0), (198.5, -10.0), (193.5, -10.0), 90.0),
-            3: ("EAST", (1.0, 0.0), (236.0, 7.5), (236.0, 2.5), -180.0),
-            4: ("NORTH", (0.0, 1.0), (218.5, 45.0), (223.5, 45.0), -90.0),
+            1: ("WEST", (-1.0, 0.0), (196.0, 17.5), (181.0, 17.5), (181.0, 22.5), 0.0),
+            2: ("SOUTH", (0.0, -1.0), (208.5, 5.0), (208.5, -10.0), (203.5, -10.0), 90.0),
+            3: ("EAST", (1.0, 0.0), (221.0, 17.5), (236.0, 17.5), (236.0, 12.5), -180.0),
+            4: ("NORTH", (0.0, 1.0), (208.5, 30.0), (208.5, 45.0), (213.5, 45.0), -90.0),
         }
         cfg = load_config(None)["interaction"]
-        for tag_id, (face, normal, tag_front, body_target, yaw) in expected.items():
+        for tag_id, (face, normal, face_center, tag_front, body_target, yaw) in expected.items():
             surface = cardinal_surface_from_tag(tag_poses[str(tag_id)], centers[0])
-            geometry = build_interaction_geometry(surface["center_xy"], surface["normal_xy"], cfg)
+            actual_face_center = face_center_from_bounds(bounds[0], surface["face"])
+            geometry = build_interaction_geometry(actual_face_center, surface["normal_xy"], cfg)
             self.assertEqual(surface["face"], face)
             self.assertEqual(surface["normal_xy"], normal)
+            self.assertEqual(actual_face_center, face_center)
             base_target = (
-                surface["center_xy"][0] + normal[0] * cfg["interaction_distance_cm"],
-                surface["center_xy"][1] + normal[1] * cfg["interaction_distance_cm"],
+                actual_face_center[0] + normal[0] * cfg["interaction_distance_cm"],
+                actual_face_center[1] + normal[1] * cfg["interaction_distance_cm"],
             )
             self.assertEqual(base_target, tag_front)
             self.assertEqual(geometry["interaction_xy"], body_target)
@@ -158,6 +163,19 @@ class InteractionFlowTests(unittest.TestCase):
         self.assertTrue(check.ready)
         self.assertNotIn("flower_unknown", check.reasons)
         self.assertNotIn("worker_mapping_missing", check.reasons)
+
+    def test_arrival_geometry_uses_face_center_instead_of_tag_center(self):
+        screen = make_screen()
+        screen.center_xy = (0.0, 8.0)  # Deliberately off the full-face center.
+        screen.face_center_xy = (0.0, 0.0)
+        check = evaluate_arrival_geometry(
+            screen,
+            fresh_pose(15.0, -5.0, 180.0),
+            load_config(None)["interaction"],
+        )
+        self.assertTrue(check.ready)
+        self.assertEqual(check.distance_error_cm, 0.0)
+        self.assertEqual(check.lateral_error_cm, 0.0)
 
     def test_arrival_geometry_gate_rejects_distance_yaw_confidence_and_stale_pose(self):
         cfg = load_config(None)["interaction"]

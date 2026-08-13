@@ -16,10 +16,12 @@ from .interaction_client import RobotInteractionClient
 from .interaction_logic import (
     apply_worker_change_result,
     build_interaction_geometry,
+    building_bounds_from_tags,
     building_centers_from_tags,
     cardinal_surface_from_tag,
     evaluate_arrival_geometry,
     evaluate_interaction_pose,
+    face_center_from_bounds,
     store_flower_observation,
 )
 from .localizer import AprilTagDetector, Localizer
@@ -149,22 +151,27 @@ class TaskManager:
     def configure_cardinal_task_targets(self) -> None:
         """Build the task's unique 15 cm pose from immutable Tag coordinates."""
         building_centers = building_centers_from_tags(self.tag_poses)
+        building_bounds = building_bounds_from_tags(self.tag_poses)
         for screen in self.map.screens.values():
             group_id = (int(screen.screen_id) - 1) // 4
-            if group_id not in building_centers:
-                raise ValueError("missing building center for screen {}".format(screen.screen_id))
+            if group_id not in building_centers or group_id not in building_bounds:
+                raise ValueError("missing building geometry for screen {}".format(screen.screen_id))
             surface = cardinal_surface_from_tag(
                 screen.tag_corners_3d,
                 building_centers[group_id],
             )
+            face_center = face_center_from_bounds(
+                building_bounds[group_id],
+                surface["face"],
+            )
             geometry = build_interaction_geometry(
-                surface["center_xy"],
+                face_center,
                 surface["normal_xy"],
                 self.config["interaction"],
             )
-            screen.center_xy = surface["center_xy"]
             screen.surface_face = surface["face"]
             screen.cardinal_normal_xy = surface["normal_xy"]
+            screen.face_center_xy = face_center
             screen.normal_xy = geometry["normal_xy"]
             screen.normal_yaw_deg = geometry["normal_yaw_deg"]
             screen.screen_left_tangent_xy = geometry["screen_left_tangent_xy"]
@@ -174,8 +181,8 @@ class TaskManager:
             screen.interaction_staging_xy = geometry["interaction_staging_xy"]
             distance = float(self.config["interaction"]["interaction_distance_cm"])
             screen.tag_front_xy = (
-                screen.center_xy[0] + screen.normal_xy[0] * distance,
-                screen.center_xy[1] + screen.normal_xy[1] * distance,
+                face_center[0] + screen.normal_xy[0] * distance,
+                face_center[1] + screen.normal_xy[1] * distance,
             )
             screen.task_target_xy = screen.interaction_xy
             screen.task_target_yaw_deg = screen.interaction_yaw_deg

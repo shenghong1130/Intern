@@ -82,6 +82,7 @@ class Screen:
     interaction_staging_xy: Tuple[float, float]
     surface_face: str = "UNKNOWN"
     cardinal_normal_xy: Tuple[float, float] = (0.0, 0.0)
+    face_center_xy: Optional[Tuple[float, float]] = None
     tag_front_xy: Optional[Tuple[float, float]] = None
     task_target_xy: Optional[Tuple[float, float]] = None
     task_target_yaw_deg: Optional[float] = None
@@ -120,6 +121,7 @@ class Screen:
             "interaction_staging_xy": list(self.interaction_staging_xy),
             "surface_face": self.surface_face,
             "cardinal_normal_xy": list(self.cardinal_normal_xy),
+            "face_center_xy": None if self.face_center_xy is None else list(self.face_center_xy),
             "tag_front_xy": None if self.tag_front_xy is None else list(self.tag_front_xy),
             "task_target_xy": None if self.task_target_xy is None else list(self.task_target_xy),
             "task_target_yaw_deg": self.task_target_yaw_deg,

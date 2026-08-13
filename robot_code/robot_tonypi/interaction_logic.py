@@ -73,6 +73,41 @@ def building_centers_from_tags(tag_poses: dict) -> dict:
     }
 
 
+def building_bounds_from_tags(tag_poses: dict) -> dict:
+    """Return each four-Tag building's immutable XY boundary."""
+    grouped = {}
+    for raw_id, corners in tag_poses.items():
+        tag_id = int(raw_id)
+        if not 1 <= tag_id <= 36:
+            continue
+        points = [tuple(float(value) for value in point[:2]) for point in corners[:4]]
+        grouped.setdefault((tag_id - 1) // 4, []).extend(points)
+    return {
+        group_id: {
+            "x_min": min(point[0] for point in points),
+            "x_max": max(point[0] for point in points),
+            "y_min": min(point[1] for point in points),
+            "y_max": max(point[1] for point in points),
+        }
+        for group_id, points in grouped.items()
+    }
+
+
+def face_center_from_bounds(bounds: dict, face: str) -> Tuple[float, float]:
+    """Return the center of one cardinal face of a rectangular building."""
+    center_x = (float(bounds["x_min"]) + float(bounds["x_max"])) / 2.0
+    center_y = (float(bounds["y_min"]) + float(bounds["y_max"])) / 2.0
+    if face == "WEST":
+        return float(bounds["x_min"]), center_y
+    if face == "EAST":
+        return float(bounds["x_max"]), center_y
+    if face == "SOUTH":
+        return center_x, float(bounds["y_min"])
+    if face == "NORTH":
+        return center_x, float(bounds["y_max"])
+    raise ValueError("unknown building face: {}".format(face))
+
+
 def build_interaction_geometry(center_xy: Tuple[float, float], normal_xy: Tuple[float, float], cfg: dict) -> dict:
     """Build reader, body target and facing yaw in the screen-local frame."""
     norm = math.hypot(float(normal_xy[0]), float(normal_xy[1]))
@@ -131,8 +166,9 @@ def evaluate_arrival_geometry(
         pose_valid = False
         reasons.append("pose_stale")
 
-    rel_x = pose.x_cm - screen.center_xy[0]
-    rel_y = pose.y_cm - screen.center_xy[1]
+    geometry_center = screen.face_center_xy or screen.center_xy
+    rel_x = pose.x_cm - geometry_center[0]
+    rel_y = pose.y_cm - geometry_center[1]
     distance_cm = rel_x * screen.normal_xy[0] + rel_y * screen.normal_xy[1]
     distance_error = distance_cm - float(cfg["interaction_distance_cm"])
     desired_lateral = float(cfg["sensor_left_offset_cm"]) - float(cfg["left_hand_body_offset_cm"])
