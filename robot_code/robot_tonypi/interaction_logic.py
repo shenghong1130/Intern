@@ -13,6 +13,66 @@ from .models import InteractionPoseCheck, RobotPose, Screen, ScreenStatus, Worke
 from .utils import angle_diff_deg, distance_xy, now_s
 
 
+def cardinal_surface_from_tag(tag_corners_3d, building_center_xy: Tuple[float, float], plane_epsilon_cm: float = 0.5) -> dict:
+    """Quantize a vertical Tag plane to one of the four building faces.
+
+    A fixed-X Tag is on a west/east face; a fixed-Y Tag is on a south/north
+    face.  The sign is determined against the center of its four-Tag building.
+    """
+    points = [tuple(float(value) for value in point[:2]) for point in tag_corners_3d[:4]]
+    if len(points) != 4:
+        raise ValueError("a screen Tag must provide four world corners")
+    xs = [point[0] for point in points]
+    ys = [point[1] for point in points]
+    spread_x = max(xs) - min(xs)
+    spread_y = max(ys) - min(ys)
+    center = (sum(xs) / 4.0, sum(ys) / 4.0)
+    fixed_x = spread_x <= float(plane_epsilon_cm)
+    fixed_y = spread_y <= float(plane_epsilon_cm)
+    if fixed_x and (not fixed_y or spread_x <= spread_y):
+        if center[0] < float(building_center_xy[0]):
+            face, normal, yaw = "WEST", (-1.0, 0.0), 0.0
+        else:
+            face, normal, yaw = "EAST", (1.0, 0.0), -180.0
+    elif fixed_y:
+        if center[1] < float(building_center_xy[1]):
+            face, normal, yaw = "SOUTH", (0.0, -1.0), 90.0
+        else:
+            face, normal, yaw = "NORTH", (0.0, 1.0), -90.0
+    else:
+        raise ValueError(
+            "Tag plane is not axis-aligned: spread_x={:.3f}, spread_y={:.3f}".format(
+                spread_x, spread_y
+            )
+        )
+    return {
+        "face": face,
+        "center_xy": center,
+        "normal_xy": normal,
+        "target_yaw_deg": yaw,
+        "spread_x_cm": spread_x,
+        "spread_y_cm": spread_y,
+    }
+
+
+def building_centers_from_tags(tag_poses: dict) -> dict:
+    """Return four-Tag building centers without changing the stored map data."""
+    grouped = {}
+    for raw_id, corners in tag_poses.items():
+        tag_id = int(raw_id)
+        if not 1 <= tag_id <= 36:
+            continue
+        pts = [tuple(float(value) for value in point[:2]) for point in corners[:4]]
+        grouped.setdefault((tag_id - 1) // 4, []).extend(pts)
+    return {
+        group_id: (
+            (min(point[0] for point in points) + max(point[0] for point in points)) / 2.0,
+            (min(point[1] for point in points) + max(point[1] for point in points)) / 2.0,
+        )
+        for group_id, points in grouped.items()
+    }
+
+
 def build_interaction_geometry(center_xy: Tuple[float, float], normal_xy: Tuple[float, float], cfg: dict) -> dict:
     """Build reader, body target and facing yaw in the screen-local frame."""
     norm = math.hypot(float(normal_xy[0]), float(normal_xy[1]))
@@ -48,29 +108,13 @@ def build_interaction_geometry(center_xy: Tuple[float, float], normal_xy: Tuple[
     }
 
 
-def store_flower_observation(screen: Screen, target_flower: str, flower: str, confidence: float) -> str:
-    """Store a visual result only; never perform or authorize an interaction."""
-    screen.last_seen_s = now_s()
-    screen.last_classification = flower
-    screen.last_confidence = float(confidence)
-    if flower == target_flower:
-        if screen.status != ScreenStatus.CHANGED:
-            screen.status = ScreenStatus.ALREADY_TARGET
-        return "changed_verified" if screen.status == ScreenStatus.CHANGED else "already_target_observed"
-    screen.status = ScreenStatus.NEEDS_CHANGE
-    return "needs_physical_interaction"
-
-
-def evaluate_interaction_pose(
+def evaluate_arrival_geometry(
     screen: Screen,
     pose: Optional[RobotPose],
-    target_flower: str,
     cfg: dict,
-    worker_id: Optional[int],
-    expected_from_flower: Optional[str] = None,
     check_time_s: Optional[float] = None,
 ) -> InteractionPoseCheck:
-    """Central safety gate for distance, body yaw, lateral reader alignment and pose."""
+    """Geometry-only 15 cm arrival gate used before flower classification."""
     if pose is None:
         return InteractionPoseCheck(ready=False, pose_valid=False, reasons=["pose_missing"])
 
@@ -103,6 +147,44 @@ def evaluate_interaction_pose(
         reasons.append("yaw")
     if abs(lateral_error) > float(cfg["interaction_lateral_tolerance_cm"]):
         reasons.append("lateral")
+
+    return InteractionPoseCheck(
+        ready=pose_valid and not reasons,
+        pose_valid=pose_valid,
+        distance_cm=round(distance_cm, 3),
+        distance_error_cm=round(distance_error, 3),
+        yaw_error_deg=round(yaw_error, 3),
+        lateral_error_cm=round(lateral_error, 3),
+        target_error_cm=round(target_error, 3),
+        reasons=reasons,
+    )
+
+
+def store_flower_observation(screen: Screen, target_flower: str, flower: str, confidence: float) -> str:
+    """Store a visual result only; never perform or authorize an interaction."""
+    screen.last_seen_s = now_s()
+    screen.last_classification = flower
+    screen.last_confidence = float(confidence)
+    if flower == target_flower:
+        if screen.status != ScreenStatus.CHANGED:
+            screen.status = ScreenStatus.ALREADY_TARGET
+        return "changed_verified" if screen.status == ScreenStatus.CHANGED else "already_target_observed"
+    screen.status = ScreenStatus.NEEDS_CHANGE
+    return "needs_physical_interaction"
+
+
+def evaluate_interaction_pose(
+    screen: Screen,
+    pose: Optional[RobotPose],
+    target_flower: str,
+    cfg: dict,
+    worker_id: Optional[int],
+    expected_from_flower: Optional[str] = None,
+    check_time_s: Optional[float] = None,
+) -> InteractionPoseCheck:
+    """Central safety gate for distance, body yaw, lateral reader alignment and pose."""
+    geometry = evaluate_arrival_geometry(screen, pose, cfg, check_time_s=check_time_s)
+    reasons = list(geometry.reasons)
     if screen.last_classification is None:
         reasons.append("flower_unknown")
     elif screen.last_classification == target_flower:
@@ -113,13 +195,13 @@ def evaluate_interaction_pose(
         reasons.append("worker_mapping_missing")
 
     return InteractionPoseCheck(
-        ready=pose_valid and not reasons,
-        pose_valid=pose_valid,
-        distance_cm=round(distance_cm, 3),
-        distance_error_cm=round(distance_error, 3),
-        yaw_error_deg=round(yaw_error, 3),
-        lateral_error_cm=round(lateral_error, 3),
-        target_error_cm=round(target_error, 3),
+        ready=geometry.pose_valid and not reasons,
+        pose_valid=geometry.pose_valid,
+        distance_cm=geometry.distance_cm,
+        distance_error_cm=geometry.distance_error_cm,
+        yaw_error_deg=geometry.yaw_error_deg,
+        lateral_error_cm=geometry.lateral_error_cm,
+        target_error_cm=geometry.target_error_cm,
         reasons=reasons,
     )
 

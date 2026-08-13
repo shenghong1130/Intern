@@ -39,8 +39,8 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "obstacle_cost_max": 80.0,
         "obstacle_cost_power": 2.0,
         "obstacle_line_clear_max_cost": 60.0,
-        # Direct mission destination for arrival/classification. This is not a
-        # remote observation waypoint and has no reader lateral offset.
+        # Map-safe approach waypoint for A*.  Task arrival/classification is
+        # controlled separately by the 15 cm cardinal interaction geometry.
         "target_arrival_distance_cm": 34.0,
         "approach_margin_cm": 30.0,
         "excluded_screen_ids": [4, 6, 10, 20, 25],

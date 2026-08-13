@@ -46,7 +46,9 @@ main.py
 python3 -m robot_tonypi.main ...
 ```
 
-## 3. 启动、配置和共享基础
+## 3. 启动、配置与共享基础
+
+这一部分定义程序如何启动、如何加载现场参数，以及所有业务模块共同使用的数据结构和工具。
 
 ### `main.py`
 
@@ -82,7 +84,7 @@ python3 -m robot_tonypi.main ...
 所有模块共享的数据模型：
 
 - `Confidence`：定位置信度；
-- `MissionState`：定位、最近目标选择、直达、到达门、当前目标分类、交互和完成等任务状态；
+- `MissionState`：定位、最近目标选择、四向目标构造、安全接近、15 cm 最终对准、到达门、分类、交互和完成等任务状态；
 - `ScreenStatus`：`UNKNOWN`、`NEEDS_CHANGE`、`INTERACTING`、`CHANGED` 等目标处理状态；
 - `RobotPose`：机器人世界坐标、yaw、来源和时间；
 - `Screen`：屏幕中心、normal、任务目标点、交互点、reader 点和 worker_id；
@@ -101,22 +103,23 @@ python3 -m robot_tonypi.main ...
 
 ### `task_manager.py`
 
-中央调度器，也是项目最大的业务文件。主要职责：
+中央调度器，也是项目最大的业务文件和完整任务流程入口。主要职责：
 
 1. 创建地图、相机、AprilTag、视觉、FPGA、动作、交互和 Debug 组件；
-2. 执行原初始定位，然后从最新 pose 动态选择最近未处理目标；
-3. 锁定目标并直达 `target_xy`，途中只更新屏幕框与左上 Tag 几何绑定；
-4. 到达门通过后，只裁剪和分类当前锁定目标，并执行投票；
-5. 将非目标花标记为 `NEEDS_CHANGE`，将目标花标记为 `ALREADY_TARGET`；
-6. 执行 A* 导航、障碍和边界恢复，不插入 passby/观察识别停靠；
-7. 在交互前反复定位并修正距离、身体 yaw 和横向误差；
-8. 通过最终安全门后调用 `RobotInteractionClient`；
-9. 发布 Dashboard 状态并写交互审计日志；
-10. 退出时关闭硬件、相机和日志。
+2. 执行初始定位，然后按最新 pose 到各 15 cm 任务位姿的距离选择最近未处理目标；
+3. 从 Tag 四角固定 X/Y 平面生成四向 normal、15 cm 点和标准 yaw；
+4. 锁定目标后先到约 34 cm 地图安全接近点，再小步闭环对准 15 cm；途中只更新屏幕框与左上 Tag 几何绑定；
+5. 定位新鲜度、15 cm、横向和四向 yaw 的到达几何门通过后，才裁剪和分类当前目标；
+6. 将非目标花标记为 `NEEDS_CHANGE`，将目标花标记为 `ALREADY_TARGET`；
+7. 执行 A* 导航、障碍和边界恢复，不插入 passby/观察识别停靠；
+8. 非目标花在当前位置复核完整换花安全门，偏离时只在当前目标附近重新对准；
+9. 通过完整安全门后调用 `RobotInteractionClient`；
+10. 发布 Dashboard 状态并写交互审计日志；
+11. 退出时关闭硬件、相机和日志。
 
 真正的 `send_request` 不在这个文件中直接出现；它只能通过交互客户端调用。
 
-## 5. 相机、定位和视觉
+## 5. 硬件适配
 
 ### `hardware.py`
 
@@ -132,6 +135,8 @@ python3 -m robot_tonypi.main ...
 - 执行单一或组合动作组；
 - 在左手交互事务期间禁止普通导航动作。
 
+## 6. 定位模块
+
 ### `localizer.py`
 
 包含 AprilTag 检测和机器人位姿估计：
@@ -145,6 +150,8 @@ python3 -m robot_tonypi.main ...
 ### `load_pos.py`
 
 保存比赛场地 AprilTag 的三维世界角点坐标。`MapModel` 和 `Localizer` 都依赖这些数据。若使用外部坐标文件，可通过 `--load-pos` 覆盖。
+
+## 7. 花朵视觉、分类与 FPGA
 
 ### `vision.py`
 
@@ -168,7 +175,7 @@ FPGA 分类服务客户端。它把 28×28 屏幕裁剪编码为 JPEG，通过 H
 
 运行在 PYNQ/FPGA 端，而不是 TonyPi 树莓派主控端。它加载 FPGA Overlay，接收 28×28 图片，执行 DMA 推理，并以 HTTP JSON 返回分类结果。运行该文件需要 PYNQ、模型 bit/hwh 文件和 FPGA 环境。
 
-## 6. 地图和运动
+## 8. 地图模块
 
 ### `map_model.py`
 
@@ -181,6 +188,8 @@ FPGA 分类服务客户端。它把 28×28 屏幕裁剪编码为 JPEG，通过 H
 - 提供考虑机器人转向/横移宏动作的 action-level A*；
 - 统计未完成 Screen 和实际换花成功数。
 
+## 9. 动作执行模块
+
 ### `motion.py`
 
 包含：
@@ -190,30 +199,15 @@ FPGA 分类服务客户端。它把 28×28 屏幕裁剪编码为 JPEG，通过 H
 
 连续动作会让 pose 置信度从 HIGH 降到 MEDIUM/LOW，随后触发 AprilTag 重定位。
 
-### `action_groups/*.d6a`
-
-仓库附带的自定义左右小步转身动作组：
-
-```text
-turn_left_small_step_s70.d6a
-turn_left_small_step_s75.d6a
-turn_left_small_step_s80.d6a
-turn_left_small_step_s85.d6a
-turn_right_small_step_s70.d6a
-turn_right_small_step_s75.d6a
-turn_right_small_step_s80.d6a
-turn_right_small_step_s85.d6a
-```
-
-不同后缀代表不同速度版本。当前比赛配置使用 `s80`。这些是二进制动作资源，不是 Python 源码。TonyPi SDK 默认从 `/home/pi/TonyPi/ActionGroups/` 加载，所以仓库内文件需要按部署要求安装到 SDK 动作组目录。
-
-## 7. 交互和 Worker 请求
+## 10. 交互与 Worker 请求
 
 ### `interaction_logic.py`
 
 不依赖相机、NumPy、硬件或网络的纯逻辑层：
 
-- 根据屏幕 center 和 normal 构造左侧 reader、interaction point 和目标 yaw；
+- 根据不可变 Tag 四角和所属四方形中心判断西/东/南/北面，并将 normal 量化为四个轴向之一；
+- 构造 Tag 正前方 15 cm 基础点，以及保留左侧 reader/手臂切向补偿后的机器人身体目标点；
+- 分离分类前到达几何门与分类后的完整换花安全门；
 - 视觉识别只更新 `ALREADY_TARGET` 或 `NEEDS_CHANGE`；
 - 集中检查 pose 新鲜度和置信度、15 cm 距离、身体 yaw、横向误差、花朵状态和 Worker 映射；
 - 根据 Worker 结果设置 `CHANGED` 或恢复为 `NEEDS_CHANGE`。
@@ -235,7 +229,7 @@ turn_right_small_step_s85.d6a
 
 支持 `--dry-run` 和 `--skip-change` 模拟。只有 `result['ok']` 为真才返回成功；异常和失败都执行站立收尾。
 
-## 8. Debug
+## 11. Debug
 
 ### `debug.py`
 
@@ -246,11 +240,29 @@ turn_right_small_step_s85.d6a
 - 保存 `latest_state.json`；
 - 绘制机器人、路线、task target、interaction 和 reader 的场地图；
 - 启动内置 HTTP Server，默认端口 8090；
-- 在网页显示 pose、投票、Screen 状态、安全门误差和 Worker 响应。
+- 在网页显示 pose、目标面/外法向、15 cm 目标位姿、到达几何门误差、投票、Screen 状态、完整换花门和 Worker 响应。
 
 Debug 目录默认在 `/home/pi/TonyPi/debug_runs/<timestamp>/`。
 
-## 9. 测试
+## 12. 测试、动作组与辅助资源
+
+以下四个测试均使用 Python 标准库 `unittest`。它们只调用纯函数、读取源码、使用假对象，或在临时目录写配置文件；不会打开真实相机、执行 TonyPi 动作组、调用 AprilTag/FPGA，也不会发送 Worker 请求。
+
+从包含 `robot_tonypi` 目录的上级目录运行，例如开发机上的 `robot_code/Intern/robot_code` 或机器人上的 `/home/pi`：
+
+```bash
+python3 -m unittest discover -s robot_tonypi/tests -p 'test_*.py'
+```
+
+### `tests/test_calibrate_motion.py`
+
+验证人工动作标定工具的纯数据处理：输入距离/角度的方向符号、`--times` 的单次归一化、median 推荐值、large turn sequence 描述、仅保留已测动作的推荐配置，以及写回配置前的备份行为。测试只在临时目录创建 JSON 文件，不会执行真实动作或修改项目配置。
+
+单独运行：
+
+```bash
+python3 -m unittest robot_tonypi.tests.test_calibrate_motion
+```
 
 ### `tests/test_interaction_flow.py`
 
@@ -266,6 +278,24 @@ Debug 目录默认在 `/home/pi/TonyPi/debug_runs/<timestamp>/`。
 - 分类器只有到达当前锁定目标后才能调用；
 - from_flower 在发送前发生变化时拒绝请求。
 
+其中动作和 `send_request` 都由测试内的假函数记录调用顺序，因此不会举手、不会执行真实动作组，也不会访问 Worker、网络或 FPGA。
+
+单独运行：
+
+```bash
+python3 -m unittest robot_tonypi.tests.test_interaction_flow
+```
+
+### `tests/test_mission_scheduler.py`
+
+验证任务调度和导航保护的局部逻辑：地图/Tag 参考值未变、按 15 cm 目标选择和重选、旧 34 cm 点不能打开分类门、安全接近后必须最终对准、禁止 passby 分类/换花的源码结构、初始定位配置与 CLI 参数，以及转向 watchdog 的正常进展、±180°角度差、stale 视觉 pose 拒绝、反方向转向、计数清零和连续失败中止。测试以 `TaskManager.__new__`、假地图、假 pose 和假定位结果运行，不会创建真实 `TaskManager` 硬件组件。
+
+单独运行：
+
+```bash
+python3 -m unittest robot_tonypi.tests.test_mission_scheduler
+```
+
 ### `tests/test_vision_tag_binding.py`
 
 测试花朵屏幕左侧 AprilTag 绑定：
@@ -276,7 +306,30 @@ Debug 目录默认在 `/home/pi/TonyPi/debug_runs/<timestamp>/`。
 - 超过距离阈值拒绝；
 - 37+ Tag 不能作为 screen_id。
 
-## 10. 部署辅助文件
+它直接构造 NumPy 四边形和 `TagDetection` 数据，不读取相机帧或运行 AprilTag 检测器。
+
+单独运行：
+
+```bash
+python3 -m unittest robot_tonypi.tests.test_vision_tag_binding
+```
+
+### `action_groups/*.d6a`
+
+仓库附带的自定义左右小步转身动作组：
+
+```text
+turn_left_small_step_s70.d6a
+turn_left_small_step_s75.d6a
+turn_left_small_step_s80.d6a
+turn_left_small_step_s85.d6a
+turn_right_small_step_s70.d6a
+turn_right_small_step_s75.d6a
+turn_right_small_step_s80.d6a
+turn_right_small_step_s85.d6a
+```
+
+不同后缀代表不同速度版本。当前比赛配置使用 `s80`。这些是二进制动作资源，不是 Python 源码。TonyPi SDK 默认从 `/home/pi/TonyPi/ActionGroups/` 加载，所以仓库内文件需要按部署要求安装到 SDK 动作组目录。
 
 ### `deploy.py`
 
@@ -284,7 +337,7 @@ Debug 目录默认在 `/home/pi/TonyPi/debug_runs/<timestamp>/`。
 
 因此当前不要直接运行它。实际同步应显式确认机器人 IP、目标路径和是否删除远端文件，再使用受控的 SSH/rsync 流程。
 
-## 11. 每个文件运行在哪里
+## 13. 每个文件运行在哪里
 
 | 文件类别 | 运行位置 |
 |---|---|

@@ -3,6 +3,7 @@ from pathlib import Path
 from types import SimpleNamespace
 import sys
 import unittest
+import unittest.mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
@@ -11,6 +12,7 @@ from robot_tonypi.task_manager import TaskManager, evaluate_turn_progress
 from robot_tonypi.config import load_config
 from robot_tonypi.main import parse_args
 from robot_tonypi.interaction_logic import store_flower_observation
+from robot_tonypi.load_pos import load_tag_pos
 
 
 def screen(screen_id, xy):
@@ -26,6 +28,8 @@ def screen(screen_id, xy):
         reader_xy=xy,
         screen_left_tangent_xy=(0.0, -1.0),
         interaction_staging_xy=xy,
+        task_target_xy=xy,
+        task_target_yaw_deg=180.0,
     )
 
 
@@ -42,11 +46,19 @@ def manager_at(x, y, screens):
     manager.state = SimpleNamespace(pose=RobotPose(x, y, 180.0, Confidence.HIGH, "TEST", 1.0))
     manager.map = FakeMap(screens)
     manager.last_target_plan = {}
-    manager.config = {"navigation": {"arrival_radius_cm": 23.0, "arrival_yaw_tolerance_deg": 30.0}}
+    manager.config = load_config(None)
     return manager
 
 
 class MissionSchedulerTests(unittest.TestCase):
+    def test_map_and_tag_reference_coordinates_are_unchanged(self):
+        config = load_config(None)
+        tags = load_tag_pos()
+        self.assertEqual(config["map"]["width_cm"], 300.0)
+        self.assertEqual(config["map"]["height_cm"], 300.0)
+        self.assertEqual(tags["1"].tolist(), [[196.0, 30.0, 39.8], [196.0, 25.0, 39.8], [196.0, 25.0, 34.8], [196.0, 30.0, 34.8]])
+        self.assertEqual(tags["2"].tolist(), [[196.0, 5.0, 39.8], [201.0, 5.0, 39.8], [201.0, 5.0, 34.8], [196.0, 5.0, 34.8]])
+
     def test_turn_progress_accepts_clear_yaw_change(self):
         result = evaluate_turn_progress(
             RobotPose(10, 10, 0, Confidence.HIGH, "BEFORE", 1),
@@ -170,9 +182,19 @@ class MissionSchedulerTests(unittest.TestCase):
         self.assertTrue(manager.turn_navigation_abort)
         self.assertEqual(manager.turn_no_progress_count, 2)
 
-    def test_nearest_target_uses_current_pose_to_target_xy(self):
-        manager = manager_at(0.0, 0.0, [screen(3, (30.0, 0.0)), screen(2, (10.0, 0.0))])
+    def test_nearest_target_uses_current_pose_to_15cm_task_target(self):
+        old_near_new_far = screen(3, (30.0, 0.0))
+        old_near_new_far.target_xy = (2.0, 0.0)
+        old_near_new_far.task_target_xy = (30.0, 0.0)
+        old_far_new_near = screen(2, (10.0, 0.0))
+        old_far_new_near.target_xy = (80.0, 0.0)
+        old_far_new_near.task_target_xy = (10.0, 0.0)
+        manager = manager_at(0.0, 0.0, [old_near_new_far, old_far_new_near])
         self.assertEqual(manager.choose_nearest_screen().screen_id, 2)
+        self.assertEqual(
+            manager.last_target_plan["selection_rule"],
+            "euclidean_current_pose_to_15cm_task_target_then_tag_id",
+        )
 
     def test_reselects_from_latest_pose_after_completion(self):
         first = screen(1, (10.0, 0.0))
@@ -203,13 +225,81 @@ class MissionSchedulerTests(unittest.TestCase):
         manager.current_target_screen_id = 2
         manager.arrived_at_target = False
         manager.mission_state = MissionState.NAVIGATE_TO_TARGET
-        manager.state = SimpleNamespace(pose=RobotPose(10.0, 0.0, 180.0, Confidence.HIGH, "TEST", 1.0))
-        manager.config = {"navigation": {"arrival_radius_cm": 23.0, "arrival_yaw_tolerance_deg": 30.0}}
+        manager.state = SimpleNamespace(pose=RobotPose(10.0, 0.0, 180.0, Confidence.HIGH, "TEST", 100.0))
+        manager.config = load_config(None)
+        manager.arrival_geometry_check = lambda target: SimpleNamespace(ready=True)
         self.assertFalse(manager.classifier_gate_open(target))
         manager.arrived_at_target = True
         manager.mission_state = MissionState.ARRIVED_AT_TARGET
         self.assertTrue(manager.classifier_gate_open(target))
         self.assertFalse(manager.classifier_gate_open(screen(3, (10.0, 0.0))))
+
+    def test_old_34cm_approach_cannot_open_classifier_gate(self):
+        target = screen(2, (15.0, -5.0))
+        target.target_xy = (34.0, -5.0)
+        target.center_xy = (0.0, 0.0)
+        target.normal_xy = (1.0, 0.0)
+        target.screen_left_tangent_xy = (0.0, -1.0)
+        target.interaction_xy = (15.0, -5.0)
+        manager = TaskManager.__new__(TaskManager)
+        manager.current_target_screen_id = 2
+        manager.arrived_at_target = True
+        manager.mission_state = MissionState.ARRIVED_AT_TARGET
+        manager.state = SimpleNamespace(pose=RobotPose(34.0, -5.0, 180.0, Confidence.HIGH, "TEST", 100.0))
+        manager.config = load_config(None)
+        with unittest.mock.patch("robot_tonypi.interaction_logic.now_s", return_value=100.0):
+            self.assertFalse(manager.classifier_gate_open(target))
+
+    def test_non_target_flower_interaction_does_not_navigate_back_to_staging(self):
+        source = (Path(__file__).resolve().parents[1] / "task_manager.py").read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        function_names = {
+            node.name for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)
+        }
+        fn = next(node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef) and node.name == "process_screen_interaction")
+        calls = {getattr(call.func, "attr", "") for call in ast.walk(fn) if isinstance(call, ast.Call)}
+        self.assertNotIn("navigate_to_interaction_pose", function_names)
+        self.assertNotIn("navigate_to_interaction_pose", calls)
+        self.assertIn("arrival_geometry_check", calls)
+
+    def test_full_interaction_gate_requires_locked_arrived_target(self):
+        target = screen(2, (15.0, -5.0))
+        target.center_xy = (0.0, 0.0)
+        target.normal_xy = (1.0, 0.0)
+        target.screen_left_tangent_xy = (0.0, -1.0)
+        target.interaction_xy = (15.0, -5.0)
+        target.worker_id = 12
+        target.last_classification = "mudan"
+        manager = TaskManager.__new__(TaskManager)
+        manager.target_flower = "hehua"
+        manager.config = load_config(None)
+        manager.current_target_screen_id = 3
+        manager.arrived_at_target = True
+        pose = RobotPose(15.0, -5.0, 180.0, Confidence.HIGH, "TEST", 100.0)
+        with unittest.mock.patch("robot_tonypi.interaction_logic.now_s", return_value=100.0):
+            self.assertIn("target_lock_mismatch", manager.interaction_pose_check(target, pose).reasons)
+            manager.current_target_screen_id = 2
+            manager.arrived_at_target = False
+            self.assertIn("target_not_arrived", manager.interaction_pose_check(target, pose).reasons)
+
+    def test_navigation_approach_is_not_arrival_and_final_alignment_is_required(self):
+        target = screen(2, (15.0, -5.0))
+        target.target_xy = (34.0, -5.0)
+        manager = TaskManager.__new__(TaskManager)
+        manager.config = load_config(None)
+        manager.arrived_at_target = True
+        states = []
+        manager.set_mission_state = lambda state: states.append(state)
+        manager.navigate_to_xy = lambda *args, **kwargs: True
+        manager.align_for_screen_interaction = lambda target, geometry_only=False: geometry_only
+        manager.arrival_geometry_check = lambda target: SimpleNamespace(
+            ready=True, as_dict=lambda: {"ready": True}
+        )
+        manager.debug = SimpleNamespace(event=lambda *args, **kwargs: None)
+        manager.last_interaction_check = None
+        self.assertTrue(manager.navigate_to_task_pose(target))
+        self.assertFalse(manager.arrived_at_target)
+        self.assertEqual(states, [MissionState.NAVIGATE_TO_APPROACH, MissionState.FINAL_ALIGN_15CM])
 
     def test_only_arrived_target_function_calls_classifier(self):
         source = (Path(__file__).resolve().parents[1] / "task_manager.py").read_text(encoding="utf-8")

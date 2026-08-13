@@ -4,13 +4,13 @@ TonyPi competition controller for a 300 × 300 cm field. Read `robot_decision_tr
 
 ## Non-negotiable interaction boundary
 
-Transit vision is geometry-only: `observe_transit_bindings()` may detect a screen quad and bind its left-upper Tag, but it must use `extract_crops=False` and cannot classify, vote, update flower state, lift the hand, or call a Worker. `classify_arrived_target()` is the only task-level classifier entry and requires the locked target plus `ARRIVED_AT_TARGET`.
+Transit vision is geometry-only: `observe_transit_bindings()` may detect a screen quad and bind its left-upper Tag, but it must use `extract_crops=False` and cannot classify, vote, update flower state, lift the hand, or call a Worker. `classify_arrived_target()` is the only task-level classifier entry and requires the locked target, `ARRIVED_AT_TARGET`, and the 15 cm cardinal arrival geometry gate.
 
 Physical flower change is exclusively:
 
 ```text
-NEEDS_CHANGE → interaction staging → final AprilTag alignment
-→ centralized pose gate → stand → lift_left_hand(stand=False)
+NEEDS_CHANGE → recheck/near-target realignment when needed
+→ centralized full interaction gate → stand → lift_left_hand(stand=False)
 → second pose gate → robotall.send_request → finally stand
 ```
 
@@ -50,14 +50,17 @@ interaction_logic.py → pure observation/state and pose-gate rules
 RobotInteractionClient → robotall.act + robotall.send_request
 ```
 
-Task navigation and physical interaction targets are deliberately distinct:
+Task arrival and the map-safe approach point are deliberately distinct:
 
-- `target_xy`: direct task destination used by nearest-target selection and arrival.
-- `interaction_staging_xy` then `interaction_xy`: physical Worker interaction.
+- `target_xy`: legacy/map-safe ~34 cm approach point used only as an internal A* waypoint. It cannot set `ARRIVED_AT_TARGET` or open classification.
+- `tag_front_xy`: Tag center plus 15 cm along the quantized outward normal, before hand/body lateral compensation.
+- `task_target_xy` / `interaction_xy`: the unique 15 cm body target after the existing reader/left-hand tangent compensation.
 
-Mission target selection is recomputed after every processed screen using Euclidean distance from the latest pose to `target_xy`, with `screen_id` (the bound Tag ID) as the stable tie-breaker. Do not restore pass-by/opportunistic classification, discovery scans, task-level observation stops, or fixed routes.
+Mission target selection is recomputed after every processed screen using Euclidean distance from the latest pose to `task_target_xy`, with `screen_id` (the bound Tag ID) as the stable tie-breaker. Do not restore pass-by/opportunistic classification, discovery scans, task-level observation stops, or fixed routes.
 
-`normal_xy` points from the screen into its visible/front side. Viewer-left is `(normal.y, -normal.x)` and a robot facing the screen uses `normal_yaw_deg + 180°`.
+The task layer derives each Tag face from its four immutable world corners: fixed X means west/east and fixed Y means south/north. The outward `normal_xy` must be exactly one of `(-1,0)`, `(1,0)`, `(0,-1)`, `(0,1)`; final yaw must be `0°`, `-180°`, `+90°`, or `-90°`. Viewer-left is `(normal.y, -normal.x)`.
+
+The pre-classification arrival geometry gate checks only pose confidence/freshness, 15 cm normal distance, cardinal body yaw, and tangent alignment. The full interaction gate reuses those checks and additionally requires a non-target flower, stable `from_flower`, and explicit Worker mapping.
 
 ## Conventions
 

@@ -13,7 +13,15 @@ from .classifier import ClassifierClient
 from .debug import DebugReporter
 from .hardware import RealtimeCamera, TonyPiHardware
 from .interaction_client import RobotInteractionClient
-from .interaction_logic import apply_worker_change_result, evaluate_interaction_pose, store_flower_observation
+from .interaction_logic import (
+    apply_worker_change_result,
+    build_interaction_geometry,
+    building_centers_from_tags,
+    cardinal_surface_from_tag,
+    evaluate_arrival_geometry,
+    evaluate_interaction_pose,
+    store_flower_observation,
+)
 from .localizer import AprilTagDetector, Localizer
 from .map_model import MapModel, load_tag_positions
 from .models import Confidence, InteractionPoseCheck, MissionState, RobotPose, Screen, ScreenStatus
@@ -74,6 +82,7 @@ class TaskManager:
         self.target_flower = args.target_flower
         self.tag_poses = load_tag_positions(args.load_pos)
         self.map = MapModel(self.tag_poses, config)
+        self.configure_cardinal_task_targets()
         self.debug = DebugReporter(config, enabled=args.debug, port=args.debug_port, host=args.debug_host)
         self.hardware = TonyPiHardware(config, dry_run=args.dry_run)
         self.camera = RealtimeCamera(config, dry_run=args.dry_run)
@@ -136,6 +145,40 @@ class TaskManager:
         self.open_interaction_audit_log()
         if args.start_x is not None and args.start_y is not None and args.start_yaw is not None:
             self.state.set_manual_pose(args.start_x, args.start_y, args.start_yaw, source="START_ARG")
+
+    def configure_cardinal_task_targets(self) -> None:
+        """Build the task's unique 15 cm pose from immutable Tag coordinates."""
+        building_centers = building_centers_from_tags(self.tag_poses)
+        for screen in self.map.screens.values():
+            group_id = (int(screen.screen_id) - 1) // 4
+            if group_id not in building_centers:
+                raise ValueError("missing building center for screen {}".format(screen.screen_id))
+            surface = cardinal_surface_from_tag(
+                screen.tag_corners_3d,
+                building_centers[group_id],
+            )
+            geometry = build_interaction_geometry(
+                surface["center_xy"],
+                surface["normal_xy"],
+                self.config["interaction"],
+            )
+            screen.center_xy = surface["center_xy"]
+            screen.surface_face = surface["face"]
+            screen.cardinal_normal_xy = surface["normal_xy"]
+            screen.normal_xy = geometry["normal_xy"]
+            screen.normal_yaw_deg = geometry["normal_yaw_deg"]
+            screen.screen_left_tangent_xy = geometry["screen_left_tangent_xy"]
+            screen.reader_xy = geometry["reader_xy"]
+            screen.interaction_xy = geometry["interaction_xy"]
+            screen.interaction_yaw_deg = geometry["interaction_yaw_deg"]
+            screen.interaction_staging_xy = geometry["interaction_staging_xy"]
+            distance = float(self.config["interaction"]["interaction_distance_cm"])
+            screen.tag_front_xy = (
+                screen.center_xy[0] + screen.normal_xy[0] * distance,
+                screen.center_xy[1] + screen.normal_xy[1] * distance,
+            )
+            screen.task_target_xy = screen.interaction_xy
+            screen.task_target_yaw_deg = screen.interaction_yaw_deg
 
     def open_interaction_audit_log(self) -> None:
         if self.debug.root is not None:
@@ -211,8 +254,20 @@ class TaskManager:
             self.current_target_screen_id = target.screen_id
             self.arrived_at_target = False
             self.classifier_allowed = False
-            self.set_mission_state(MissionState.NAVIGATE_TO_TARGET)
-            self.debug.event("target_selected", tag_id=target.screen_id, screen_id=target.screen_id, target_xy=target.target_xy, plan=self.last_target_plan)
+            self.set_mission_state(MissionState.BUILD_CARDINAL_TARGET_POSE)
+            self.debug.event(
+                "target_selected",
+                tag_id=target.screen_id,
+                screen_id=target.screen_id,
+                surface_face=target.surface_face,
+                cardinal_normal_xy=target.cardinal_normal_xy,
+                tag_front_xy=target.tag_front_xy,
+                task_target_xy=target.task_target_xy,
+                task_target_yaw_deg=target.task_target_yaw_deg,
+                approach_xy=target.target_xy,
+                plan=self.last_target_plan,
+            )
+            self.set_mission_state(MissionState.NAVIGATE_TO_APPROACH)
             ok = self.navigate_to_screen(target)
             if not ok:
                 target.attempts += 1
@@ -263,7 +318,8 @@ class TaskManager:
         if target is None:
             return True
         self.current_target_screen_id = target.screen_id
-        self.set_mission_state(MissionState.NAVIGATE_TO_TARGET)
+        self.set_mission_state(MissionState.BUILD_CARDINAL_TARGET_POSE)
+        self.set_mission_state(MissionState.NAVIGATE_TO_APPROACH)
         if not self.navigate_to_screen(target):
             return False
         self.arrived_at_target = True
@@ -563,23 +619,28 @@ class TaskManager:
             vote_entry["interaction_requested"] = False
 
     def classifier_gate_open(self, screen: Screen) -> bool:
-        pose = self.state.pose
-        if pose is None:
-            return False
-        within_arrival = distance_xy(pose.xy(), screen.target_xy) <= float(self.config["navigation"]["arrival_radius_cm"])
-        facing_target = abs(angle_diff_deg(screen.interaction_yaw_deg, pose.yaw_deg)) <= float(
-            self.config["navigation"].get("arrival_yaw_tolerance_deg", 30.0)
-        )
+        geometry = self.arrival_geometry_check(screen)
         return bool(
             self.arrived_at_target
             and self.current_target_screen_id == screen.screen_id
-            and within_arrival
-            and facing_target
+            and geometry.ready
             and self.mission_state in (
                 MissionState.ARRIVED_AT_TARGET,
                 MissionState.CAPTURE_TARGET_SCREEN,
                 MissionState.CLASSIFY_TARGET_FLOWER,
             )
+        )
+
+    def arrival_geometry_check(
+        self,
+        screen: Screen,
+        pose: Optional[RobotPose] = None,
+    ) -> InteractionPoseCheck:
+        pose = self.state.pose if pose is None else pose
+        return evaluate_arrival_geometry(
+            screen,
+            pose,
+            self.config["interaction"],
         )
 
     def classify_arrived_target(self, screen: Screen, pan_angles: Optional[List[float]] = None) -> int:
@@ -620,6 +681,29 @@ class TaskManager:
                     if pose is not None:
                         self.state.set_pose(pose)
                         self.debug.event("pose_update", **pose.as_dict(), head_pan_angle=pan, reason="arrived_target_capture")
+                    geometry = self.arrival_geometry_check(screen)
+                    if not geometry.ready:
+                        entry["observations"].append(
+                            {
+                                "round": round_idx,
+                                "pan": pan,
+                                "ok": False,
+                                "error": "arrival_geometry_gate_changed",
+                                "check": geometry.as_dict(),
+                            }
+                        )
+                        self.debug.event(
+                            "classifier_geometry_gate_blocked",
+                            screen_id=screen.screen_id,
+                            check=geometry.as_dict(),
+                        )
+                        self.center_head_after_scan("classifier_geometry_realign", pan)
+                        self.set_mission_state(MissionState.FINAL_ALIGN_15CM)
+                        if not self.align_for_screen_interaction(screen, geometry_only=True):
+                            return 0
+                        self.arrived_at_target = True
+                        self.set_mission_state(MissionState.CAPTURE_TARGET_SCREEN)
+                        continue
                     candidates = self.screen_detector.detect(frame, tags, self.state.pose, extract_crops=True)
                     annotated = self.screen_detector.annotate(annotated, candidates, tags)
                     self.debug.save_image("latest_annotated.jpg", annotated, force=True)
@@ -778,7 +862,7 @@ class TaskManager:
         expected_from_flower: Optional[str] = None,
     ) -> InteractionPoseCheck:
         pose = self.state.pose if pose is None else pose
-        return evaluate_interaction_pose(
+        check = evaluate_interaction_pose(
             screen,
             pose,
             self.target_flower,
@@ -786,8 +870,25 @@ class TaskManager:
             self.worker_id_for_screen(screen),
             expected_from_flower=expected_from_flower,
         )
+        reasons = list(check.reasons)
+        if self.current_target_screen_id != screen.screen_id:
+            reasons.append("target_lock_mismatch")
+        if not self.arrived_at_target:
+            reasons.append("target_not_arrived")
+        if reasons == check.reasons:
+            return check
+        return InteractionPoseCheck(
+            ready=False,
+            pose_valid=check.pose_valid,
+            distance_cm=check.distance_cm,
+            distance_error_cm=check.distance_error_cm,
+            yaw_error_deg=check.yaw_error_deg,
+            lateral_error_cm=check.lateral_error_cm,
+            target_error_cm=check.target_error_cm,
+            reasons=reasons,
+        )
 
-    def align_for_screen_interaction(self, screen: Screen) -> bool:
+    def align_for_screen_interaction(self, screen: Screen, geometry_only: bool = False) -> bool:
         cfg = self.config["interaction"]
         max_steps = max(1, int(cfg.get("interaction_max_alignment_steps", 20)))
         for step in range(max_steps):
@@ -796,7 +897,7 @@ class TaskManager:
             should_localize = bool(cfg.get("interaction_relocalize_each_step", True)) or step == 0
             if should_localize and not self.args.dry_run:
                 self.localize_scan()
-            check = self.interaction_pose_check(screen)
+            check = self.arrival_geometry_check(screen) if geometry_only else self.interaction_pose_check(screen)
             self.last_interaction_check = check.as_dict()
             self.debug.event(
                 "interaction_alignment_check",
@@ -805,6 +906,7 @@ class TaskManager:
                 step=step,
                 target_xy=screen.interaction_xy,
                 target_yaw_deg=screen.interaction_yaw_deg,
+                gate="arrival_geometry" if geometry_only else "full_interaction",
                 **check.as_dict(),
             )
             self.publish_state(screen)
@@ -831,18 +933,44 @@ class TaskManager:
         self.debug.event("interaction_alignment_failed", screen_id=screen.screen_id, max_steps=max_steps)
         return False
 
-    def navigate_to_interaction_pose(self, screen: Screen) -> bool:
-        cfg = self.config["interaction"]
-        return self.navigate_to_xy(
-            screen.interaction_staging_xy,
-            reason="interaction_staging",
-            arrival_radius_cm=float(cfg.get("interaction_staging_arrival_radius_cm", 8.0)),
+    def navigate_to_task_pose(self, screen: Screen) -> bool:
+        """Use the old free 34 cm point only as approach, then align at 15 cm."""
+        self.set_mission_state(MissionState.NAVIGATE_TO_APPROACH)
+        approach_ok = self.navigate_to_xy(
+            screen.target_xy,
+            reason="task_safe_approach",
+            arrival_radius_cm=float(
+                self.config["interaction"].get("interaction_staging_arrival_radius_cm", 8.0)
+            ),
             max_steps=int(self.config["navigation"]["max_steps_per_target"]),
             target_yaw_deg=screen.interaction_yaw_deg,
         )
+        if not approach_ok:
+            return False
+        # The approach point is never task arrival and never opens classification.
+        self.arrived_at_target = False
+        self.set_mission_state(MissionState.FINAL_ALIGN_15CM)
+        if not self.align_for_screen_interaction(screen, geometry_only=True):
+            return False
+        final_check = self.arrival_geometry_check(screen)
+        self.last_interaction_check = final_check.as_dict()
+        if not final_check.ready:
+            return False
+        self.debug.event(
+            "arrival_geometry_gate_passed",
+            screen_id=screen.screen_id,
+            tag_id=screen.screen_id,
+            surface_face=screen.surface_face,
+            cardinal_normal_xy=screen.cardinal_normal_xy,
+            tag_front_xy=screen.tag_front_xy,
+            task_target_xy=screen.task_target_xy,
+            target_yaw_deg=screen.task_target_yaw_deg,
+            check=final_check.as_dict(),
+        )
+        return True
 
     def process_screen_interaction(self, screen: Screen) -> bool:
-        self.set_mission_state(MissionState.ALIGN_FOR_INTERACTION)
+        self.set_mission_state(MissionState.VERIFY_INTERACTION_POSE)
         worker_id = self.worker_id_for_screen(screen)
         if not screen.last_classification or screen.last_classification == self.target_flower:
             self.debug.event("interaction_skipped", screen_id=screen.screen_id, reason="flower_not_changeable")
@@ -851,14 +979,22 @@ class TaskManager:
             screen.notes.append("worker_mapping_missing")
             self.debug.event("interaction_skipped", screen_id=screen.screen_id, reason="worker_mapping_missing")
             return False
-        if not self.navigate_to_interaction_pose(screen):
-            screen.notes.append("interaction_staging_navigation_failed")
-            return False
-        if not self.align_for_screen_interaction(screen):
-            screen.notes.append("interaction_alignment_failed")
-            return False
+        # Classification already required the same 15 cm geometry.  If a
+        # fresh capture or arm preparation invalidated it, only realign here;
+        # never return to the old 34 cm approach point.
+        if not self.arrival_geometry_check(screen).ready:
+            self.set_mission_state(MissionState.ALIGN_FOR_INTERACTION)
+            if not self.align_for_screen_interaction(screen, geometry_only=True):
+                screen.notes.append("interaction_alignment_failed")
+                return False
         if bool(self.config["interaction"].get("interaction_relocalize_before_action", True)) and not self.args.dry_run:
             self.localize_scan()
+            if not self.arrival_geometry_check(screen).ready:
+                self.set_mission_state(MissionState.ALIGN_FOR_INTERACTION)
+                if not self.align_for_screen_interaction(screen, geometry_only=True):
+                    screen.notes.append("interaction_relocalize_alignment_failed")
+                    return False
+                self.set_mission_state(MissionState.VERIFY_INTERACTION_POSE)
         # Bind the transaction to the arrived-target result and require it to
         # remain unchanged through the lower-level pre-send safety gate.
         from_flower = screen.last_classification
@@ -1068,20 +1204,44 @@ class TaskManager:
         pose = self.state.pose
         ranked = sorted(
             self.map.unfinished_screens(),
-            key=lambda screen: (distance_xy(pose.xy(), screen.target_xy), int(screen.screen_id)),
+            key=lambda screen: (
+                distance_xy(pose.xy(), screen.task_target_xy or screen.interaction_xy),
+                int(screen.screen_id),
+            ),
         )
         if not ranked:
             self.last_target_plan = {}
             return None
         best = ranked[0]
-        distance = distance_xy(pose.xy(), best.target_xy)
+        task_target = best.task_target_xy or best.interaction_xy
+        distance = distance_xy(pose.xy(), task_target)
+        sorted_candidates = [
+            {
+                "screen_id": screen.screen_id,
+                "tag_id": screen.screen_id,
+                "surface_face": screen.surface_face,
+                "cardinal_normal_xy": list(screen.cardinal_normal_xy),
+                "task_target_xy": list(screen.task_target_xy or screen.interaction_xy),
+                "task_target_yaw_deg": screen.task_target_yaw_deg,
+                "distance_cm": round(
+                    distance_xy(pose.xy(), screen.task_target_xy or screen.interaction_xy), 2
+                ),
+            }
+            for screen in ranked
+        ]
         self.last_target_plan = {
-            "selection_rule": "euclidean_current_pose_to_target_xy_then_tag_id",
+            "selection_rule": "euclidean_current_pose_to_15cm_task_target_then_tag_id",
             "tag_id": best.screen_id,
             "screen_id": best.screen_id,
             "distance_cm": round(distance, 2),
-            "target_xy": [round(float(best.target_xy[0]), 2), round(float(best.target_xy[1]), 2)],
+            "surface_face": best.surface_face,
+            "cardinal_normal_xy": list(best.cardinal_normal_xy),
+            "tag_front_xy": list(best.tag_front_xy or best.interaction_xy),
+            "task_target_xy": [round(float(task_target[0]), 2), round(float(task_target[1]), 2)],
+            "task_target_yaw_deg": best.task_target_yaw_deg,
+            "approach_xy": [round(float(best.target_xy[0]), 2), round(float(best.target_xy[1]), 2)],
             "remaining_ids": [screen.screen_id for screen in ranked],
+            "sorted_candidates": sorted_candidates,
         }
         return best
 
@@ -1091,7 +1251,9 @@ class TaskManager:
         pose = self.state.pose
         if pose is None:
             return False
-        desired_yaw = math.degrees(math.atan2(screen.center_xy[1] - pose.y_cm, screen.center_xy[0] - pose.x_cm))
+        # A screen's final facing is defined by its cardinal Tag plane, not by
+        # an arbitrary bearing from the robot's current position.
+        desired_yaw = screen.interaction_yaw_deg
         diff = angle_diff_deg(desired_yaw, pose.yaw_deg)
         min_deg = float(self.config["navigation"].get("target_body_reaim_min_deg", 12.0))
         if abs(diff) < min_deg:
@@ -2004,98 +2166,7 @@ class TaskManager:
         return False
 
     def navigate_to_screen(self, screen: Screen) -> bool:
-        self.turn_navigation_abort = False
-        self.clear_turn_progress_watchdog("navigate_screen_start")
-        max_steps = int(self.config["navigation"]["max_steps_per_target"])
-        for step in range(max_steps):
-            if self.state.pose is None:
-                if not self.localize_scan():
-                    self.recover_from_no_tag_if_needed("pose_missing")
-                if self.state.pose is None:
-                    return False
-            pose = self.state.pose
-            if pose is None:
-                continue
-            if self.collision_recovery_pending:
-                self.recover_toward_field_center("forward_no_progress", backoff=True)
-                continue
-            goal = screen.target_xy
-            dist = distance_xy(pose.xy(), goal)
-            if dist <= float(self.config["navigation"]["arrival_radius_cm"]):
-                # Check facing direction: robot must be roughly facing the screen
-                desired_yaw = screen.interaction_yaw_deg
-                yaw_diff = abs(angle_diff_deg(desired_yaw, pose.yaw_deg))
-                arrival_yaw_tolerance = float(self.config["navigation"].get("arrival_yaw_tolerance_deg", 30.0))
-                if yaw_diff > arrival_yaw_tolerance:
-                    self.debug.event(
-                        "arrived_position_wrong_yaw",
-                        screen_id=screen.screen_id,
-                        distance_cm=round(dist, 1),
-                        desired_yaw=round(desired_yaw, 1),
-                        current_yaw=round(pose.yaw_deg, 1),
-                        yaw_diff=round(yaw_diff, 1),
-                        tolerance=arrival_yaw_tolerance,
-                    )
-                    if not self.turn_toward_yaw_boundary_aware(desired_yaw):
-                        return False
-                    continue
-                self.clear_navigation_noop()
-                self.debug.event("arrived_at_target", tag_id=screen.screen_id, screen_id=screen.screen_id, distance_cm=round(dist, 1), yaw_diff=round(yaw_diff, 1))
-                return True
-            if self.map.is_dangerously_close_to_wall(pose.xy(), pose.yaw_deg, float(self.config["navigation"]["safe_wall_distance_cm"])):
-                self.debug.event(
-                    "near_wall_recover",
-                    outward_facing=self.is_facing_outside(pose),
-                    exit_dist_cm=round(self.distance_to_field_exit_ahead(pose), 1),
-                )
-                self.recover_toward_field_center("near_wall_pre_forward", backoff=True)
-                continue
-            path = self.plan_navigation_path(pose, goal)
-            waypoint = self.select_navigation_waypoint(pose, path, goal)
-            desired_yaw = math.degrees(math.atan2(waypoint[1] - pose.y_cm, waypoint[0] - pose.x_cm))
-            diff = angle_diff_deg(desired_yaw, pose.yaw_deg)
-            self.debug.render_map(self.map, pose=pose, path=path, target_screen=screen)
-            self.publish_state(screen, path)
-            action = self.choose_translation_action(pose, waypoint)
-            if action is not None:
-                status = self.execute_translation_action(
-                    action,
-                    pose,
-                    waypoint,
-                    dist,
-                    {"screen_id": screen.screen_id, "diff_yaw": round(diff, 1)},
-                )
-                if status == "recovered":
-                    self.clear_navigation_noop()
-                    continue
-                self.clear_navigation_noop()
-            else:
-                self.forward_map_block_count = 0
-                self.debug.event(
-                    "turn_last_resort",
-                    screen_id=screen.screen_id,
-                    desired_yaw=round(desired_yaw, 1),
-                    diff_yaw=round(diff, 1),
-                    waypoint=(round(float(waypoint[0]), 1), round(float(waypoint[1]), 1)),
-                )
-                if not self.turn_toward_yaw_boundary_aware(desired_yaw):
-                    return False
-                if abs(diff) <= float(self.config["navigation"].get("turn_tolerance_deg", 20.0)):
-                    self.handle_navigation_noop(
-                        reason="navigate_screen",
-                        waypoint=waypoint,
-                        diff=diff,
-                        extra={"screen_id": screen.screen_id},
-                    )
-                else:
-                    self.clear_navigation_noop()
-            if self.turn_no_progress_count == 0 and self.state.needs_relocalize():
-                if not self.localize_scan():
-                    self.recover_from_no_tag_if_needed("scheduled_relocalize")
-                if self.collision_recovery_pending:
-                    self.recover_toward_field_center("forward_no_progress_after_localize", backoff=True)
-        self.debug.event("navigate_failed", screen_id=screen.screen_id)
-        return False
+        return self.navigate_to_task_pose(screen)
 
     def update_dynamic_obstacles(self, tags, pan: float = 100.0) -> bool:
         """Update dynamic obstacles on the map from already-detected tags.
@@ -2163,7 +2234,16 @@ class TaskManager:
         target_screen = target_screen or self.map.screens.get(self.current_target_screen_id)
         target_distance = None
         if target_screen is not None and self.state.pose is not None:
-            target_distance = round(distance_xy(self.state.pose.xy(), target_screen.target_xy), 2)
+            target_distance = round(
+                distance_xy(
+                    self.state.pose.xy(),
+                    target_screen.task_target_xy or target_screen.interaction_xy,
+                ),
+                2,
+            )
+        arrival_geometry = None
+        if target_screen is not None:
+            arrival_geometry = self.arrival_geometry_check(target_screen).as_dict()
         data = {
             "mode": self.args.mode,
             "target_flower": self.target_flower,
@@ -2177,6 +2257,7 @@ class TaskManager:
             "current_target_distance_cm": target_distance,
             "arrived_at_target": self.arrived_at_target,
             "classifier_allowed": self.classifier_allowed,
+            "arrival_geometry_check": arrival_geometry,
             "transit_bindings": self.transit_bindings,
             "robot": self.state.as_dict(),
             "target_screen": None if target_screen is None else target_screen.as_dict(),

@@ -27,13 +27,17 @@ class MissionState(str, Enum):
     IDLE = "IDLE"
     LOCALIZE = "LOCALIZE"
     SELECT_NEAREST_TARGET = "SELECT_NEAREST_TARGET"
+    BUILD_CARDINAL_TARGET_POSE = "BUILD_CARDINAL_TARGET_POSE"
     NAVIGATE_TO_TARGET = "NAVIGATE_TO_TARGET"
+    NAVIGATE_TO_APPROACH = "NAVIGATE_TO_APPROACH"
+    FINAL_ALIGN_15CM = "FINAL_ALIGN_15CM"
     ARRIVED_AT_TARGET = "ARRIVED_AT_TARGET"
     CAPTURE_TARGET_SCREEN = "CAPTURE_TARGET_SCREEN"
     CLASSIFY_TARGET_FLOWER = "CLASSIFY_TARGET_FLOWER"
     TARGET_ALREADY_CORRECT = "TARGET_ALREADY_CORRECT"
     NEEDS_CHANGE = "NEEDS_CHANGE"
     ALIGN_FOR_INTERACTION = "ALIGN_FOR_INTERACTION"
+    VERIFY_INTERACTION_POSE = "VERIFY_INTERACTION_POSE"
     EXECUTE_CHANGE = "EXECUTE_CHANGE"
     MARK_TARGET_COMPLETE = "MARK_TARGET_COMPLETE"
     MISSION_COMPLETE = "MISSION_COMPLETE"
@@ -76,6 +80,11 @@ class Screen:
     reader_xy: Tuple[float, float]
     screen_left_tangent_xy: Tuple[float, float]
     interaction_staging_xy: Tuple[float, float]
+    surface_face: str = "UNKNOWN"
+    cardinal_normal_xy: Tuple[float, float] = (0.0, 0.0)
+    tag_front_xy: Optional[Tuple[float, float]] = None
+    task_target_xy: Optional[Tuple[float, float]] = None
+    task_target_yaw_deg: Optional[float] = None
     worker_id: Optional[int] = None
     status: ScreenStatus = ScreenStatus.UNKNOWN
     attempts: int = 0
@@ -109,6 +118,11 @@ class Screen:
             "reader_xy": list(self.reader_xy),
             "screen_left_tangent_xy": list(self.screen_left_tangent_xy),
             "interaction_staging_xy": list(self.interaction_staging_xy),
+            "surface_face": self.surface_face,
+            "cardinal_normal_xy": list(self.cardinal_normal_xy),
+            "tag_front_xy": None if self.tag_front_xy is None else list(self.tag_front_xy),
+            "task_target_xy": None if self.task_target_xy is None else list(self.task_target_xy),
+            "task_target_yaw_deg": self.task_target_yaw_deg,
             "worker_id": self.worker_id,
             "status": self.status.value,
             "attempts": self.attempts,

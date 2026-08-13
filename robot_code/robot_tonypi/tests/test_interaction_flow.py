@@ -10,6 +10,9 @@ from robot_tonypi.interaction_client import RobotInteractionClient
 from robot_tonypi.interaction_logic import (
     apply_worker_change_result,
     build_interaction_geometry,
+    building_centers_from_tags,
+    cardinal_surface_from_tag,
+    evaluate_arrival_geometry,
     evaluate_interaction_pose,
     store_flower_observation,
 )
@@ -22,6 +25,7 @@ from robot_tonypi.models import (
     WorkerChangeResult,
 )
 from robot_tonypi.utils import now_s
+from robot_tonypi.load_pos import load_tag_pos
 
 
 def make_screen(worker_id=12):
@@ -85,6 +89,86 @@ def run_client(client):
 
 
 class InteractionFlowTests(unittest.TestCase):
+    def test_skip_change_simulates_without_real_act_or_send(self):
+        actions = []
+        config = load_config(None)
+        client = RobotInteractionClient(
+            "red",
+            "1234",
+            "red-1",
+            config,
+            skip_change=True,
+            act_fn=lambda *args, **kwargs: actions.append(("act", args, kwargs)),
+            send_request_fn=lambda **kwargs: actions.append(("send", kwargs)),
+        )
+        result = run_client(client)
+        self.assertTrue(result.success)
+        self.assertTrue(result.simulated)
+        self.assertEqual(actions, [])
+
+    def test_dry_run_simulates_without_real_act_or_send(self):
+        actions = []
+        config = load_config(None)
+        client = RobotInteractionClient(
+            None,
+            None,
+            None,
+            config,
+            dry_run=True,
+            act_fn=lambda *args, **kwargs: actions.append(("act", args, kwargs)),
+            send_request_fn=lambda **kwargs: actions.append(("send", kwargs)),
+        )
+        result = run_client(client)
+        self.assertTrue(result.success)
+        self.assertTrue(result.simulated)
+        self.assertEqual(actions, [])
+
+    def test_four_tag_planes_quantize_to_cardinal_faces_and_15cm_targets(self):
+        tag_poses = load_tag_pos()
+        centers = building_centers_from_tags(tag_poses)
+        expected = {
+            1: ("WEST", (-1.0, 0.0), (181.0, 27.5), (181.0, 32.5), 0.0),
+            2: ("SOUTH", (0.0, -1.0), (198.5, -10.0), (193.5, -10.0), 90.0),
+            3: ("EAST", (1.0, 0.0), (236.0, 7.5), (236.0, 2.5), -180.0),
+            4: ("NORTH", (0.0, 1.0), (218.5, 45.0), (223.5, 45.0), -90.0),
+        }
+        cfg = load_config(None)["interaction"]
+        for tag_id, (face, normal, tag_front, body_target, yaw) in expected.items():
+            surface = cardinal_surface_from_tag(tag_poses[str(tag_id)], centers[0])
+            geometry = build_interaction_geometry(surface["center_xy"], surface["normal_xy"], cfg)
+            self.assertEqual(surface["face"], face)
+            self.assertEqual(surface["normal_xy"], normal)
+            base_target = (
+                surface["center_xy"][0] + normal[0] * cfg["interaction_distance_cm"],
+                surface["center_xy"][1] + normal[1] * cfg["interaction_distance_cm"],
+            )
+            self.assertEqual(base_target, tag_front)
+            self.assertEqual(geometry["interaction_xy"], body_target)
+            self.assertEqual(geometry["interaction_yaw_deg"], yaw)
+            self.assertIn(yaw, (0.0, -180.0, 90.0, -90.0))
+
+    def test_arrival_geometry_gate_does_not_require_flower_or_worker(self):
+        screen = make_screen(worker_id=None)
+        screen.last_classification = None
+        check = evaluate_arrival_geometry(
+            screen,
+            fresh_pose(15.0, -5.0, 180.0),
+            load_config(None)["interaction"],
+        )
+        self.assertTrue(check.ready)
+        self.assertNotIn("flower_unknown", check.reasons)
+        self.assertNotIn("worker_mapping_missing", check.reasons)
+
+    def test_arrival_geometry_gate_rejects_distance_yaw_confidence_and_stale_pose(self):
+        cfg = load_config(None)["interaction"]
+        screen = make_screen()
+        self.assertIn("distance", evaluate_arrival_geometry(screen, fresh_pose(34, -5, 180), cfg).reasons)
+        self.assertIn("yaw", evaluate_arrival_geometry(screen, fresh_pose(15, -5, 90), cfg).reasons)
+        low = RobotPose(15, -5, 180, Confidence.LOW, "TEST", now_s())
+        self.assertFalse(evaluate_arrival_geometry(screen, low, cfg).pose_valid)
+        stale = RobotPose(15, -5, 180, Confidence.HIGH, "TEST", 1.0)
+        self.assertIn("pose_stale", evaluate_arrival_geometry(screen, stale, cfg, check_time_s=10.0).reasons)
+
     def test_interaction_geometry_uses_viewer_left_and_faces_screen(self):
         geometry = build_interaction_geometry((0.0, 0.0), (1.0, 0.0), load_config(None)["interaction"])
 
