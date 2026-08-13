@@ -246,27 +246,19 @@ Debug 目录默认在 `/home/pi/TonyPi/debug_runs/<timestamp>/`。
 
 ## 12. 测试、动作组与辅助资源
 
-以下四个测试均使用 Python 标准库 `unittest`。它们只调用纯函数、读取源码、使用假对象，或在临时目录写配置文件；不会打开真实相机、执行 TonyPi 动作组、调用 AprilTag/FPGA，也不会发送 Worker 请求。
+测试命令、安全边界和详细操作步骤统一见 [`tests/README.md`](tests/README.md)。本节只说明各文件用途。
 
-从包含 `robot_tonypi` 目录的上级目录运行，例如开发机上的 `robot_code/Intern/robot_code` 或机器人上的 `/home/pi`：
+### `tests/README.md`
 
-```bash
-python3 -m unittest discover -s robot_tonypi/tests -p 'test_*.py'
-```
+测试目录的统一使用手册，包含全部自动化测试、独立实机相机/FPGA/换花测试和编译检查的运行方法。
 
 ### `tests/test_calibrate_motion.py`
 
-验证人工动作标定工具的纯数据处理：输入距离/角度的方向符号、`--times` 的单次归一化、median 推荐值、large turn sequence 描述、仅保留已测动作的推荐配置，以及写回配置前的备份行为。测试只在临时目录创建 JSON 文件，不会执行真实动作或修改项目配置。
-
-单独运行：
-
-```bash
-python3 -m unittest robot_tonypi.tests.test_calibrate_motion
-```
+验证人工动作标定工具的方向符号、次数归一化、median 推荐、large turn sequence、推荐配置生成和写回前备份。它只使用临时文件，不执行真实动作或修改项目正式配置。
 
 ### `tests/test_interaction_flow.py`
 
-使用 Python `unittest` 测试：
+验证以下交互纯逻辑：
 
 - 到达门前不能识别或换花；
 - 距离、yaw、lateral 不满足时安全门拒绝；
@@ -278,23 +270,11 @@ python3 -m unittest robot_tonypi.tests.test_calibrate_motion
 - 分类器只有到达当前锁定目标后才能调用；
 - from_flower 在发送前发生变化时拒绝请求。
 
-其中动作和 `send_request` 都由测试内的假函数记录调用顺序，因此不会举手、不会执行真实动作组，也不会访问 Worker、网络或 FPGA。
-
-单独运行：
-
-```bash
-python3 -m unittest robot_tonypi.tests.test_interaction_flow
-```
+其中动作和 `send_request` 都由假函数记录，因此不会举手、执行真实动作组、访问 Worker、网络或 FPGA。
 
 ### `tests/test_mission_scheduler.py`
 
-验证任务调度和导航保护的局部逻辑：地图/Tag 参考值未变、按 15 cm 目标选择和重选、旧 34 cm 点不能打开分类门、安全接近后必须最终对准、禁止 passby 分类/换花的源码结构、初始定位配置与 CLI 参数，以及转向 watchdog 的正常进展、±180°角度差、stale 视觉 pose 拒绝、反方向转向、计数清零和连续失败中止。测试以 `TaskManager.__new__`、假地图、假 pose 和假定位结果运行，不会创建真实 `TaskManager` 硬件组件。
-
-单独运行：
-
-```bash
-python3 -m unittest robot_tonypi.tests.test_mission_scheduler
-```
+验证任务调度和导航保护的局部逻辑：地图/Tag 参考值、15 cm 最近目标选择、旧 34 cm 点禁止分类、最终对准、分类调用边界、初始定位配置、CLI 安全语义和转向 watchdog。它使用假地图、假 pose 和轻量 `TaskManager` 对象，不初始化真实硬件。
 
 ### `tests/test_vision_tag_binding.py`
 
@@ -306,13 +286,11 @@ python3 -m unittest robot_tonypi.tests.test_mission_scheduler
 - 超过距离阈值拒绝；
 - 37+ Tag 不能作为 screen_id。
 
-它直接构造 NumPy 四边形和 `TagDetection` 数据，不读取相机帧或运行 AprilTag 检测器。
+它直接构造 NumPy 四边形和 `TagDetection` 数据，不读取相机帧或运行真实 AprilTag 检测器。
 
-单独运行：
+### `tests/test_capture_fpga_change.py`
 
-```bash
-python3 -m unittest robot_tonypi.tests.test_vision_tag_binding
-```
+独立实机集成测试。假设操作者已经把机器人放在目标点并正对屏幕，复用正式相机、AprilTag、屏幕裁剪、FPGA 分类和 `RobotInteractionClient`，测试“拍照 → 指定 Screen 裁剪 → 分类 → 可选换花”。它不执行定位、导航或姿态调整；默认禁止真实换花，只有显式执行开关和人工二次确认才允许举手及请求 Worker。
 
 ### `action_groups/*.d6a`
 
@@ -345,6 +323,7 @@ turn_right_small_step_s85.d6a
 | `config/competition_config.json` | TonyPi 树莓派读取 |
 | `fpga_server_api_ready.py` | PYNQ FPGA 板 |
 | `action_groups/*.d6a` | 安装到 TonyPi SDK 动作目录后由 SDK 执行 |
-| `tests/*.py` | 开发电脑或 TonyPi，交互测试不触发真实硬件 |
+| 四个 `tests/test_*.py` 自动化单元测试 | 开发电脑或 TonyPi，不触发真实硬件 |
+| `tests/test_capture_fpga_change.py` | TonyPi 实机；按参数使用相机、FPGA，并可在双重确认后换花 |
 | `robot_decision_tree.html` | 任意浏览器离线查看 |
 | `README.md`、`FILES.md` | 使用者和维护者阅读 |
