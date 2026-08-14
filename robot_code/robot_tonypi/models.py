@@ -41,6 +41,7 @@ class MissionState(str, Enum):
     EXECUTE_CHANGE = "EXECUTE_CHANGE"
     MARK_TARGET_COMPLETE = "MARK_TARGET_COMPLETE"
     MISSION_COMPLETE = "MISSION_COMPLETE"
+    MISSION_FAILED = "MISSION_FAILED"
     FAILED = "FAILED"
 
 
@@ -99,7 +100,11 @@ class Screen:
     def done(self) -> bool:
         # ALREADY_TARGET needs no physical transaction, so it is complete for
         # target selection even though completed_count() tracks actual changes.
-        return self.status in (ScreenStatus.CHANGED, ScreenStatus.ALREADY_TARGET, ScreenStatus.FAILED)
+        return self.status in (ScreenStatus.CHANGED, ScreenStatus.ALREADY_TARGET)
+
+    def terminal(self) -> bool:
+        """Return whether this target must no longer be selected."""
+        return self.done() or self.status == ScreenStatus.FAILED
 
     def successful(self) -> bool:
         return self.status == ScreenStatus.CHANGED

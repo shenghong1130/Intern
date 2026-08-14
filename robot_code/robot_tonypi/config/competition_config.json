@@ -134,6 +134,12 @@
     }
   },
   "navigation": {
+    "near_wall_backoff_step_cm": 5.0,
+    "near_wall_backoff_max_attempts": 2,
+    "near_wall_lateral_step_cm": 4.0,
+    "near_wall_lateral_max_attempts": 2,
+    "near_wall_turn_step_deg": 7.5,
+    "near_wall_recovery_no_progress_threshold": 2,
     "turn_tolerance_deg": 20.0,
     "max_turn_cycles_per_step": 4,
     "large_turn_threshold_deg": 35.0,

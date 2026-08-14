@@ -52,6 +52,39 @@ def manager_at(x, y, screens):
     return manager
 
 
+def near_wall_manager(localized_poses, near_predicate):
+    manager = TaskManager.__new__(TaskManager)
+    manager.config = load_config(None)
+    manager.state = SimpleNamespace(pose=RobotPose(5.0, 0.0, 0.0, Confidence.HIGH, "START", 1.0))
+    manager.recovery_count = 0
+    manager.near_wall_recovery_no_progress_count = 0
+    manager.last_navigation_failure_reason = ""
+    manager.turn_no_progress_count = 0
+    manager.turn_progress_failure_start_diff = None
+    manager.actions = []
+    manager.events = []
+    manager.localize_calls = 0
+    manager.motion = SimpleNamespace(
+        run=lambda key, times_override=1: manager.actions.append((key, times_override))
+    )
+    manager.hardware = SimpleNamespace(center_head=lambda: None)
+    manager.debug = SimpleNamespace(event=lambda name, **data: manager.events.append((name, data)))
+    poses = list(localized_poses)
+
+    def localize_scan(*args, **kwargs):
+        manager.localize_calls += 1
+        if not poses:
+            return False
+        manager.state.pose = poses.pop(0)
+        return True
+
+    manager.localize_scan = localize_scan
+    manager.wall_clearance_cm = lambda pose, yaw_deg=None: 20.0 - pose.x_cm
+    manager.near_wall_now = near_predicate
+    manager.recovery_translation_clear = lambda pose, forward_cm=0.0, lateral_cm=0.0: True
+    return manager
+
+
 class MissionSchedulerTests(unittest.TestCase):
     def test_screen_and_worker_ids_are_identical_without_manual_mapping(self):
         config = load_config(None)
@@ -378,6 +411,121 @@ class MissionSchedulerTests(unittest.TestCase):
         self.assertNotIn("last_classification", attrs)
         self.assertNotIn("last_confidence", attrs)
         self.assertNotIn("status", attrs)
+
+    def test_near_wall_recovery_backoff_is_first_and_preserves_yaw(self):
+        manager = near_wall_manager(
+            [RobotPose(0.0, 0.0, 0.0, Confidence.HIGH, "VISION", 2.0)],
+            lambda pose: pose.x_cm > 0.0,
+        )
+        self.assertTrue(manager.recover_from_near_wall("test"))
+        self.assertEqual(manager.actions[0][0], "back_fast")
+        self.assertEqual(manager.state.pose.yaw_deg, 0.0)
+        self.assertEqual(manager.localize_calls, 1)
+        after = [data for name, data in manager.events if name == "near_wall_recovery_after"]
+        self.assertEqual(after[0]["yaw_delta_deg"], 0.0)
+
+    def test_unsafe_rear_path_skips_backoff(self):
+        manager = near_wall_manager(
+            [RobotPose(5.0, 5.0, 0.0, Confidence.HIGH, "VISION", 2.0)],
+            lambda pose: pose.y_cm < 5.0,
+        )
+        manager.recovery_translation_clear = (
+            lambda pose, forward_cm=0.0, lateral_cm=0.0: forward_cm >= 0.0
+        )
+        self.assertTrue(manager.recover_from_near_wall("test"))
+        self.assertNotIn("back_fast", [key for key, _ in manager.actions])
+        self.assertEqual(manager.actions[0][0], "strafe_left_fast")
+
+    def test_backoff_then_lateral_and_relocalize_after_every_action(self):
+        manager = near_wall_manager(
+            [
+                RobotPose(4.0, 0.0, 0.0, Confidence.HIGH, "VISION", 2.0),
+                RobotPose(3.0, 0.0, 0.0, Confidence.HIGH, "VISION", 3.0),
+                RobotPose(3.0, 5.0, 0.0, Confidence.HIGH, "VISION", 4.0),
+            ],
+            lambda pose: pose.y_cm < 5.0,
+        )
+        self.assertTrue(manager.recover_from_near_wall("test"))
+        self.assertEqual([key for key, _ in manager.actions], ["back_fast", "back_fast", "strafe_left_fast"])
+        self.assertEqual(manager.localize_calls, len(manager.actions))
+
+    def test_small_turn_is_only_after_backoff_and_lateral_fail_to_clear(self):
+        manager = near_wall_manager(
+            [
+                RobotPose(4.0, 0.0, 0.0, Confidence.HIGH, "VISION", 2.0),
+                RobotPose(4.0, 2.0, 0.0, Confidence.HIGH, "VISION", 3.0),
+                RobotPose(4.0, 2.0, 8.0, Confidence.HIGH, "VISION", 4.0),
+            ],
+            lambda pose: True,
+        )
+        manager.config["navigation"]["near_wall_backoff_max_attempts"] = 1
+        manager.config["navigation"]["near_wall_lateral_max_attempts"] = 1
+        self.assertFalse(manager.recover_from_near_wall("test"))
+        keys = [key for key, _ in manager.actions]
+        self.assertEqual(keys[:2], ["back_fast", "strafe_left_fast"])
+        self.assertIn(keys[2], ("turn_left_fast", "turn_right_fast"))
+        self.assertNotIn("turn_left_large", keys)
+        self.assertNotIn("turn_right_large", keys)
+
+    def test_two_stale_recovery_poses_raise_recovery_no_progress(self):
+        same = RobotPose(5.0, 0.0, 0.0, Confidence.HIGH, "VISION", 2.0)
+        manager = near_wall_manager([same, same], lambda pose: True)
+        self.assertFalse(manager.recover_from_near_wall("test"))
+        self.assertEqual(manager.last_navigation_failure_reason, "RECOVERY_NO_PROGRESS")
+        self.assertEqual([key for key, _ in manager.actions], ["back_fast", "back_fast"])
+        self.assertTrue(any(name == "near_wall_recovery_no_progress" for name, _ in manager.events))
+
+    def test_navigate_aborts_after_one_failed_recovery_not_80_noops(self):
+        manager = TaskManager.__new__(TaskManager)
+        manager.config = load_config(None)
+        manager.state = SimpleNamespace(pose=RobotPose(5.0, 0.0, 0.0, Confidence.HIGH, "TEST", 1.0))
+        manager.map = SimpleNamespace(
+            is_free_xy=lambda xy: True,
+            is_dangerously_close_to_wall=lambda *args: True,
+        )
+        manager.debug = SimpleNamespace(event=lambda *args, **kwargs: None)
+        manager.time_left_s = lambda: 100.0
+        manager.turn_no_progress_count = 0
+        manager.turn_progress_failure_start_diff = None
+        manager.collision_recovery_pending = False
+        manager.last_navigation_failure_reason = ""
+        calls = []
+        manager.recover_from_near_wall = lambda reason: calls.append(reason) or False
+        self.assertFalse(manager.navigate_to_xy((50.0, 0.0), max_steps=80))
+        self.assertEqual(len(calls), 1)
+
+    def test_navigation_failure_retries_before_terminal_failed(self):
+        target = screen(2, (10.0, 0.0))
+        manager = TaskManager.__new__(TaskManager)
+        manager.config = load_config(None)
+        manager.debug = SimpleNamespace(event=lambda *args, **kwargs: None)
+        manager.localize_scan = lambda: True
+        self.assertFalse(manager.register_target_failure(target, "navigation_failed", relocalize=True))
+        self.assertEqual(target.status, ScreenStatus.UNKNOWN)
+        self.assertEqual(target.attempts, 1)
+        self.assertTrue(manager.register_target_failure(target, "navigation_failed", relocalize=True))
+        self.assertEqual(target.status, ScreenStatus.FAILED)
+
+    def test_failed_is_terminal_but_not_successfully_processed(self):
+        failed = screen(2, (10.0, 0.0))
+        failed.status = ScreenStatus.FAILED
+        self.assertFalse(failed.done())
+        self.assertTrue(failed.terminal())
+        model = SimpleNamespace(screens={2: failed})
+        self.assertEqual(sum(1 for item in model.screens.values() if item.done()), 0)
+
+    def test_all_terminal_failures_produce_mission_failed(self):
+        failed = screen(2, (10.0, 0.0))
+        failed.status = ScreenStatus.FAILED
+        manager = TaskManager.__new__(TaskManager)
+        manager.map = SimpleNamespace(
+            screens={2: failed},
+            processed_count=lambda: 0,
+            completed_count=lambda: 0,
+        )
+        manager.debug = SimpleNamespace(event=lambda *args, **kwargs: None)
+        manager.set_mission_state = lambda state: setattr(manager, "mission_state", state)
+        self.assertEqual(manager.finish_mission_without_available_targets(), MissionState.MISSION_FAILED)
 
 
 if __name__ == "__main__":

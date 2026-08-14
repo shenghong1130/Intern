@@ -570,10 +570,13 @@ class MapModel:
         return out
 
     def unfinished_screens(self) -> Iterable[Screen]:
-        return (screen for screen in self.screens.values() if not screen.done())
+        return (screen for screen in self.screens.values() if not screen.terminal())
 
     def completed_count(self) -> int:
         return sum(1 for screen in self.screens.values() if screen.successful())
 
     def processed_count(self) -> int:
         return sum(1 for screen in self.screens.values() if screen.done())
+
+    def failed_count(self) -> int:
+        return sum(1 for screen in self.screens.values() if screen.status.value == "FAILED")

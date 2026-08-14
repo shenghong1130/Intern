@@ -22,7 +22,7 @@
 
   <section id="overview"><h2>1. 总体状态机</h2>
     <div class="flow">
-      <div class="step"><b>LOCALIZE</b><br>原初始定位</div><div class="step"><b>SELECT_NEAREST_TARGET</b><br>按 15 cm 身体目标排序</div><div class="step"><b>BUILD_CARDINAL_TARGET_POSE</b><br>固定面、法向和 yaw</div><div class="step"><b>NAVIGATE_TO_APPROACH</b><br>地图安全接近</div><div class="step"><b>FINAL_ALIGN_15CM</b><br>闭环微调位置与身体 yaw</div><div class="step"><b>ARRIVED_AT_TARGET</b><br>几何门通过</div><div class="step"><b>CAPTURE / CLASSIFY</b><br>只识别锁定目标</div><div class="step"><b>ALREADY / NEEDS_CHANGE</b><br>正确则完成，否则换花</div><div class="step"><b>MARK_TARGET_COMPLETE</b><br>最新 pose 重新排序</div><div class="step"><b>MISSION_COMPLETE</b><br>全部目标处理完毕</div>
+      <div class="step"><b>LOCALIZE</b><br>原初始定位</div><div class="step"><b>SELECT_NEAREST_TARGET</b><br>按 15 cm 身体目标排序</div><div class="step"><b>BUILD_CARDINAL_TARGET_POSE</b><br>固定面、法向和 yaw</div><div class="step"><b>NAVIGATE_TO_APPROACH</b><br>地图安全接近</div><div class="step"><b>FINAL_ALIGN_15CM</b><br>闭环微调位置与身体 yaw</div><div class="step"><b>ARRIVED_AT_TARGET</b><br>几何门通过</div><div class="step"><b>CAPTURE / CLASSIFY</b><br>只识别锁定目标</div><div class="step"><b>ALREADY / NEEDS_CHANGE</b><br>正确则完成，否则换花</div><div class="step"><b>MARK_TARGET_COMPLETE</b><br>最新 pose 重新排序</div><div class="step"><b>COMPLETE / FAILED</b><br>成功完成或明确任务失败</div>
     </div>
     <div class="notice"><b>硬边界：</b>34 cm 安全接近点不是任务到达点；15 cm 几何门通过前不能分类；完整换花门通过前不能举手或请求 Worker。途中看到其他 Tag 也不能切换锁定目标。</div>
   </section>
@@ -62,7 +62,7 @@ target_yaw = atan2(-ny, -nx)</div>
   <section id="select"><h2>4. 最近未处理目标选择</h2>
     <div class="formula">stable_key = (distance(robot.pose.xy, screen.task_target_xy), screen_id)</div>
     <div class="tree"><span class="node state">SELECT_NEAREST_TARGET / <code>choose_nearest_screen()</code></span><ul>
-      <li>只从未完成目标中选择；<code>CHANGED</code>、<code>ALREADY_TARGET</code>、<code>FAILED</code> 不再入选。</li>
+      <li>只从未终止目标中选择；<code>CHANGED</code>、<code>ALREADY_TARGET</code> 和达到重试上限的 <code>FAILED</code> 不再入选，但 <code>FAILED</code> 不计入成功处理数。</li>
       <li>距离使用当前最新 pose 到 15 cm 身体目标 <code>task_target_xy</code>，不再使用旧 34 cm <code>target_xy</code>。</li>
       <li>同距离按 screen/tag ID 升序，保证稳定排序。</li>
       <li>锁定后，途中看到其他屏幕或 Tag 只更新几何信息，不能抢占目标。</li>
@@ -93,6 +93,14 @@ progress = old waypoint distance - predicted waypoint distance</div>
       <tr><td>无可行平移动作</td><td>向 waypoint 转身；大误差用 large，小误差用 fast</td><td>边界感知转向与 turn progress watchdog</td></tr>
       <tr><td>最终 15 cm 对准</td><td>micro turn、单步 lateral、forward_micro/back_fast</td><td>每步后重定位并重新检查几何门</td></tr>
     </table>
+    <div class="tree"><span class="node error">前方近墙恢复</span><ul>
+      <li>先检查身体后方路径；安全时保持 yaw 不变，小步后退，随后重新定位并重算前方墙距，最多执行配置次数。</li>
+      <li>仍近墙时比较身体左右两侧地图空间，只向路径安全且空间更大的一侧小步侧移；每步后同样重新定位与复查。</li>
+      <li>后退和侧移均不可行或无效后，才向更安全侧执行一次受限小角度转身，不使用 large turn。</li>
+      <li>连续达到配置次数且位姿、yaw、墙距均无有效变化：立即返回 <code>RECOVERY_NO_PROGRESS</code>，本次导航失败，不继续消耗 80 个导航步骤。</li>
+      <li>导航失败先增加当前目标 <code>attempts</code>、重新定位并重试；超过 <code>max_target_attempts</code> 才成为终止 <code>FAILED</code>。</li>
+      <li>没有剩余可选目标时：全部成功才进入 <code>MISSION_COMPLETE</code>；存在终止失败目标则进入 <code>MISSION_FAILED</code>。</li>
+    </ul></div>
   </section>
 
   <section id="classify"><h2>6. 通过到达几何门后才分类</h2>

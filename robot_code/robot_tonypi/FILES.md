@@ -274,7 +274,7 @@ Debug 目录默认在 `/home/pi/TonyPi/debug_runs/<timestamp>/`。
 
 ### `tests/test_mission_scheduler.py`
 
-验证任务调度和导航保护的局部逻辑：地图/Tag 参考值、15 cm 最近目标选择、旧 34 cm 点禁止分类、最终对准、分类调用边界、初始定位配置、CLI 安全语义和转向 watchdog。它使用假地图、假 pose 和轻量 `TaskManager` 对象，不初始化真实硬件。
+验证任务调度和导航保护的局部逻辑：地图/Tag 参考值、15 cm 最近目标选择、旧 34 cm 点禁止分类、最终对准、分类调用边界、初始定位配置、CLI 安全语义、转向 watchdog、近墙“后退→侧移→小转”恢复、恢复无进展终止、目标重试及 `MISSION_FAILED` 判定。它使用假地图、假 pose 和轻量 `TaskManager` 对象，不初始化真实硬件。
 
 ### `tests/test_vision_tag_binding.py`
 
