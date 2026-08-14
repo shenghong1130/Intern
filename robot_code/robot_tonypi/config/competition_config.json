@@ -282,8 +282,8 @@
   },
   "interaction": {
     "target_distance_cm": 25.0,
-    "target_lateral_offset_cm": -2.0,
-    "target_final_forward_cm": 13.0,
+    "target_lateral_offset_cm": -1.5,
+    "target_final_forward_cm": 15.0,
     "target_confirmation_max_retries": 3,
     "target_confirmation_retry_interval_s": 0.5,
     "target_confirmation_recovery_max_cycles": 2,
