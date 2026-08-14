@@ -104,8 +104,8 @@ def load_tag_pos():
     tag_poses["31"] = expand_2("31", [260.5, 145.8])
     tag_poses["32"] = expand_2("30", [260.5, 170.8])
 
-    tag_poses["34"] = expand_2("35", [158, 110])
-    tag_poses["35"] = expand_2("36", [158, 85])
-    tag_poses["36"] = expand_2("33", [183, 85])
-    tag_poses["37"] = expand_2("34", [183, 110])
+    tag_poses["33"] = expand_2("35", [158, 110])
+    tag_poses["34"] = expand_2("36", [158, 85])
+    tag_poses["35"] = expand_2("33", [183, 85])
+    tag_poses["36"] = expand_2("34", [183, 110])
     return tag_poses

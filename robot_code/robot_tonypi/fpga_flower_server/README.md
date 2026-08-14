@@ -5,6 +5,7 @@
 ```text
 Kria IP：192.168.31.81
 Jupyter：http://192.168.31.81:9090
+密码：xilinx
 终端身份：root@kria
 Python 环境：pynq-venv
 部署目录：/root/jupyter_notebooks/fpga_flower_server
