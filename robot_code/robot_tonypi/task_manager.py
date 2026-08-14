@@ -315,7 +315,7 @@ class TaskManager:
                     target_xy=target.task_target_xy,
                     target_yaw_deg=target.task_target_yaw_deg,
                     visual_confirmation="target_tag_and_bound_screen_required",
-                    final_forward_action="interaction_forward_5cm x1",
+                    final_forward_action="interaction_forward_13cm x1",
                 )
             self.set_mission_state(MissionState.NAVIGATE_TO_TARGET)
             ok = self.navigate_to_screen(target)
@@ -944,7 +944,7 @@ class TaskManager:
                 candidate = self.capture_locked_target_candidate(
                     screen,
                     extract_crops=False,
-                    reason="arrived_19cm",
+                    reason="arrived_25cm",
                 )
                 if candidate is not None:
                     self.target_confirmation_retry_count = 0
@@ -1087,7 +1087,7 @@ class TaskManager:
         return False
 
     def classify_after_final_forward(self, screen: Screen, *, allow_without_forward: bool = False) -> int:
-        """Capture once and classify after the dedicated final 5 cm motion."""
+        """Capture once and classify after the dedicated final 13 cm motion."""
         confirmation = self.target_visual_confirmation
         if (
             confirmation is None
@@ -1124,14 +1124,14 @@ class TaskManager:
             candidate = self.capture_locked_target_candidate(
                 screen,
                 extract_crops=True,
-                reason="after_final_forward_5cm",
+                reason="after_final_forward_13cm",
             )
             if candidate is None or candidate.crop_28x28 is None:
                 entry["decision"] = "post_forward_capture_failed"
                 return 0
             self.set_mission_state(MissionState.CLASSIFY_TARGET_FLOWER)
             result = self.classifier.classify_crop(candidate.crop_28x28)
-            self.debug.save_crop(screen.screen_id, candidate.crop_28x28, "post_forward_5cm")
+            self.debug.save_crop(screen.screen_id, candidate.crop_28x28, "post_forward_13cm")
             confidence = float(result.confidence) if result.ok else 0.0
             entry["observations"].append(
                 {
@@ -1290,7 +1290,7 @@ class TaskManager:
         screen: Screen,
         expected_from_flower: Optional[str] = None,
     ) -> InteractionAuthorizationCheck:
-        """Validate the locked 19 cm visual snapshot without reading pose/camera."""
+        """Validate the locked 25 cm visual snapshot without reading pose/camera."""
         reasons = []
         confirmation = getattr(self, "target_visual_confirmation", None)
         if confirmation is None:
@@ -1334,7 +1334,7 @@ class TaskManager:
         target_xy = screen.task_target_xy or screen.target_xy
         return self.navigate_to_xy(
             target_xy,
-            reason="task_19cm_target",
+            reason="task_25cm_target",
             arrival_radius_cm=float(self.config["navigation"]["target_arrival_radius_cm"]),
             max_steps=int(self.config["navigation"]["max_steps_per_target"]),
             target_yaw_deg=screen.task_target_yaw_deg,
@@ -1346,7 +1346,7 @@ class TaskManager:
         )
 
     def execute_final_forward(self, screen: Screen) -> bool:
-        """Execute the dedicated 5 cm action exactly once before classification."""
+        """Execute the dedicated 13 cm action exactly once before classification."""
         if self.final_forward_executed:
             self.debug.event("target_final_forward_failed", screen_id=screen.screen_id, reason="already_executed")
             return False
@@ -1360,17 +1360,17 @@ class TaskManager:
             self.debug.event("target_final_forward_failed", screen_id=screen.screen_id, reason="target_confirmation_missing")
             return False
         distance = float(self.config["interaction"]["target_final_forward_cm"])
-        self.set_mission_state(MissionState.FORWARD_5CM)
+        self.set_mission_state(MissionState.FORWARD_13CM)
         self.debug.event(
             "target_final_forward_started",
             screen_id=screen.screen_id,
-            action="interaction_forward_5cm",
+            action="interaction_forward_13cm",
             final_forward_cm=distance,
             target_distance_cm=float(self.config["interaction"]["target_distance_cm"]),
             final_forward_executed=False,
             dry_run=self.args.dry_run,
         )
-        result = self.motion.run("interaction_forward_5cm", times_override=1)
+        result = self.motion.run("interaction_forward_13cm", times_override=1)
         self.final_forward_executed = True
         self.debug.event(
             "target_final_forward_done" if result.ok else "target_final_forward_failed",
@@ -1775,11 +1775,10 @@ class TaskManager:
             reasons.append("recovery")
         near_target = goal_distance_cm < float(nav.get("near_target_distance_cm", 40.0))
         if near_target:
-            key = "near_target_max_forward_cycles" if action_kind == "forward" else "near_target_max_strafe_cycles"
-            cap = min(cap, int(nav.get(key, 1)))
+            cap = min(cap, int(nav.get("near_target_max_action_cycles", 1)))
             reasons.append("near_target")
         if navigation_mode == "target_direct_approach":
-            cap = min(cap, int(nav.get("near_target_max_forward_cycles", 2)) if action_kind == "forward" else 1)
+            cap = min(cap, int(nav.get("near_target_max_action_cycles", 1)))
             reasons.append("target_direct_approach")
         # Never cross the active waypoint/goal, and reserve uncertainty budget.
         if step_cm > 0.0:
@@ -1959,7 +1958,7 @@ class TaskManager:
             for screen in ranked
         ]
         self.last_target_plan = {
-            "selection_rule": "euclidean_current_pose_to_19cm_task_target_then_tag_id",
+            "selection_rule": "euclidean_current_pose_to_25cm_task_target_then_tag_id",
             "tag_id": best.screen_id,
             "screen_id": best.screen_id,
             "distance_cm": round(distance, 2),

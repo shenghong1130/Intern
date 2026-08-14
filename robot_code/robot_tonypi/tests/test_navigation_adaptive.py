@@ -44,7 +44,7 @@ class MotionAccountingTests(unittest.TestCase):
         result = ActionResult("forward_fast", "forward", 5, 0.0, model_forward_cm=17.5, executed_times=5)
         self.state.apply_action_result(result)
         self.assertEqual(self.state.actions_since_localize, 5)
-        self.assertEqual(self.state.motion_uncertainty, 5.0)
+        self.assertEqual(self.state.motion_uncertainty, 3.0)
 
     def test_partial_failure_counts_and_models_only_completed_prefix(self):
         result = ActionResult(
@@ -54,6 +54,7 @@ class MotionAccountingTests(unittest.TestCase):
         self.state.apply_action_result(result)
         self.assertEqual(self.state.actions_since_localize, 2)
         self.assertAlmostEqual(self.state.pose.x_cm, 7.0)
+        self.assertEqual(self.state.pose.confidence, Confidence.LOW)
 
     def test_failed_unknown_batch_does_not_claim_requested_cycles(self):
         result = ActionResult("forward_fast", "forward", 5, 0.0, model_forward_cm=17.5, ok=False)
@@ -79,6 +80,19 @@ class MotionAccountingTests(unittest.TestCase):
         self.assertEqual(self.state.actions_since_localize, 0)
         self.assertEqual(self.state.motion_uncertainty, 0.0)
 
+    def test_high_confidence_five_cycle_batch_does_not_hit_relocalize_threshold(self):
+        self.state.apply_action_result(
+            ActionResult("f", "f", 5, 0, model_forward_cm=17.5, executed_times=5)
+        )
+        self.assertEqual(self.state.pose.confidence, Confidence.HIGH)
+        self.assertFalse(self.state.needs_relocalize())
+
+    def test_confidence_specific_relocalize_limits_are_configured(self):
+        nav = self.config["navigation"]
+        self.assertEqual(nav["relocalize_after_actions_high"], 8)
+        self.assertEqual(nav["relocalize_after_actions_medium"], 4)
+        self.assertEqual(nav["relocalize_after_actions_low"], 1)
+
     def test_motion_controller_logs_requested_and_actual(self):
         hardware = SimpleNamespace(
             run_action=lambda key, times_override=None: ActionResult(
@@ -94,15 +108,15 @@ class MotionAccountingTests(unittest.TestCase):
 
 
 class AdaptiveBatchTests(unittest.TestCase):
-    def test_high_confidence_open_space_allows_six_forward_cycles(self):
+    def test_high_confidence_open_space_allows_eight_forward_cycles(self):
         manager = adaptive_manager(Confidence.HIGH)
         cycles, _ = manager.select_adaptive_action_batch("forward", 8, 3.5, 100, 100)
-        self.assertEqual(cycles, 6)
+        self.assertEqual(cycles, 8)
 
     def test_medium_and_low_confidence_shorten_batch(self):
         medium = adaptive_manager(Confidence.MEDIUM)
         low = adaptive_manager(Confidence.LOW)
-        self.assertEqual(medium.select_adaptive_action_batch("forward", 8, 3.5, 100, 100)[0], 3)
+        self.assertEqual(medium.select_adaptive_action_batch("forward", 8, 3.5, 100, 100)[0], 4)
         self.assertEqual(low.select_adaptive_action_batch("forward", 8, 3.5, 100, 100)[0], 1)
 
     def test_strafe_and_turn_caps_are_lower_than_forward(self):
@@ -110,7 +124,7 @@ class AdaptiveBatchTests(unittest.TestCase):
         forward = manager.select_adaptive_action_batch("forward", 8, 3.5, 100, 100)[0]
         strafe = manager.select_adaptive_action_batch("strafe", 8, 3.0, 100, 100)[0]
         turn = manager.select_adaptive_action_batch("turn", 8, 7.5, 100, 100)[0]
-        self.assertEqual((forward, strafe, turn), (6, 3, 2))
+        self.assertEqual((forward, strafe, turn), (8, 4, 2))
 
     def test_near_wall_recovery_and_near_target_force_short_batches(self):
         manager = adaptive_manager()
@@ -120,7 +134,7 @@ class AdaptiveBatchTests(unittest.TestCase):
 
     def test_batch_cannot_cross_waypoint_or_target(self):
         manager = adaptive_manager()
-        cycles, _ = manager.select_adaptive_action_batch("forward", 6, 3.5, 8.0, 8.0)
+        cycles, _ = manager.select_adaptive_action_batch("forward", 6, 3.5, 8.0, 100.0)
         self.assertEqual(cycles, 2)
 
     def test_localization_failure_forces_one_cycle(self):

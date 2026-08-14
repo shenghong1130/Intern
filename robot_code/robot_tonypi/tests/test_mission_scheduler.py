@@ -230,7 +230,7 @@ class MissionSchedulerTests(unittest.TestCase):
         self.assertTrue(manager.turn_navigation_abort)
         self.assertEqual(manager.turn_no_progress_count, 2)
 
-    def test_nearest_target_uses_current_pose_to_19cm_task_target(self):
+    def test_nearest_target_uses_current_pose_to_25cm_task_target(self):
         old_near_new_far = screen(3, (30.0, 0.0))
         old_near_new_far.target_xy = (2.0, 0.0)
         old_near_new_far.task_target_xy = (30.0, 0.0)
@@ -241,7 +241,7 @@ class MissionSchedulerTests(unittest.TestCase):
         self.assertEqual(manager.choose_nearest_screen().screen_id, 2)
         self.assertEqual(
             manager.last_target_plan["selection_rule"],
-            "euclidean_current_pose_to_19cm_task_target_then_tag_id",
+            "euclidean_current_pose_to_25cm_task_target_then_tag_id",
         )
 
     def test_reselects_from_latest_pose_after_completion(self):
@@ -295,14 +295,14 @@ class MissionSchedulerTests(unittest.TestCase):
         self.assertNotIn("execute_final_forward", calls)
         self.assertIn("visual_authorization_check", calls)
         state_names = {state.name for state in MissionState}
-        self.assertIn("FORWARD_5CM", state_names)
+        self.assertIn("FORWARD_13CM", state_names)
         self.assertNotIn("NAVIGATE_TO_APPROACH", state_names)
         self.assertNotIn("FINAL_ALIGN_15CM", state_names)
         self.assertNotIn("ALIGN_FOR_INTERACTION", state_names)
         self.assertNotIn("VERIFY_INTERACTION_POSE", state_names)
 
     def test_visual_authorization_requires_locked_arrived_target(self):
-        target = screen(2, (19.0, -5.0))
+        target = screen(2, (25.0, -2.0))
         target.last_classification = "mudan"
         manager = TaskManager.__new__(TaskManager)
         manager.target_flower = "hehua"
@@ -315,8 +315,8 @@ class MissionSchedulerTests(unittest.TestCase):
         manager.arrived_at_target = False
         self.assertIn("target_not_arrived", manager.visual_authorization_check(target, "mudan").reasons)
 
-    def test_navigation_goes_directly_to_single_19cm_target(self):
-        target = screen(2, (19.0, -5.0))
+    def test_navigation_goes_directly_to_single_25cm_target(self):
+        target = screen(2, (25.0, -2.0))
         manager = TaskManager.__new__(TaskManager)
         manager.config = load_config(None)
         manager.arrived_at_target = False
@@ -324,7 +324,7 @@ class MissionSchedulerTests(unittest.TestCase):
         manager.navigate_to_xy = lambda *args, **kwargs: calls.append((args, kwargs)) or True
         self.assertTrue(manager.navigate_directly_to_target(target))
         self.assertFalse(manager.arrived_at_target)
-        self.assertEqual(calls[0][0][0], (19.0, -5.0))
+        self.assertEqual(calls[0][0][0], (25.0, -2.0))
         self.assertEqual(calls[0][1]["target_yaw_deg"], 180.0)
         self.assertTrue(calls[0][1]["allow_goal_high_cost"])
 

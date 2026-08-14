@@ -40,9 +40,12 @@ class RobotState:
         if actual_cycles is None:
             actual_cycles = int(getattr(result, "times", 0)) if bool(getattr(result, "ok", False)) else 0
         actual_cycles = max(0, int(actual_cycles))
+        requested_cycles = max(1, int(getattr(result, "times", actual_cycles or 1)))
+        incomplete = not bool(getattr(result, "ok", False)) or actual_cycles < requested_cycles
         if actual_cycles <= 0:
+            if incomplete:
+                self.pose.confidence = Confidence.LOW
             return
-        requested_cycles = max(1, int(getattr(result, "times", actual_cycles)))
         executed_fraction = min(1.0, actual_cycles / float(requested_cycles))
         yaw_rad = math.radians(self.pose.yaw_deg)
         left_rad = yaw_rad + math.pi / 2.0
@@ -66,7 +69,8 @@ class RobotState:
             uncertainty = float(nav.get("forward_uncertainty_per_cycle", 1.0))
         self.motion_uncertainty += actual_cycles * uncertainty
         threshold = float(nav.get("relocalize_uncertainty_threshold", 6.0))
-        if self.motion_uncertainty >= threshold or self.actions_since_localize >= nav["relocalize_after_actions"]:
+        action_limit = self.relocalize_action_limit()
+        if incomplete or self.motion_uncertainty >= threshold or self.actions_since_localize >= action_limit:
             self.pose.confidence = Confidence.LOW
         elif self.pose.confidence == Confidence.HIGH and self.motion_uncertainty >= threshold * 0.5:
             self.pose.confidence = Confidence.MEDIUM
@@ -80,7 +84,20 @@ class RobotState:
             self.config["navigation"].get("relocalize_uncertainty_threshold", 6.0)
         ):
             return True
-        return self.actions_since_localize >= int(self.config["navigation"]["relocalize_after_actions"])
+        return self.actions_since_localize >= self.relocalize_action_limit()
+
+    def relocalize_action_limit(self) -> int:
+        nav = self.config["navigation"]
+        if self.pose is None or self.pose.confidence == Confidence.LOW:
+            suffix = "low"
+        elif self.pose.confidence == Confidence.MEDIUM:
+            suffix = "medium"
+        else:
+            suffix = "high"
+        return max(1, int(nav.get(
+            "relocalize_after_actions_{}".format(suffix),
+            nav.get("relocalize_after_actions", 1),
+        )))
 
     def as_dict(self):
         return {

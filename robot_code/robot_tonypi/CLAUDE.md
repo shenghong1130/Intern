@@ -4,17 +4,17 @@ TonyPi competition controller for a 300 × 300 cm field. Read `robot_decision_tr
 
 ## Non-negotiable task boundary
 
-Transit vision is geometry-only: `observe_transit_bindings()` may detect a screen quad and bind its left-upper Tag with `extract_crops=False`, but it cannot classify, vote, update flower state, move the final 5 cm, lift the hand, or call a Worker.
+Transit vision is geometry-only: `observe_transit_bindings()` may detect a screen quad and bind its left-upper Tag with `extract_crops=False`, but it cannot classify, vote, update flower state, move the final 13 cm, lift the hand, or call a Worker.
 
-After initial localization, the task locks the nearest unfinished screen by distance to its single 19 cm body target. The target is built from the complete building face center, its quantized outward normal, and the existing reader/left-hand tangent compensation. `target_xy`, `interaction_xy`, and `task_target_xy` must refer to that same coordinate. Do not restore a 34 cm approach point or a separate 15 cm alignment stage.
+After initial localization, the task locks the nearest unfinished screen by distance to its single 25 cm body target. The target is built from the complete building face center, its quantized outward normal, and the configured robot-frame lateral offset. `target_xy`, `interaction_xy`, and `task_target_xy` must refer to that same coordinate. Do not restore a 34 cm approach point or a separate 15 cm alignment stage.
 
-After direct navigation reaches the locked 19 cm coordinate and its cardinal yaw, a fresh live frame must contain the same 1–36 Tag and a screen quad bound to that Tag. Confirmation uses finite fresh-frame retries and finite visibility recovery while preserving the target. This geometry confirmation authorizes exactly one `interaction_forward_5cm`. Classification happens from a fresh bound crop immediately after that motion; a valid non-target FPGA result creates a target-specific `VisualAuthorization`.
+After direct navigation reaches the locked 25 cm coordinate and its cardinal yaw, a fresh live frame must contain the same 1–36 Tag and a screen quad bound to that Tag. Confirmation uses finite fresh-frame retries and finite visibility recovery while preserving the target. This geometry confirmation authorizes exactly one `interaction_forward_13cm`. Classification happens from a fresh bound crop immediately after that motion; a valid non-target FPGA result creates a target-specific `VisualAuthorization`.
 
 Physical change is exclusively:
 
 ```text
-locked 19 cm Tag/screen confirmation
-→ interaction_forward_5cm exactly once
+locked 25 cm Tag/screen confirmation
+→ interaction_forward_13cm exactly once
 → capture and FPGA classify
 → NEEDS_CHANGE + locked visual authorization
 → stand → lift_left_hand(stand=False)
@@ -22,7 +22,7 @@ locked 19 cm Tag/screen confirmation
 → robotall.send_request → finally stand
 ```
 
-There is no localization, body alignment, turning, strafing, backing, or second forward action after the 5 cm motion. The single post-motion capture is only for the required screen crop and FPGA classification. Selecting another target clears both geometry confirmation and authorization. Competition numbering is identical: AprilTag ID == `screen_id` == NFC `worker_id`.
+There is no localization, body alignment, turning, strafing, backing, or second forward action after the 13 cm motion. The single post-motion capture is only for the required screen crop and FPGA classification. Selecting another target clears both geometry confirmation and authorization. Competition numbering is identical: AprilTag ID == `screen_id` == NFC `worker_id`.
 
 ## Planning rules
 
@@ -43,7 +43,7 @@ python3 -m unittest discover -s tests -v
 python3 -m compileall -q .
 ```
 
-`--dry-run` means no hardware. `--skip-change` performs real navigation and classification but skips the dedicated 5 cm action, arm movement, and Worker request. `--skip-api` is its deprecated alias.
+`--dry-run` means no hardware. `--skip-change` performs real navigation and classification but skips the dedicated 13 cm action, arm movement, and Worker request. `--skip-api` is its deprecated alias.
 
 ## Conventions
 
@@ -52,4 +52,4 @@ python3 -m compileall -q .
 - `(0, 0)` is the bottom-left of the field map.
 - Python defaults and `config/competition_config.json` must remain aligned.
 - Keep `max_screen_area_ratio` at its current configured value unless a separate task explicitly changes it.
-- `left_hand_body_offset_cm` and the real displacement of `interaction_forward_5cm` require field calibration.
+- `target_lateral_offset_cm` and the real displacement of `interaction_forward_13cm` require field calibration.

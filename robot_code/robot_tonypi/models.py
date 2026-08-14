@@ -34,7 +34,7 @@ class MissionState(str, Enum):
     CONFIRM_TARGET_SCREEN = "CONFIRM_TARGET_SCREEN"
     TARGET_VISIBILITY_RECOVERY = "TARGET_VISIBILITY_RECOVERY"
     TARGET_TAG_SCREEN_CONFIRMED = "TARGET_TAG_SCREEN_CONFIRMED"
-    FORWARD_5CM = "FORWARD_5CM"
+    FORWARD_13CM = "FORWARD_13CM"
     CAPTURE_TARGET_SCREEN = "CAPTURE_TARGET_SCREEN"
     CLASSIFY_TARGET_FLOWER = "CLASSIFY_TARGET_FLOWER"
     TARGET_ALREADY_CORRECT = "TARGET_ALREADY_CORRECT"
@@ -181,7 +181,7 @@ class ClassificationResult:
 
 @dataclass
 class TargetVisualConfirmation:
-    """One live 19 cm observation binding the locked Tag to its screen."""
+    """One live 25 cm observation binding the locked Tag to its screen."""
     screen_id: int
     tag_id: int
     binding_ok: bool
