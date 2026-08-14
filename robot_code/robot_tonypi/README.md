@@ -13,10 +13,10 @@ AprilTag 初始定位
 → 生成建筑面中心正前方 17 cm、带左手横向补偿的唯一任务位姿
 → 使用现有地图、障碍代价和 A* 直接导航到 17 cm 坐标及标准 yaw
 → 到达后拍摄，确认当前 Tag 与屏幕同时出现并正确绑定
-→ 在 17 cm 位置裁剪当前屏幕并由 FPGA 识别花朵
+→ 只向屏幕前进一次专用 3 cm 小步
+→ 立即重新拍摄当前绑定屏幕并由 FPGA 识别花朵
 → 已是目标花：记录，不换花
-→ 不是目标花：只向屏幕前进一次专用 3 cm 小步
-→ 不再定位、拍摄或对准，立即举左手并向对应 Worker 发送换花请求
+→ 不是目标花：立即举左手并向对应 Worker 发送换花请求
 → 收手站立
 ```
 
@@ -24,7 +24,7 @@ AprilTag 初始定位
 
 导航检测到身体正前方近墙时，恢复顺序固定为“小步安全后退 → 向地图空间更大的一侧侧移 → 最后才小角度转身”。后退前会检查后方路径，每个动作后都会重新 AprilTag 定位并复查墙距；连续无有效位姿或墙距变化会立即报告 `RECOVERY_NO_PROGRESS`，不会空转到 80 步。单次导航失败先按 `max_target_attempts` 重试，超过上限才将目标标记为终止失败；失败目标不计入成功处理，全部目标终止失败时状态为 `MISSION_FAILED`。
 
-地图、Tag 世界坐标、AprilTag 定位算法和障碍代价没有变化。程序不再生成 34 cm 安全接近点或 15 cm 二次对准点；`target_xy`、`interaction_xy` 与 `task_target_xy` 都指向同一个 17 cm 身体目标。最终 yaw 只能是 `0°`、`-180°`、`+90°`、`-90°`。17 cm 精确终点可以作为当前锁定目标的高代价终点，但建筑实体和路径上的其他高代价区域不会因此放行。
+地图、Tag 世界坐标、AprilTag 定位算法和全局障碍代价没有变化。程序不再生成 34 cm 安全接近点或 15 cm 二次对准点；`target_xy`、`interaction_xy` 与 `task_target_xy` 都指向同一个 17 cm 身体目标。最终 yaw 只能是 `0°`、`-180°`、`+90°`、`-90°`。距离锁定目标不超过 40 cm 时，程序先检查一条窄直达通道：物理占用、其他建筑和动态障碍仍会阻断，只忽略当前目标建筑自身的膨胀代价。通道安全时优先直走、再侧移，并自动使用较小的末步；否则回到原 action planner/A*。
 
 ## 2. 使用前确认
 
@@ -122,11 +122,13 @@ Tag 25 → screen_id 25 → worker_id 25
 
 ```text
 target_distance_cm = 17
-pre_change_forward_cm = 3
+target_final_forward_cm = 3
 sensor_left_offset_cm = 5
 left_hand_body_offset_cm = 0
 navigation.target_arrival_radius_cm = 3
 navigation.target_arrival_yaw_tolerance_deg = 10
+navigation.target_direct_approach_distance_cm = 40
+navigation.target_direct_corridor_half_width_cm = 6
 ```
 
 其中 `left_hand_body_offset_cm = 0` 只是未知机械尺寸的占位值。正式比赛前应现场确认左手相对身体中心的横向偏移、17 cm 导航落点，以及专用动作组是否真实前进约 3 cm。
@@ -190,7 +192,7 @@ python3 -u -m robot_tonypi.main \
   --debug-port 8090
 ```
 
-程序先定位，选择最近目标并真实导航；确认进入到达状态后，只对当前目标绑定的屏幕裁剪 28×28 图像并调用 FPGA 分类器。该模式不执行实体换花。机器人会移动，周围必须留出安全空间。
+程序先定位，选择最近目标并真实导航；确认进入到达状态后，只对当前目标绑定的屏幕裁剪 28×28 图像并调用 FPGA 分类器。`harvest` 是识别模式，不执行最后 3 cm 或实体换花。机器人会移动，周围必须留出安全空间。
 
 ### 第五步：真实导航，但模拟换花
 
@@ -257,11 +259,14 @@ python3 -u -m robot_tonypi.main \
 正式换花顺序是：
 
 ```text
-17 cm 处的目标 Tag/屏幕绑定与 FPGA 结果已锁定
+17 cm 处确认目标 Tag/屏幕绑定
 → interaction_forward_3cm（恰好一次）
+→ 拍照、裁剪并调用 FPGA
+→ 目标花：记录 ALREADY_TARGET 并结束当前目标
+→ 非目标花：锁定 VisualAuthorization
 → stand
 → lift_left_hand(stand=False)
-→ 再次检查同一份视觉授权（不重新拍摄或定位）
+→ 再次检查同一份视觉授权
 → send_request
 → 等待 Worker 响应
 → finally: stand

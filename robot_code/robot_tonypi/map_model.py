@@ -53,6 +53,7 @@ class MapModel:
         self.cols = int(math.ceil(self.height_cm / self.res))
         self.grid = np.zeros((self.rows, self.cols), dtype=np.uint8)
         self.cost = np.zeros((self.rows, self.cols), dtype=np.float32)
+        self.building_bounds: Dict[int, dict] = {}
         self.screens: Dict[int, Screen] = {}
         self._build_screens()
         self._build_obstacles()
@@ -133,6 +134,7 @@ class MapModel:
             item["y_min"] = min(item["y_min"], float(np.min(xy[:, 1])))
             item["y_max"] = max(item["y_max"], float(np.max(xy[:, 1])))
 
+        self.building_bounds = {group_id: dict(item) for group_id, item in bounds.items()}
         inflation_cm = max(0.0, float(self.cfg["map"].get("obstacle_inflation_cm", 0.0)))
         inflation = int(math.ceil(inflation_cm / self.res))
         for item in bounds.values():
@@ -238,6 +240,75 @@ class MapModel:
         if max_cost is None:
             max_cost = float(self.cfg["map"].get("obstacle_line_clear_max_cost", 60.0))
         return self.cost[node[0], node[1]] < float(max_cost)
+
+    def non_target_obstacle_cost_xy(self, xy, target_screen_id: int) -> float:
+        """Return inflation cost while excluding only the locked target building."""
+        target_group = (int(target_screen_id) - 1) // 4
+        maximum = 0.0
+        for group_id, bounds in self.building_bounds.items():
+            if int(group_id) == target_group:
+                continue
+            maximum = max(
+                maximum,
+                self.obstacle_cost_for_distance(self.distance_to_obstacle_rect_cm(xy, bounds)),
+            )
+        dynamic_hard = float(self.cfg.get("obstacle", {}).get("dynamic_hard_margin_cm", 10.0))
+        for bounds in self.dynamic_obstacles:
+            maximum = max(
+                maximum,
+                self.obstacle_cost_for_distance(
+                    self.distance_to_obstacle_rect_cm(xy, bounds),
+                    hard_margin_override=dynamic_hard,
+                ),
+            )
+        return maximum
+
+    def target_direct_corridor_clear(
+        self,
+        start_xy,
+        goal_xy,
+        target_screen_id: int,
+        half_width_cm: float,
+        max_non_target_cost: float,
+        sample_step_cm: float = 2.0,
+    ) -> bool:
+        """Check a narrow final corridor, ignoring only target-building inflation.
+
+        Physical occupancy is never ignored. Inflation from every other static
+        building and every dynamic obstacle remains active.
+        """
+        if not self.in_bounds_xy(start_xy) or not self.in_bounds_xy(goal_xy):
+            return False
+        dx = float(goal_xy[0]) - float(start_xy[0])
+        dy = float(goal_xy[1]) - float(start_xy[1])
+        length = math.hypot(dx, dy)
+        if length < 1e-6:
+            return self.is_free_xy(goal_xy)
+        tangent = (dx / length, dy / length)
+        lateral = (-tangent[1], tangent[0])
+        longitudinal_steps = max(1, int(math.ceil(length / max(0.5, sample_step_cm))))
+        half_width = max(0.0, float(half_width_cm))
+        lateral_steps = max(1, int(math.ceil(half_width / max(0.5, sample_step_cm))))
+        offsets = [0.0]
+        for index in range(1, lateral_steps + 1):
+            offset = min(half_width, index * max(0.5, sample_step_cm))
+            offsets.extend((-offset, offset))
+        for index in range(longitudinal_steps + 1):
+            along = min(length, index * max(0.5, sample_step_cm))
+            center = (
+                float(start_xy[0]) + tangent[0] * along,
+                float(start_xy[1]) + tangent[1] * along,
+            )
+            for offset in offsets:
+                sample = (
+                    center[0] + lateral[0] * offset,
+                    center[1] + lateral[1] * offset,
+                )
+                if not self.is_free_xy(sample):
+                    return False
+                if self.non_target_obstacle_cost_xy(sample, target_screen_id) >= float(max_non_target_cost):
+                    return False
+        return True
 
     def nearest_free_xy(self, xy) -> Tuple[float, float]:
         start = self.grid_pos(xy)
@@ -379,6 +450,15 @@ class MapModel:
         turn_cost_per_deg = max(0.0, float(navigation_cfg.get("action_planner_turn_cost_cm_per_deg", 1.1)))
         turn_fixed = max(0.0, float(navigation_cfg.get("action_planner_turn_fixed_cost_cm", 8.0)))
         large_extra = max(0.0, float(navigation_cfg.get("action_planner_large_turn_extra_cost_cm", 4.0)))
+        consecutive_turn_penalty = max(
+            0.0, float(navigation_cfg.get("action_planner_consecutive_turn_penalty_cm", 12.0))
+        )
+        reverse_turn_penalty = max(
+            0.0, float(navigation_cfg.get("action_planner_reverse_turn_penalty_cm", 35.0))
+        )
+        in_place_turn_penalty = max(
+            0.0, float(navigation_cfg.get("action_planner_in_place_turn_penalty_cm", 10.0))
+        )
 
         actions = [
             {
@@ -420,6 +500,9 @@ class MapModel:
                     "lateral_cm": 0.0,
                     "yaw_deg": yaw_delta,
                     "base_cost": turn_fixed + abs(yaw_delta) * turn_cost_per_deg + extra_cost,
+                    "consecutive_turn_penalty": consecutive_turn_penalty,
+                    "reverse_turn_penalty": reverse_turn_penalty,
+                    "in_place_turn_penalty": in_place_turn_penalty,
                 }
             )
         return actions
@@ -451,12 +534,19 @@ class MapModel:
         goal_node=None,
         allow_goal_high_cost: bool = False,
     ):
-        gx, gy, yaw_idx = state
+        gx, gy, yaw_idx = state[:3]
+        previous_turn_sign = int(state[3]) if len(state) >= 4 else 0
         current_xy = self.xy_from_grid((gx, gy))
         yaw_delta = float(action.get("yaw_deg", 0.0))
         if abs(yaw_delta) > 1e-6:
             bin_delta = self.yaw_delta_to_bins(yaw_delta, yaw_bin_deg)
-            return (gx, gy, (yaw_idx + bin_delta) % yaw_bins), float(action["base_cost"])
+            turn_sign = 1 if yaw_delta > 0.0 else -1
+            turn_cost = float(action["base_cost"]) + float(action.get("in_place_turn_penalty", 0.0))
+            if previous_turn_sign == turn_sign:
+                turn_cost += float(action.get("consecutive_turn_penalty", 0.0))
+            elif previous_turn_sign == -turn_sign:
+                turn_cost += float(action.get("reverse_turn_penalty", 0.0))
+            return (gx, gy, (yaw_idx + bin_delta) % yaw_bins, turn_sign), turn_cost
 
         yaw = math.radians(self.yaw_from_action_bin(yaw_idx, yaw_bin_deg))
         left_yaw = yaw + math.pi / 2.0
@@ -483,7 +573,7 @@ class MapModel:
             return None
         move_cost = float(action["base_cost"])
         move_cost += obstacle_cost_scale * self.segment_obstacle_cost(current_xy, next_xy)
-        return (nx, ny, yaw_idx), move_cost
+        return (nx, ny, yaw_idx, 0), move_cost
 
     def _reconstruct_action_path(self, came, current, start_xy) -> List[Tuple[float, float]]:
         states = [current]
@@ -492,7 +582,8 @@ class MapModel:
             states.append(current)
         states.reverse()
         points = [(float(start_xy[0]), float(start_xy[1]))]
-        for gx, gy, _ in states[1:]:
+        for state in states[1:]:
+            gx, gy = state[:2]
             xy = self.xy_from_grid((gx, gy))
             if distance_xy(points[-1], xy) > 1.0:
                 points.append(xy)
@@ -522,6 +613,7 @@ class MapModel:
             start_grid[0],
             start_grid[1],
             self.yaw_to_action_bin(start_pose.yaw_deg, yaw_bin_deg, yaw_bins),
+            0,
         )
         goal_node = self.grid_pos(goal_xy)
         goal_tolerance = max(self.res, float(navigation_cfg.get("action_planner_goal_tolerance_cm", 8.0)))

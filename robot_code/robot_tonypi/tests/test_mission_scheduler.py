@@ -291,7 +291,7 @@ class MissionSchedulerTests(unittest.TestCase):
         self.assertNotIn("navigate_to_task_pose", function_names)
         self.assertNotIn("align_for_screen_interaction", function_names)
         self.assertNotIn("arrival_geometry_check", function_names)
-        self.assertIn("execute_pre_change_forward", calls)
+        self.assertNotIn("execute_final_forward", calls)
         self.assertIn("visual_authorization_check", calls)
         state_names = {state.name for state in MissionState}
         self.assertIn("FORWARD_3CM", state_names)
@@ -305,6 +305,7 @@ class MissionSchedulerTests(unittest.TestCase):
         target.last_classification = "mudan"
         manager = TaskManager.__new__(TaskManager)
         manager.target_flower = "hehua"
+        manager.target_visual_confirmation = None
         manager.visual_authorization = VisualAuthorization(2, 2, True, "mudan", 0.95, 100.0)
         manager.current_target_screen_id = 3
         manager.arrived_at_target = False
@@ -336,7 +337,7 @@ class MissionSchedulerTests(unittest.TestCase):
                 for call in ast.walk(fn)
             ):
                 callers.append(fn.name)
-        self.assertEqual(callers, ["classify_arrived_target"])
+        self.assertEqual(callers, ["classify_after_final_forward"])
 
     def test_navigation_has_no_task_level_observation_or_passby_branch(self):
         source = (Path(__file__).resolve().parents[1] / "task_manager.py").read_text(encoding="utf-8")

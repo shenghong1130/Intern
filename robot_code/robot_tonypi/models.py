@@ -29,12 +29,15 @@ class MissionState(str, Enum):
     SELECT_NEAREST_TARGET = "SELECT_NEAREST_TARGET"
     BUILD_CARDINAL_TARGET_POSE = "BUILD_CARDINAL_TARGET_POSE"
     NAVIGATE_TO_TARGET = "NAVIGATE_TO_TARGET"
+    TARGET_DIRECT_APPROACH = "TARGET_DIRECT_APPROACH"
     ARRIVED_AT_TARGET = "ARRIVED_AT_TARGET"
+    CONFIRM_TARGET_SCREEN = "CONFIRM_TARGET_SCREEN"
+    TARGET_TAG_SCREEN_CONFIRMED = "TARGET_TAG_SCREEN_CONFIRMED"
+    FORWARD_3CM = "FORWARD_3CM"
     CAPTURE_TARGET_SCREEN = "CAPTURE_TARGET_SCREEN"
     CLASSIFY_TARGET_FLOWER = "CLASSIFY_TARGET_FLOWER"
     TARGET_ALREADY_CORRECT = "TARGET_ALREADY_CORRECT"
     NEEDS_CHANGE = "NEEDS_CHANGE"
-    FORWARD_3CM = "FORWARD_3CM"
     EXECUTE_CHANGE = "EXECUTE_CHANGE"
     MARK_TARGET_COMPLETE = "MARK_TARGET_COMPLETE"
     MISSION_COMPLETE = "MISSION_COMPLETE"
@@ -165,6 +168,23 @@ class ClassificationResult:
     class_index: Optional[int] = None
     raw: Dict[str, Any] = field(default_factory=dict)
     error: str = ""
+
+
+@dataclass
+class TargetVisualConfirmation:
+    """One live 17 cm observation binding the locked Tag to its screen."""
+    screen_id: int
+    tag_id: int
+    binding_ok: bool
+    captured_s: float
+
+    def as_dict(self) -> Dict[str, Any]:
+        return {
+            "screen_id": self.screen_id,
+            "tag_id": self.tag_id,
+            "binding_ok": self.binding_ok,
+            "captured_s": self.captured_s,
+        }
 
 
 @dataclass

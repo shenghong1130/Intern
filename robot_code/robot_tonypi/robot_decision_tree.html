@@ -17,7 +17,7 @@
 <body><main>
   <h1>TonyPi 17 cm 直接任务决策树</h1>
   <p class="lead">本页对应当前代码。地图、Tag 世界坐标、初始定位、屏幕检测、左上 Tag 绑定、FPGA 分类和 Worker 协议保持不变；定位成功后的任务层改为单一 17 cm 目标。</p>
-  <div class="notice"><b>核心边界：</b>没有 34 cm 安全接近点，也没有 15 cm 二次对准。到达 17 cm 后必须在同一实时画面确认当前 Tag 与绑定屏幕；需要换花时只前进一次 3 cm，之后不再定位、拍摄或调整。</div>
+  <div class="notice"><b>核心边界：</b>没有 34 cm 安全接近点，也没有 15 cm 二次对准。到达 17 cm 后用一帧确认当前 Tag 与绑定屏幕，然后只前进一次 3 cm；前进后立即拍照、FPGA 分类，并按结果结束或换花。</div>
 
   <h2>1. 主状态机</h2>
   <div class="flow">
@@ -28,12 +28,12 @@
     <div class="node good">ARRIVED_AT_TARGET<br>坐标和 yaw 到达</div>
   </div>
   <div class="flow">
-    <div class="node">CAPTURE_TARGET_SCREEN<br>实时 Tag + 屏幕</div><div class="arrow">→</div>
-    <div class="node">CLASSIFY_TARGET_FLOWER<br>FPGA 投票</div><div class="arrow">→</div>
+    <div class="node">CONFIRM_TARGET_SCREEN<br>单帧 Tag + 屏幕</div><div class="arrow">→</div>
+    <div class="node">FORWARD_3CM<br>专用动作一次</div><div class="arrow">→</div>
+    <div class="node">CAPTURE + CLASSIFY<br>拍照、FPGA 分类</div><div class="arrow">→</div>
     <div class="node decision">目标花？</div><div class="arrow">→</div>
     <div class="node good">ALREADY_TARGET<br>直接完成</div>
     <div class="node">或 NEEDS_CHANGE</div><div class="arrow">→</div>
-    <div class="node">FORWARD_3CM<br>专用动作一次</div><div class="arrow">→</div>
     <div class="node good">EXECUTE_CHANGE<br>举手 + Worker</div>
   </div>
 
@@ -60,33 +60,35 @@ task_target = base_17
   <div class="tree">
     <div class="branch"><b>选择目标：</b>只考虑非终止目标；用最新 pose 到 <code>task_target_xy</code> 的欧氏距离排序，距离相同按 <code>screen_id/tag_id</code> 升序。</div>
     <div class="branch"><b>锁定：</b>导航途中看到其他 Tag 只更新几何绑定，不切换目标、不分类。</div>
-    <div class="branch"><b>直接规划：</b><code>navigate_directly_to_target()</code> 把唯一 17 cm 坐标和四向 yaw 交给 <code>navigate_to_xy()</code>，到达半径默认 3 cm。</div>
+    <div class="branch"><b>普通导航：</b>40 cm 范围外保留 action planner、A*、障碍膨胀和全部代价。</div>
+    <div class="branch"><b>近目标直达：</b>40 cm 范围内先检查窄通道；只忽略当前锁定目标建筑产生的膨胀代价，真实占用、其他建筑和动态障碍仍然阻断。通道清晰时优先直走、再侧移，并用小步收尾。</div>
+    <div class="branch"><b>动作偏好：</b>提高转向固定代价、角度代价、连续转向和反向转回惩罚；直走/侧移不可行或避让真实障碍时仍允许转弯。</div>
     <div class="branch"><b>代价保留：</b>静态/动态障碍、膨胀、cost、A*、action planner、碰撞和近墙恢复继续工作。</div>
-    <div class="branch"><b>终点特例：</b>只允许当前精确终点所在网格接受高代价；该网格仍必须是物理自由空间，代价不清零，建筑实体绝不放行，目标也不被推远。</div>
+    <div class="branch"><b>近墙例外：</b>只在当前目标锁定、处于最后接近范围且窄通道确认无真实障碍时抑制普通近墙恢复；其他导航继续使用原保护。</div>
     <div class="branch"><span class="stop">路径无法安全到达：</span>按现有目标重试机制记录失败，本轮不拍摄、不前进 3 cm、不换花。</div>
   </div>
 
-  <h2>4. 到达后的实时视觉授权</h2>
-  <div class="flow"><div class="node">静止拍摄</div><div class="arrow">→</div><div class="node decision">当前 Tag 存在？</div><div class="arrow">→</div><div class="node decision">屏幕框存在？</div><div class="arrow">→</div><div class="node decision">左上绑定到同一 ID？</div><div class="arrow">→</div><div class="node good">允许 FPGA</div></div>
+  <h2>4. 到达后的单帧几何确认</h2>
+  <div class="flow"><div class="node">静止拍摄一次</div><div class="arrow">→</div><div class="node decision">当前 Tag 存在？</div><div class="arrow">→</div><div class="node decision">屏幕框存在？</div><div class="arrow">→</div><div class="node decision">左上绑定到同一 ID？</div><div class="arrow">→</div><div class="node good">允许前进 3 cm</div></div>
   <div class="tree">
     <div class="branch">Tag 必须在 1～36 内，且 <code>tag_id == current_target_screen_id</code>。</div>
     <div class="branch">屏幕候选必须使用现有 <code>ScreenDetector</code> 左上 Tag 绑定，并满足 <code>candidate.screen_id == candidate.tag.tag_id == current target</code>。</div>
-    <div class="branch">少量拍摄重试可以改变头部 pan，但不允许身体转向、平移、前后移动或重新导航。</div>
-    <div class="branch">稳定投票成功后保存 <code>VisualAuthorization</code>：screen_id、tag_id、binding_ok、flower、confidence、captured_s。选择新目标时立即清空。</div>
-    <div class="branch"><span class="stop">缺 Tag、缺屏幕、绑定错误、FPGA 失败或投票不稳定：</span>禁止 3 cm 动作和 Worker 事务。</div>
+    <div class="branch">该阶段不分类、不等待多帧稳定结果，只保存属于当前目标的 <code>TargetVisualConfirmation</code>。</div>
+    <div class="branch"><span class="stop">缺 Tag、缺屏幕或绑定错误：</span>禁止 3 cm 动作、FPGA 和 Worker 事务。</div>
   </div>
 
-  <h2>5. 分类分支与 3 cm 动作</h2>
+  <h2>5. 单次 3 cm 与后置分类</h2>
   <table>
     <tr><th>结果</th><th>行为</th><th>禁止行为</th></tr>
-    <tr><td class="ok">flower == target_flower</td><td>标记 <code>ALREADY_TARGET</code>，重新选择最近目标</td><td>不前进、不举手、不请求 Worker</td></tr>
-    <tr><td>稳定非目标花</td><td>标记 <code>NEEDS_CHANGE</code>，检查锁定视觉授权，执行 <code>interaction_forward_3cm ×1</code></td><td>不得循环计算次数；动作失败不得换花</td></tr>
+    <tr><td>3 cm 动作失败</td><td>当前尝试失败</td><td>不拍照分类、不请求 Worker</td></tr>
+    <tr><td class="ok">前进后 flower == target_flower</td><td>标记 <code>ALREADY_TARGET</code>，重新选择最近目标</td><td>不举手、不请求 Worker</td></tr>
+    <tr><td>前进后有效非目标花</td><td>创建 <code>VisualAuthorization</code>，标记 <code>NEEDS_CHANGE</code></td><td>FPGA 失败或低置信度不得换花</td></tr>
   </table>
   <p>专用动作配置使用 <code>go_forward_one_small_step</code>、<code>times=1</code>、模型位移 3.0 cm。它不复用含停车余量和循环次数的普通 <code>move_forward()</code>。</p>
 
   <h2>6. 前进后的原子换花事务</h2>
   <div class="flow"><div class="node">FORWARD_3CM 成功</div><div class="arrow">→</div><div class="node">stand</div><div class="arrow">→</div><div class="node">lift_left_hand<br>stand=False</div><div class="arrow">→</div><div class="node">复查同一视觉授权</div><div class="arrow">→</div><div class="node">send_request</div><div class="arrow">→</div><div class="node good">finally: stand</div></div>
-  <div class="notice">3 cm 动作之后不得调用定位、摄像头、姿态对准、转向、横移、后退或第二次前进。交互客户端保留两次授权检查、举手、Worker 响应解析、审计日志与最终站立；第二次检查仍读取已锁定快照，不读取移动后的实时 pose。</div>
+  <div class="notice">3 cm 动作之后只允许一次用于 FPGA 分类的目标屏幕拍摄，不得调用定位、姿态对准、转向、横移、后退或第二次前进。分类成功后交互客户端保留两次授权检查、举手、Worker 响应解析、审计日志与最终站立。</div>
 
   <h2>7. 安全模式、失败与调试</h2>
   <div class="grid">
@@ -101,9 +103,10 @@ task_target = base_17
     <tr><th>函数/模块</th><th>职责</th></tr>
     <tr><td><code>configure_cardinal_task_targets()</code></td><td>从只读 Tag 四角与建筑边界建立唯一 17 cm 身体目标。</td></tr>
     <tr><td><code>choose_nearest_screen()</code></td><td>按最新 pose 到 17 cm 目标排序并按 ID 破平局。</td></tr>
-    <tr><td><code>navigate_directly_to_target()</code></td><td>直接导航到精确目标并收敛四向 yaw。</td></tr>
-    <tr><td><code>classify_arrived_target()</code></td><td>实时验证当前 Tag+屏幕绑定，调用 FPGA 并创建视觉授权。</td></tr>
-    <tr><td><code>execute_pre_change_forward()</code></td><td>专用 3 cm 动作，强制单次执行。</td></tr>
+    <tr><td><code>target_direct_approach_path()</code></td><td>近目标时在普通规划器之前验证窄直达通道。</td></tr>
+    <tr><td><code>confirm_target_tag_and_screen()</code></td><td>17 cm 处用单帧确认当前 Tag 与绑定屏幕。</td></tr>
+    <tr><td><code>execute_final_forward()</code></td><td>专用 3 cm 动作，强制单次执行。</td></tr>
+    <tr><td><code>classify_after_final_forward()</code></td><td>3 cm 后拍摄、调用 FPGA 并创建视觉授权。</td></tr>
     <tr><td><code>visual_authorization_check()</code></td><td>验证快照属于当前锁定目标和稳定的非目标花。</td></tr>
     <tr><td><code>RobotInteractionClient.change_flower()</code></td><td>原子举手、Worker 请求、响应处理与 finally 站立。</td></tr>
   </table>

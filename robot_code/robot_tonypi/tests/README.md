@@ -86,9 +86,9 @@ python3 -m unittest robot_tonypi.tests.test_mission_scheduler -v
 
 - 所有别名字段都指向带横向补偿的唯一 17 cm 目标；
 - 当前精确终点可作为高代价终点，但建筑实体和普通目标不获得例外；
-- 正确目标 Tag 与绑定屏幕共同出现后才调用 FPGA；
-- 缺 Tag、缺屏幕、绑定错误、FPGA 失败均不生成视觉授权；
-- 已是目标花不前进；需要换花时专用 3 cm 动作恰好一次；
+- 正确目标 Tag 与绑定屏幕共同出现后才允许专用 3 cm 动作；
+- 缺 Tag、缺屏幕或绑定错误时不前进；3 cm 后 FPGA 失败不生成视觉授权；
+- 专用 3 cm 动作恰好一次，随后才分类；已是目标花时不调用 Worker；
 - 3 cm 动作失败时不调用 Worker，旧授权不能跨目标复用。
 
 测试使用假画面、假分类器、假动作和假 Worker，不访问真实硬件或网络。
@@ -99,7 +99,17 @@ python3 -m unittest robot_tonypi.tests.test_mission_scheduler -v
 python3 -m unittest robot_tonypi.tests.test_direct_17cm_flow -v
 ```
 
-## 6. `test_vision_tag_binding.py`
+## 6. `test_target_direct_approach.py`
+
+验证锁定目标 40 cm 范围内的窄通道直达、当前目标膨胀代价豁免、其他障碍保持生效、较短末步、直走优先及转向惩罚。只创建地图和轻量任务对象，不调用真实硬件。
+
+单独运行：
+
+```bash
+python3 -m unittest robot_tonypi.tests.test_target_direct_approach -v
+```
+
+## 7. `test_vision_tag_binding.py`
 
 验证花朵屏幕与左上方 AprilTag 的绑定规则：
 

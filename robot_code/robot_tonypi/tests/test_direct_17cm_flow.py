@@ -19,6 +19,7 @@ from robot_tonypi.models import (
     RobotPose,
     Screen,
     ScreenStatus,
+    TargetVisualConfirmation,
     VisualAuthorization,
     WorkerChangeResult,
 )
@@ -69,7 +70,9 @@ def classification_manager(tag_ids, candidates, classification):
     manager.arrived_at_target = True
     manager.mission_state = MissionState.ARRIVED_AT_TARGET
     manager.classifier_allowed = False
+    manager.target_visual_confirmation = None
     manager.visual_authorization = None
+    manager.final_forward_executed = False
     manager.last_vote_summary = {}
     manager.state = SimpleNamespace(
         pose=RobotPose(17.0, -5.0, 180.0, Confidence.HIGH, "TEST", 1.0)
@@ -156,7 +159,9 @@ class Direct17cmFlowTests(unittest.TestCase):
             [1], [candidate()], ClassificationResult(True, "chuju", confidence=0.95)
         )
         target = make_screen()
-        self.assertEqual(manager.classify_arrived_target(target), 1)
+        self.assertTrue(manager.confirm_target_tag_and_screen(target))
+        manager.final_forward_executed = True
+        self.assertEqual(manager.classify_after_final_forward(target), 1)
         self.assertEqual(target.status, ScreenStatus.NEEDS_CHANGE)
         self.assertEqual(manager.visual_authorization.screen_id, 1)
         self.assertEqual(manager.visual_authorization.tag_id, 1)
@@ -166,36 +171,50 @@ class Direct17cmFlowTests(unittest.TestCase):
         result = ClassificationResult(True, "chuju", confidence=0.95)
         manager = classification_manager([1], [], result)
         manager.classifier.classify_crop = lambda crop: calls.append(crop) or result
-        self.assertEqual(manager.classify_arrived_target(make_screen()), 0)
+        self.assertFalse(manager.confirm_target_tag_and_screen(make_screen()))
         self.assertEqual(calls, [])
         self.assertIsNone(manager.visual_authorization)
 
     def test_screen_without_target_tag_blocks_fpga(self):
         manager = classification_manager([], [candidate()], ClassificationResult(True, "chuju", confidence=0.95))
-        self.assertEqual(manager.classify_arrived_target(make_screen()), 0)
+        self.assertFalse(manager.confirm_target_tag_and_screen(make_screen()))
         self.assertIsNone(manager.visual_authorization)
 
     def test_wrong_tag_binding_blocks_fpga(self):
         manager = classification_manager([1, 2], [candidate(2, 2)], ClassificationResult(True, "chuju", confidence=0.95))
-        self.assertEqual(manager.classify_arrived_target(make_screen()), 0)
+        self.assertFalse(manager.confirm_target_tag_and_screen(make_screen()))
         self.assertIsNone(manager.visual_authorization)
 
     def test_fpga_failure_blocks_authorization(self):
         manager = classification_manager([1], [candidate()], ClassificationResult(False, error="fpga_down"))
-        self.assertEqual(manager.classify_arrived_target(make_screen()), 0)
+        target = make_screen()
+        self.assertTrue(manager.confirm_target_tag_and_screen(target))
+        manager.final_forward_executed = True
+        self.assertEqual(manager.classify_after_final_forward(target), 0)
         self.assertIsNone(manager.visual_authorization)
 
     def test_low_confidence_blocks_authorization(self):
         manager = classification_manager([1], [candidate()], ClassificationResult(True, "chuju", confidence=0.10))
-        self.assertEqual(manager.classify_arrived_target(make_screen()), 0)
+        target = make_screen()
+        self.assertTrue(manager.confirm_target_tag_and_screen(target))
+        manager.final_forward_executed = True
+        self.assertEqual(manager.classify_after_final_forward(target), 0)
         self.assertIsNone(manager.visual_authorization)
 
-    def test_already_target_does_not_run_forward_or_change(self):
+    def test_already_target_is_known_only_after_single_forward_and_does_not_change(self):
         manager = classification_manager([1], [candidate()], ClassificationResult(True, "hehua", confidence=0.96))
         target = make_screen()
-        self.assertEqual(manager.classify_arrived_target(target), 1)
+        manager.motion = SimpleNamespace(
+            run=lambda key, times_override=1: ActionResult(
+                key=key, group="go_forward_one_small_step", times=times_override,
+                elapsed_s=0.0, model_forward_cm=3.0, ok=True,
+            )
+        )
+        self.assertTrue(manager.confirm_target_tag_and_screen(target))
+        self.assertTrue(manager.execute_final_forward(target))
+        self.assertEqual(manager.classify_after_final_forward(target), 1)
         self.assertEqual(target.status, ScreenStatus.ALREADY_TARGET)
-        self.assertNotEqual(manager.mission_state, MissionState.FORWARD_3CM)
+        self.assertTrue(manager.final_forward_executed)
 
     def interaction_manager(self, *, motion_ok=True, skip_change=False):
         target = make_screen()
@@ -207,8 +226,9 @@ class Direct17cmFlowTests(unittest.TestCase):
         manager.target_flower = "hehua"
         manager.current_target_screen_id = 1
         manager.arrived_at_target = True
+        manager.target_visual_confirmation = TargetVisualConfirmation(1, 1, True, 90.0)
         manager.visual_authorization = VisualAuthorization(1, 1, True, "chuju", 0.95, 100.0)
-        manager.pre_change_forward_executed = False
+        manager.final_forward_executed = True
         manager.last_interaction_check = None
         manager.latest_interaction_result = None
         manager.recent_interaction_results = []
@@ -237,11 +257,11 @@ class Direct17cmFlowTests(unittest.TestCase):
         manager.write_interaction_audit = lambda record: None
         return manager, target
 
-    def test_needs_change_runs_exactly_one_3cm_then_change(self):
+    def test_post_forward_needs_change_runs_transaction_without_extra_motion(self):
         manager, target = self.interaction_manager()
         self.assertTrue(manager.process_screen_interaction(target))
-        self.assertEqual(manager.sequence, [("motion", "interaction_forward_3cm", 1), ("change", 1, 1)])
-        self.assertTrue(manager.pre_change_forward_executed)
+        self.assertEqual(manager.sequence, [("change", 1, 1)])
+        self.assertTrue(manager.final_forward_executed)
         self.assertEqual(target.status, ScreenStatus.CHANGED)
 
     def test_3cm_path_contains_no_sensing_or_extra_navigation_calls(self):
@@ -255,7 +275,7 @@ class Direct17cmFlowTests(unittest.TestCase):
             "choose_translation_action",
             "classify_crop",
         }
-        for name in ("execute_pre_change_forward", "process_screen_interaction"):
+        for name in ("execute_final_forward", "process_screen_interaction"):
             fn = next(node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef) and node.name == name)
             calls = {getattr(call.func, "attr", "") for call in ast.walk(fn) if isinstance(call, ast.Call)}
             self.assertTrue(forbidden.isdisjoint(calls), (name, calls & forbidden))
@@ -263,7 +283,7 @@ class Direct17cmFlowTests(unittest.TestCase):
     def test_configuration_has_no_old_two_stage_distance(self):
         config = load_config(None)
         self.assertEqual(config["interaction"]["target_distance_cm"], 17.0)
-        self.assertEqual(config["interaction"]["pre_change_forward_cm"], 3.0)
+        self.assertEqual(config["interaction"]["target_final_forward_cm"], 3.0)
         self.assertEqual(config["navigation"]["target_arrival_radius_cm"], 3.0)
         self.assertNotIn("target_arrival_distance_cm", config["map"])
         self.assertNotIn("interaction_staging_distance_cm", config["interaction"])
@@ -273,10 +293,33 @@ class Direct17cmFlowTests(unittest.TestCase):
             3.0,
         )
         self.assertEqual(config["motion"]["actions"]["interaction_forward_3cm"]["times"], 1)
+        self.assertEqual(config["vision"]["max_screen_area_ratio"], 0.98)
+
+    def test_flow_order_is_confirm_then_forward_then_classify_then_change(self):
+        source = (Path(__file__).resolve().parents[1] / "task_manager.py").read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        fn = next(
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef) and node.name == "run_mission"
+        )
+        line = {}
+        for call in (node for node in ast.walk(fn) if isinstance(node, ast.Call)):
+            name = getattr(call.func, "attr", "")
+            if name in {
+                "confirm_target_tag_and_screen",
+                "execute_final_forward",
+                "classify_after_final_forward",
+                "process_screen_interaction",
+            }:
+                line.setdefault(name, call.lineno)
+        self.assertLess(line["confirm_target_tag_and_screen"], line["execute_final_forward"])
+        self.assertLess(line["execute_final_forward"], line["classify_after_final_forward"])
+        self.assertLess(line["classify_after_final_forward"], line["process_screen_interaction"])
 
     def test_3cm_failure_blocks_change(self):
         manager, target = self.interaction_manager(motion_ok=False)
-        self.assertFalse(manager.process_screen_interaction(target))
+        manager.final_forward_executed = False
+        self.assertFalse(manager.execute_final_forward(target))
         self.assertEqual(manager.sequence, [("motion", "interaction_forward_3cm", 1)])
         self.assertEqual(target.status, ScreenStatus.NEEDS_CHANGE)
 
