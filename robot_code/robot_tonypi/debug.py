@@ -58,8 +58,8 @@ function clsForStatus(s){return s==='CHANGED'?'ok':(s==='FAILED'?'bad':(s==='ALR
 const statusZh={UNKNOWN:'未知',NEEDS_CHANGE:'需要换花',INTERACTING:'交互中',CHANGED:'已换花',ALREADY_TARGET:'已是目标花',FAILED:'失败'};
 const modeZh={mission:'完整任务',localize:'仅定位',harvest:'仅扫描识别'};
 const phaseZh={idle:'空闲',transaction_start:'交互开始',stand:'站立',left_hand_lifted:'左手已举起',worker_request_sent:'已发送 Worker 请求',worker_response:'收到 Worker 响应',transaction_end:'交互结束'};
-const reasonZh={distance:'距离不合格',yaw:'身体朝向不合格',lateral:'横向位置不合格',pose_missing:'缺少定位',pose_stale:'定位已过期',flower_unknown:'花朵未知',already_target:'已是目标花',worker_id_missing:'缺少 Worker ID',flower_changed_since_alignment:'对准后花朵结果改变',target_lock_mismatch:'当前目标锁不匹配',target_not_arrived:'当前目标未通过到达门'};
-const eventZh={mission_state:'任务状态',transit_bindings_updated:'途中几何绑定更新',arrived_at_target:'已到达当前目标',target_classification_failed:'当前目标分类失败',classifier_gate_blocked:'分类安全门阻止',flower_observed:'观察到花朵',screen_needs_change:'屏幕需要换花',already_target:'已是目标花',classification_failed:'分类失败',classification_low_confidence:'分类置信度低',target_selected:'已选择最近目标',interaction_alignment_check:'交互对准检查',interaction_safety_gate_blocked:'交互安全门阻止',interaction_changed:'换花成功',interaction_not_changed:'换花未成功',interaction_exception:'交互异常',left_hand_lifted:'左手已举起',worker_request_sent:'已发送 Worker 请求',worker_response:'收到 Worker 响应',navigate_failed:'导航失败',localize_failed:'定位失败',pose_update:'定位已更新',action:'执行动作',recovery_start:'开始恢复',recovery_done:'恢复完成',turn_no_progress:'转向无进展',suspect_stale_pose_after_turn:'转向后疑似旧位姿',turn_direction_conflict:'转向方向冲突',scan_after_turn_pose_rejected:'拒绝转向后视觉位姿',turn_progress_relocalize:'转向进展强制重定位',turn_progress_failed:'转向进展失败',turn_progress_restored:'转向进展恢复'};
+const reasonZh={visual_authorization_missing:'缺少目标视觉授权',authorization_screen_mismatch:'授权屏幕不匹配',authorization_tag_mismatch:'授权 Tag 不匹配',authorization_binding_missing:'Tag 与屏幕未绑定',authorization_flower_mismatch:'授权花朵结果不匹配',flower_unknown:'花朵未知',already_target:'已是目标花',flower_changed_since_capture:'拍摄后花朵状态改变',target_lock_mismatch:'当前目标锁不匹配',target_not_arrived:'当前目标未到达'};
+const eventZh={mission_state:'任务状态',transit_bindings_updated:'途中几何绑定更新',arrived_at_target:'已到达当前目标',target_visual_authorized:'目标视觉授权成功',target_visual_confirmation_failed:'目标视觉确认失败',target_classification_failed:'当前目标分类失败',classifier_gate_blocked:'分类入口阻止',pre_change_forward_planned:'计划前进 3 cm',pre_change_forward_done:'已前进 3 cm',pre_change_forward_failed:'3 cm 动作失败',pre_change_forward_skipped:'已跳过 3 cm 动作',screen_needs_change:'屏幕需要换花',already_target:'已是目标花',target_selected:'已选择最近目标',interaction_safety_gate_blocked:'交互授权阻止',interaction_changed:'换花成功',interaction_not_changed:'换花未成功',interaction_exception:'交互异常',left_hand_lifted:'左手已举起',worker_request_sent:'已发送 Worker 请求',worker_response:'收到 Worker 响应',navigate_failed:'导航失败',localize_failed:'定位失败',pose_update:'定位已更新',action:'执行动作',recovery_start:'开始恢复',recovery_done:'恢复完成',turn_no_progress:'转向无进展',suspect_stale_pose_after_turn:'转向后疑似旧位姿',turn_direction_conflict:'转向方向冲突',scan_after_turn_pose_rejected:'拒绝转向后视觉位姿',turn_progress_relocalize:'转向进展强制重定位',turn_progress_failed:'转向进展失败',turn_progress_restored:'转向进展恢复'};
 function bi(value,dict){const raw=String(value===null||value===undefined?'':value); return dict[raw]?`${dict[raw]} / ${raw}`:raw;}
 function reasonsBi(values){return (values||[]).map(x=>bi(x,reasonZh)).join(',')||'-';}
 function renderSummary(data){
@@ -71,7 +71,7 @@ function renderSummary(data){
   const targetScreen=data.target_screen||{};
   const interaction=data.interaction||{};
   const check=interaction.last_check||{};
-  const arrival=data.arrival_geometry_check||{};
+  const authorization=data.visual_authorization||{};
   const bindings=data.transit_bindings||{};
   document.getElementById('summary').innerHTML =
     '<b>运行模式 / Mode</b>: '+esc(bi(data.mode,modeZh))+' &nbsp; <b>目标花 / Target</b>: '+esc(data.target_flower)+
@@ -83,8 +83,8 @@ function renderSummary(data){
     '<b>任务状态 / Mission state</b>: '+esc(data.mission_state||'-')+'<br>'+
     '<b>当前目标 / Current target</b>: Tag '+esc(data.current_target_tag_id||'-')+', Screen '+esc(targetScreen.screen_id||'-')+
     ' '+(targetScreen.status?`<span class="${clsForStatus(targetScreen.status)}">${esc(bi(targetScreen.status,statusZh))}</span>`:'')+'<br>'+
-    '<b>最近目标选择 / Nearest selection</b>: 距离/distance='+esc(fmt(data.current_target_distance_cm,1))+'cm, 15cm target='+esc((plan.task_target_xy||[]).join(','))+', yaw='+esc(fmt(plan.task_target_yaw_deg,1))+'°, face='+esc(plan.surface_face||'-')+', normal='+esc((plan.cardinal_normal_xy||[]).join(','))+', approach='+esc((plan.approach_xy||[]).join(','))+', 剩余/remaining='+esc((data.remaining_target_ids||[]).join(','))+'<br>'+
-    '<b>到达与分类门 / Arrival & classifier gate</b>: arrived='+esc(data.arrived_at_target)+', classifierAllowed='+esc(data.classifier_allowed)+', ready='+esc(arrival.ready)+', distanceErr='+esc(fmt(arrival.distance_error_cm,1))+'cm, yawErr='+esc(fmt(arrival.yaw_error_deg,1))+'deg, lateralErr='+esc(fmt(arrival.lateral_error_cm,1))+'cm, blockers='+esc(reasonsBi(arrival.reasons))+'<br>'+
+    '<b>最近目标选择 / Nearest selection</b>: 距离/distance='+esc(fmt(data.current_target_distance_cm,1))+'cm, 17cm target='+esc((plan.task_target_xy||[]).join(','))+', yaw='+esc(fmt(plan.task_target_yaw_deg,1))+'°, face='+esc(plan.surface_face||'-')+', normal='+esc((plan.cardinal_normal_xy||[]).join(','))+', 剩余/remaining='+esc((data.remaining_target_ids||[]).join(','))+'<br>'+
+    '<b>到达与视觉授权 / Arrival & visual authorization</b>: arrived='+esc(data.arrived_at_target)+', classifierAllowed='+esc(data.classifier_allowed)+', tag='+esc(authorization.tag_id||'-')+', screen='+esc(authorization.screen_id||'-')+', bound='+esc(authorization.binding_ok)+', flower='+esc(authorization.flower||'-')+', confidence='+esc(fmt(authorization.confidence,3))+', forward3cm='+esc(data.pre_change_forward_executed)+'<br>'+
     '<b>途中几何绑定 / Transit bindings</b>: '+esc(Object.keys(bindings).join(',')||'-')+'（只框屏幕并绑定左上 Tag，不分类 / geometry only）<br>'+
     '<b>Tag/定位健康 / Localization health</b>: 无Tag扫描/noTagScans='+esc(health.consecutive_no_tag_scans||0)+
     ', 定位失败/locFailures='+esc(health.consecutive_localize_failures||0)+
@@ -96,12 +96,8 @@ function renderSummary(data){
     ', 前方出界距离/exitAhead='+esc(fmt(recovery.field_exit_ahead_cm,1))+'cm'+
     ', 无进展/noProgress='+esc(recovery.no_progress_count||0)+'<br>'+
     '<b>实体交互 / Interaction</b>: 阶段/phase='+esc(bi(interaction.phase||'idle',phaseZh))+
-    ', 可执行/ready='+esc(interaction.ready)+
+    ', 视觉授权/authorized='+esc(interaction.ready)+
     ', 左手举起/leftHand='+esc(interaction.left_hand_lifted)+
-    ', 距离/distance='+esc(fmt(check.distance_cm,1))+'cm'+
-    ', 距离误差/distanceErr='+esc(fmt(check.distance_error_cm,1))+'cm'+
-    ', 朝向误差/yawErr='+esc(fmt(check.yaw_error_deg,1))+'deg'+
-    ', 横向误差/lateralErr='+esc(fmt(check.lateral_error_cm,1))+'cm'+
     ', 阻止原因/blockers='+esc(reasonsBi(check.reasons));
 }
 function renderVotes(summary){
@@ -128,7 +124,7 @@ function renderInteraction(result,data){
   html +=
     `<div class="${cls}"><b>成功 / Success</b>: ${esc(result.success)} &nbsp; <b>模拟 / Simulated</b>: ${esc(result.simulated)}</div>`+
     `<div><b>屏幕 / Screen</b>: ${esc(result.screen_id)} &nbsp; <b>Worker</b>: ${esc(result.worker_id)} &nbsp; <b>原花 / From</b>: ${esc(result.from_flower)} &nbsp; <b>目标花 / To</b>: ${esc(result.to_flower)}</div>`+
-    `<div><b>位姿检查 / Pose check</b>: ${esc(JSON.stringify(result.interaction_check||{}))}</div>`+
+    `<div><b>视觉授权检查 / Visual authorization</b>: ${esc(JSON.stringify(result.interaction_check||{}))}</div>`+
     `<div><b>响应 / Response</b>: ${esc(JSON.stringify(result.response||{}))}</div>`+
     `<div><b>错误 / Error</b>: ${esc(result.error)}</div>`;
   const recent=(data&&data.recent_interactions)||[];
@@ -146,15 +142,15 @@ function renderScreens(data){
   let rows='';
   Object.values(screens).sort((a,b)=>a.screen_id-b.screen_id).forEach(s=>{
     const status=s.status||'';
-    rows+=`<tr><td>${esc(s.screen_id)}</td><td>${esc(s.worker_id||'-')}</td><td class="${clsForStatus(status)}">${esc(bi(status,statusZh))}</td><td>${esc(s.attempts)}</td><td>${esc(s.last_classification||'-')}</td><td>${esc(fmt(s.last_confidence,3))}</td><td>${esc((s.target_xy||[]).join(','))}</td><td>${esc(s.surface_face||'-')} / ${esc((s.cardinal_normal_xy||[]).join(','))}</td><td>${esc((s.task_target_xy||s.interaction_xy||[]).join(','))} @ ${esc(fmt(s.task_target_yaw_deg===null?s.interaction_yaw_deg:s.task_target_yaw_deg,1))}deg</td><td>${esc((s.notes||[]).join('; '))}</td></tr>`;
+    rows+=`<tr><td>${esc(s.screen_id)}</td><td>${esc(s.worker_id||'-')}</td><td class="${clsForStatus(status)}">${esc(bi(status,statusZh))}</td><td>${esc(s.attempts)}</td><td>${esc(s.last_classification||'-')}</td><td>${esc(fmt(s.last_confidence,3))}</td><td>${esc((s.task_target_xy||s.target_xy||[]).join(','))} @ ${esc(fmt(s.task_target_yaw_deg===null?s.interaction_yaw_deg:s.task_target_yaw_deg,1))}deg</td><td>${esc(s.surface_face||'-')} / ${esc((s.cardinal_normal_xy||[]).join(','))}</td><td>${esc((s.notes||[]).join('; '))}</td></tr>`;
   });
   document.getElementById('screens').innerHTML =
-    '<table><tr><th>屏幕 / Screen</th><th>Worker</th><th>状态 / Status</th><th>尝试 / Attempts</th><th>花朵 / Flower</th><th>置信度 / Conf</th><th>安全接近 / Approach</th><th>目标面 / Face-normal</th><th>15cm任务位姿 / Task pose</th><th>备注 / Notes</th></tr>'+rows+'</table>';
+    '<table><tr><th>屏幕 / Screen</th><th>Worker</th><th>状态 / Status</th><th>尝试 / Attempts</th><th>花朵 / Flower</th><th>置信度 / Conf</th><th>17cm唯一目标 / Target pose</th><th>目标面 / Face-normal</th><th>备注 / Notes</th></tr>'+rows+'</table>';
 }
 function renderEvents(events){
   events=events||[];
   if(!events.length){document.getElementById('events').innerHTML='暂无事件 / No events yet.';return;}
-    const important=new Set(['mission_state','transit_bindings_updated','arrived_at_target','target_classification_failed','classifier_gate_blocked','interaction_alignment_check','interaction_safety_gate_blocked','interaction_changed','interaction_not_changed','interaction_exception','left_hand_lifted','worker_request_sent','worker_response','already_target','classification_failed','classification_low_confidence','target_selected','target_body_reaim','target_body_reaim_skipped','target_not_completed_after_arrival','navigate_failed','target_failed','mission_complete','near_wall_recover','front_obstacle_recover','forward_blocked_by_map','forward_no_progress','visual_forward_no_progress','visual_progress_check_inconclusive','visual_forward_progress_restored','no_tag_recovery_triggered','recovery_start','recovery_backoff_localize_attempt','recovery_done','translation_step','turn_last_resort','turn_last_resort_noop','scan_after_turn_done','scan_after_turn_failed','turn_no_progress','suspect_stale_pose_after_turn','turn_direction_conflict','scan_after_turn_pose_rejected','turn_progress_relocalize','turn_progress_failed','turn_progress_restored','boundary_pan_filtered','boundary_safe_turn','boundary_recovery_target_selected','boundary_blind_nav_start','boundary_blind_nav_step','boundary_blind_nav_arrived','boundary_blind_nav_failed','localize_skipped_boundary_outward','head_recenter_after_scan','head_recenter_failed','action','pose_update']);
+    const important=new Set(['mission_state','transit_bindings_updated','arrived_at_target','target_visual_authorized','target_visual_confirmation_failed','target_classification_failed','classifier_gate_blocked','interaction_safety_gate_blocked','pre_change_forward_planned','pre_change_forward_done','pre_change_forward_failed','pre_change_forward_skipped','interaction_changed','interaction_not_changed','interaction_exception','left_hand_lifted','worker_request_sent','worker_response','already_target','classification_failed','classification_low_confidence','target_selected','target_not_completed_after_arrival','navigate_failed','target_failed','mission_complete','near_wall_recover','front_obstacle_recover','forward_blocked_by_map','forward_no_progress','visual_forward_no_progress','visual_progress_check_inconclusive','visual_forward_progress_restored','no_tag_recovery_triggered','recovery_start','recovery_backoff_localize_attempt','recovery_done','translation_step','turn_last_resort','turn_last_resort_noop','scan_after_turn_done','scan_after_turn_failed','turn_no_progress','suspect_stale_pose_after_turn','turn_direction_conflict','scan_after_turn_pose_rejected','turn_progress_relocalize','turn_progress_failed','turn_progress_restored','boundary_pan_filtered','boundary_safe_turn','boundary_recovery_target_selected','boundary_blind_nav_start','boundary_blind_nav_step','boundary_blind_nav_arrived','boundary_blind_nav_failed','localize_skipped_boundary_outward','head_recenter_after_scan','head_recenter_failed','action','pose_update']);
   let rows='';
   events.slice().reverse().forEach(e=>{
     const detail=Object.assign({}, e); delete detail.t; delete detail.event;
@@ -267,11 +263,9 @@ setInterval(refresh,800);
                 color = (40, 80, 240)
             c = self._map_pt(screen.center_xy, scale, img.shape[0])
             target = self._map_pt(screen.target_xy, scale, img.shape[0])
-            interaction = self._map_pt(screen.interaction_xy, scale, img.shape[0])
             reader = self._map_pt(screen.reader_xy, scale, img.shape[0])
             cv2.circle(img, c, 4, color, -1)
-            cv2.circle(img, target, 3, (0, 160, 220), -1)
-            cv2.circle(img, interaction, 3, (220, 80, 40), -1)
+            cv2.circle(img, target, 4, (220, 80, 40), -1)
             cv2.circle(img, reader, 2, (180, 0, 180), -1)
             cv2.putText(img, str(screen.screen_id), (c[0] + 4, c[1] - 4), cv2.FONT_HERSHEY_SIMPLEX, 0.35, color, 1)
         if path:

@@ -10,21 +10,21 @@ TonyPi 会完成以下比赛流程：
 AprilTag 初始定位
 → 按当前 pose 选择最近的未处理 Tag/屏幕
 → 根据 Tag 四角判断西/东/南/北面
-→ 生成 Tag 所在面中心正前方 15 cm 的四向任务位姿
-→ 先导航到地图安全接近点，再小步对准 15 cm 和标准 yaw
-→ 15 cm 到达几何门通过后确认 screen_id
-→ 只对当前目标重新拍摄并由 FPGA 识别花朵
+→ 生成建筑面中心正前方 17 cm、带左手横向补偿的唯一任务位姿
+→ 使用现有地图、障碍代价和 A* 直接导航到 17 cm 坐标及标准 yaw
+→ 到达后拍摄，确认当前 Tag 与屏幕同时出现并正确绑定
+→ 在 17 cm 位置裁剪当前屏幕并由 FPGA 识别花朵
 → 已是目标花：记录，不换花
-→ 不是目标花：在当前位置复核完整换花安全门
-→ 举左手，向对应 Worker 发送换花请求
+→ 不是目标花：只向屏幕前进一次专用 3 cm 小步
+→ 不再定位、拍摄或对准，立即举左手并向对应 Worker 发送换花请求
 → 收手站立
 ```
 
-导航途中会继续框取屏幕并绑定左上 AprilTag，但不会裁剪花朵、调用分类器或投票，也不会为了观察其他屏幕而停靠或切换目标。每处理一个目标后，程序按最新 pose 到各 15 cm `task_target_xy` 的欧氏距离重新选最近目标；同距离按 screen/tag ID 升序。
+导航途中会继续框取屏幕并绑定左上 AprilTag，但不会裁剪花朵、调用分类器或投票，也不会为了观察其他屏幕而停靠或切换目标。每处理一个目标后，程序按最新 pose 到各 17 cm `task_target_xy` 的欧氏距离重新选最近目标；同距离按 screen/tag ID 升序。
 
 导航检测到身体正前方近墙时，恢复顺序固定为“小步安全后退 → 向地图空间更大的一侧侧移 → 最后才小角度转身”。后退前会检查后方路径，每个动作后都会重新 AprilTag 定位并复查墙距；连续无有效位姿或墙距变化会立即报告 `RECOVERY_NO_PROGRESS`，不会空转到 80 步。单次导航失败先按 `max_target_attempts` 重试，超过上限才将目标标记为终止失败；失败目标不计入成功处理，全部目标终止失败时状态为 `MISSION_FAILED`。
 
-地图、Tag 世界坐标和 AprilTag 定位算法没有变化。原约 34 cm `target_xy` 现在只作为 A* 可到达的内部安全接近点，不能宣布任务到达，也不能触发分类。最终任务位姿来自 Tag 固定 X/Y 平面，身体 yaw 只能是 `0°`、`-180°`、`+90°`、`-90°`。程序先通过只检查定位与几何的“到达几何门”允许分类；分类为非目标花后，再通过包含花朵状态和 Worker 映射的“完整换花安全门”允许举手和请求。
+地图、Tag 世界坐标、AprilTag 定位算法和障碍代价没有变化。程序不再生成 34 cm 安全接近点或 15 cm 二次对准点；`target_xy`、`interaction_xy` 与 `task_target_xy` 都指向同一个 17 cm 身体目标。最终 yaw 只能是 `0°`、`-180°`、`+90°`、`-90°`。17 cm 精确终点可以作为当前锁定目标的高代价终点，但建筑实体和路径上的其他高代价区域不会因此放行。
 
 ## 2. 使用前确认
 
@@ -121,15 +121,15 @@ Tag 25 → screen_id 25 → worker_id 25
 默认交互参数包括：
 
 ```text
-interaction_distance_cm = 15
-interaction_distance_tolerance_cm = 4
-interaction_yaw_tolerance_deg = 10
+target_distance_cm = 17
+pre_change_forward_cm = 3
 sensor_left_offset_cm = 5
-interaction_lateral_tolerance_cm = 4
 left_hand_body_offset_cm = 0
+navigation.target_arrival_radius_cm = 3
+navigation.target_arrival_yaw_tolerance_deg = 10
 ```
 
-其中 `left_hand_body_offset_cm = 0` 只是未知机械尺寸的占位值。正式比赛前应现场确认左手相对身体中心的横向偏移、最佳读卡距离和容差。
+其中 `left_hand_body_offset_cm = 0` 只是未知机械尺寸的占位值。正式比赛前应现场确认左手相对身体中心的横向偏移、17 cm 导航落点，以及专用动作组是否真实前进约 3 cm。
 
 ## 5. 推荐执行顺序
 
@@ -143,7 +143,7 @@ python3 -m unittest discover -s tests -v
 python3 -m compileall -q .
 ```
 
-这些测试不会驱动机器人，主要检查交互安全门、Worker 异常收尾和屏幕左侧 AprilTag 绑定。
+这些测试不会驱动机器人，主要检查 17 cm 目标、Tag/屏幕视觉授权、单次 3 cm 动作、Worker 异常收尾和屏幕左侧 AprilTag 绑定。
 
 ### 第二步：完全无硬件 dry-run
 
@@ -217,11 +217,12 @@ python3 -u -m robot_tonypi.main \
 | 真实相机和 AprilTag | 否 | 是 |
 | 真实 FPGA 分类 | 否 | 是 |
 | 真实动作组和导航 | 否 | 是 |
-| 真实最终对准 | 否 | 是 |
+| 真实导航到 17 cm 目标 | 否 | 是 |
+| 需要换花时执行专用 3 cm 小步 | 否 | 否 |
 | 真实举左手 | 否 | 否 |
 | 真实 `send_request` | 否 | 否 |
 
-因此 `--skip-change` 仍会让机器人移动，只是最后的举手和 Worker 请求被模拟。`--skip-api` 是它的旧兼容别名。
+因此 `--skip-change` 仍会让机器人导航到 17 cm 并完成真实识别，但不会执行专用 3 cm 小步、举手或 Worker 请求。`--skip-api` 是它的旧兼容别名。
 
 ### 第六步：正式运行
 
@@ -232,7 +233,8 @@ python3 -u -m robot_tonypi.main \
 - 导航动作组都能执行；
 - 已确认视觉绑定到正确的 `screen_id`；程序会使用相同编号作为 `worker_id`；
 - team、robot-id 和 secret 与机器人注册信息一致；
-- 15 cm、身体 yaw、横向读卡位置和左手偏移已现场验证；
+- 17 cm 目标、四向身体 yaw、横向读卡位置和左手偏移已现场验证；
+- `interaction_forward_3cm` 动作实测接近 3 cm，且不会重复执行；
 - 场地周围安全，操作员可以随时停止机器人。
 
 正式命令：
@@ -255,10 +257,11 @@ python3 -u -m robot_tonypi.main \
 正式换花顺序是：
 
 ```text
-最终位姿检查
+17 cm 处的目标 Tag/屏幕绑定与 FPGA 结果已锁定
+→ interaction_forward_3cm（恰好一次）
 → stand
 → lift_left_hand(stand=False)
-→ 再次检查位姿
+→ 再次检查同一份视觉授权（不重新拍摄或定位）
 → send_request
 → 等待 Worker 响应
 → finally: stand

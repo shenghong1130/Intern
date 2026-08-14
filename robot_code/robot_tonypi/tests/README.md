@@ -43,9 +43,7 @@ python3 -m unittest robot_tonypi.tests.test_calibrate_motion -v
 
 验证交互纯逻辑和 `RobotInteractionClient` 的事务保护，包括：
 
-- 四种 Tag 平面、四向法线、15 cm 基础点和身体横向补偿；
-- 到达几何门与完整换花门的区别；
-- 距离、yaw、lateral、pose 置信度或新鲜度不合格时拒绝交互；
+- 四种 Tag 平面、四向法线、17 cm 唯一目标和身体横向补偿；
 - `stand → lift_left_hand(stand=False) → send_request → finally stand` 顺序；
 - 举手后的第二次安全门；
 - Worker `ok=False` 或异常不能标记成功；
@@ -65,12 +63,12 @@ python3 -m unittest robot_tonypi.tests.test_interaction_flow -v
 验证任务调度和导航保护的局部逻辑，包括：
 
 - 地图与 Tag 参考坐标未改变；
-- 按 15 cm 最终目标选择最近 Screen，并按 ID 稳定破平局；
+- 按 17 cm 最终目标选择最近 Screen，并按 ID 稳定破平局；
 - 每处理一个目标后使用最新 pose 重新排序；
-- 34 cm 安全接近点不能打开分类门；
-- 安全接近后必须完成 15 cm 最终对准；
+- 旧 34/15 cm 两阶段函数和状态不再存在；
+- 导航直接使用唯一 17 cm 坐标、四向 yaw 和高代价终点参数；
 - 分类器只能由到达当前锁定目标的入口调用；
-- 完整换花门要求目标锁匹配且已经到达；
+- 视觉授权要求目标锁匹配且已经到达；
 - 初始定位配置和 `--dry-run`/`--skip-change` 参数语义保持不变；
 - 转向 watchdog 的进展、±180° wrap、stale pose、反方向转向和连续失败中止。
 
@@ -82,7 +80,26 @@ python3 -m unittest robot_tonypi.tests.test_interaction_flow -v
 python3 -m unittest robot_tonypi.tests.test_mission_scheduler -v
 ```
 
-## 5. `test_vision_tag_binding.py`
+## 5. `test_direct_17cm_flow.py`
+
+验证当前直接任务流程：
+
+- 所有别名字段都指向带横向补偿的唯一 17 cm 目标；
+- 当前精确终点可作为高代价终点，但建筑实体和普通目标不获得例外；
+- 正确目标 Tag 与绑定屏幕共同出现后才调用 FPGA；
+- 缺 Tag、缺屏幕、绑定错误、FPGA 失败均不生成视觉授权；
+- 已是目标花不前进；需要换花时专用 3 cm 动作恰好一次；
+- 3 cm 动作失败时不调用 Worker，旧授权不能跨目标复用。
+
+测试使用假画面、假分类器、假动作和假 Worker，不访问真实硬件或网络。
+
+单独运行：
+
+```bash
+python3 -m unittest robot_tonypi.tests.test_direct_17cm_flow -v
+```
+
+## 6. `test_vision_tag_binding.py`
 
 验证花朵屏幕与左上方 AprilTag 的绑定规则：
 
@@ -100,7 +117,7 @@ python3 -m unittest robot_tonypi.tests.test_mission_scheduler -v
 python3 -m unittest robot_tonypi.tests.test_vision_tag_binding -v
 ```
 
-## 6. `test_capture_fpga_change.py`：独立实机集成测试
+## 7. `test_capture_fpga_change.py`：独立实机集成测试
 
 这个脚本不属于正式任务状态机。它假设操作者已经把机器人放在正确目标点并正对屏幕，不执行定位、导航或姿态调整，只测试：
 
@@ -122,7 +139,7 @@ capture_fpga_change_runs/<timestamp>/
 └── screen_<id>_crop_28x28.png
 ```
 
-### 6.1 无硬件检查
+### 7.1 无硬件检查
 
 只检查参数、配置加载和安全清理，不打开相机、不访问 FPGA、不举手、不请求 Worker：
 
@@ -133,7 +150,7 @@ python3 -u -m robot_tonypi.tests.test_capture_fpga_change \
   --dry-run
 ```
 
-### 6.2 相机和 FPGA 模拟换花测试
+### 7.2 相机和 FPGA 模拟换花测试
 
 使用真实相机和 FPGA 完成识别，但不真实举手、不发送 NFC/Worker 请求：
 
@@ -147,7 +164,7 @@ python3 -u -m robot_tonypi.tests.test_capture_fpga_change \
 
 即使省略 `--skip-change`，只要没有 `--execute`，脚本也会强制模拟交互。显式写出 `--skip-change` 更便于现场确认当前是安全测试。
 
-### 6.3 真实执行换花
+### 7.3 真实执行换花
 
 执行前必须满足：
 
@@ -185,9 +202,9 @@ stand
 → finally stand
 ```
 
-以下任一情况都会禁止真实交互：指定 Screen 未检测到、FPGA 失败、置信度不足、缺少 Worker 映射、识别结果已经是目标花、未提供 `--execute` 或二次确认不匹配。
+以下任一情况都会禁止真实交互：指定 Screen 未检测到、FPGA 失败、置信度不足、识别结果已经是目标花、未提供 `--execute` 或二次确认不匹配。
 
-## 7. 编译检查
+## 8. 编译检查
 
 ```bash
 python3 -m compileall -q robot_tonypi

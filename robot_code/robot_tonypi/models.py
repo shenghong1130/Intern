@@ -29,20 +29,16 @@ class MissionState(str, Enum):
     SELECT_NEAREST_TARGET = "SELECT_NEAREST_TARGET"
     BUILD_CARDINAL_TARGET_POSE = "BUILD_CARDINAL_TARGET_POSE"
     NAVIGATE_TO_TARGET = "NAVIGATE_TO_TARGET"
-    NAVIGATE_TO_APPROACH = "NAVIGATE_TO_APPROACH"
-    FINAL_ALIGN_15CM = "FINAL_ALIGN_15CM"
     ARRIVED_AT_TARGET = "ARRIVED_AT_TARGET"
     CAPTURE_TARGET_SCREEN = "CAPTURE_TARGET_SCREEN"
     CLASSIFY_TARGET_FLOWER = "CLASSIFY_TARGET_FLOWER"
     TARGET_ALREADY_CORRECT = "TARGET_ALREADY_CORRECT"
     NEEDS_CHANGE = "NEEDS_CHANGE"
-    ALIGN_FOR_INTERACTION = "ALIGN_FOR_INTERACTION"
-    VERIFY_INTERACTION_POSE = "VERIFY_INTERACTION_POSE"
+    FORWARD_3CM = "FORWARD_3CM"
     EXECUTE_CHANGE = "EXECUTE_CHANGE"
     MARK_TARGET_COMPLETE = "MARK_TARGET_COMPLETE"
     MISSION_COMPLETE = "MISSION_COMPLETE"
     MISSION_FAILED = "MISSION_FAILED"
-    FAILED = "FAILED"
 
 
 @dataclass
@@ -80,7 +76,6 @@ class Screen:
     interaction_yaw_deg: float
     reader_xy: Tuple[float, float]
     screen_left_tangent_xy: Tuple[float, float]
-    interaction_staging_xy: Tuple[float, float]
     surface_face: str = "UNKNOWN"
     cardinal_normal_xy: Tuple[float, float] = (0.0, 0.0)
     face_center_xy: Optional[Tuple[float, float]] = None
@@ -123,7 +118,6 @@ class Screen:
             "interaction_yaw_deg": self.interaction_yaw_deg,
             "reader_xy": list(self.reader_xy),
             "screen_left_tangent_xy": list(self.screen_left_tangent_xy),
-            "interaction_staging_xy": list(self.interaction_staging_xy),
             "surface_face": self.surface_face,
             "cardinal_normal_xy": list(self.cardinal_normal_xy),
             "face_center_xy": None if self.face_center_xy is None else list(self.face_center_xy),
@@ -174,25 +168,34 @@ class ClassificationResult:
 
 
 @dataclass
-class InteractionPoseCheck:
+class VisualAuthorization:
+    """Locked arrived-target evidence authorizing one change transaction."""
+    screen_id: int
+    tag_id: int
+    binding_ok: bool
+    flower: str
+    confidence: float
+    captured_s: float
+
+    def as_dict(self) -> Dict[str, Any]:
+        return {
+            "screen_id": self.screen_id,
+            "tag_id": self.tag_id,
+            "binding_ok": self.binding_ok,
+            "flower": self.flower,
+            "confidence": self.confidence,
+            "captured_s": self.captured_s,
+        }
+
+
+@dataclass
+class InteractionAuthorizationCheck:
     ready: bool
-    pose_valid: bool
-    distance_cm: Optional[float] = None
-    distance_error_cm: Optional[float] = None
-    yaw_error_deg: Optional[float] = None
-    lateral_error_cm: Optional[float] = None
-    target_error_cm: Optional[float] = None
     reasons: List[str] = field(default_factory=list)
 
     def as_dict(self) -> Dict[str, Any]:
         return {
             "ready": self.ready,
-            "pose_valid": self.pose_valid,
-            "distance_cm": self.distance_cm,
-            "distance_error_cm": self.distance_error_cm,
-            "yaw_error_deg": self.yaw_error_deg,
-            "lateral_error_cm": self.lateral_error_cm,
-            "target_error_cm": self.target_error_cm,
             "reasons": list(self.reasons),
         }
 

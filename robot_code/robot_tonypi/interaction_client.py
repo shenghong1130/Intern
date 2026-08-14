@@ -1,19 +1,18 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Atomic, safety-gated TonyPi/Worker flower interaction."""
+"""Atomic, visual-authorization-gated TonyPi/Worker flower interaction."""
 
 import time
 from typing import Callable, Optional
 
-from .models import InteractionPoseCheck, WorkerChangeResult
+from .models import InteractionAuthorizationCheck, WorkerChangeResult
 
 
 class RobotInteractionClient:
     """Execute the physical left-hand NFC transaction from the proven notebook flow.
 
-    The caller supplies a pose gate. It is checked once before any arm motion and
-    again immediately before ``send_request`` so a state-machine bug cannot call
-    the Worker while the robot is not aligned.
+    The caller supplies the locked visual authorization captured at the 17 cm
+    target. It is checked before arm motion and again before ``send_request``.
     """
 
     def __init__(
@@ -68,7 +67,7 @@ class RobotInteractionClient:
         worker_id: Optional[int],
         from_flower: str,
         to_flower: str,
-        safety_gate: Callable[[], InteractionPoseCheck],
+        safety_gate: Callable[[], InteractionAuthorizationCheck],
     ) -> WorkerChangeResult:
         if worker_id is None:
             return WorkerChangeResult(success=False, error="worker_id_missing")
@@ -84,7 +83,7 @@ class RobotInteractionClient:
                 stage="before_lift",
                 check=first_check.as_dict(),
             )
-            return WorkerChangeResult(success=False, worker_id=worker_id, error="interaction_pose_invalid")
+            return WorkerChangeResult(success=False, worker_id=worker_id, error="interaction_authorization_invalid")
 
         request_meta = {
             "screen_id": int(screen_id),
@@ -110,7 +109,7 @@ class RobotInteractionClient:
                         success=False,
                         simulated=True,
                         worker_id=worker_id,
-                        error="interaction_pose_invalid_after_lift",
+                        error="interaction_authorization_invalid_after_lift",
                     )
                 self._phase("worker_request_sent", simulated=True, **request_meta)
                 self._phase("worker_response", simulated=True, ok=True, **request_meta)
@@ -141,7 +140,7 @@ class RobotInteractionClient:
                     check=final_check.as_dict(),
                     **request_meta,
                 )
-                return WorkerChangeResult(success=False, worker_id=worker_id, error="interaction_pose_invalid_after_lift")
+                return WorkerChangeResult(success=False, worker_id=worker_id, error="interaction_authorization_invalid_after_lift")
 
             self._phase("worker_request_sent", **request_meta)
             result = self._send_request(

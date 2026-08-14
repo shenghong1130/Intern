@@ -10,7 +10,13 @@ from typing import Dict, Iterable, List, Optional, Tuple
 
 import numpy as np
 
-from .interaction_logic import build_interaction_geometry
+from .interaction_logic import (
+    build_interaction_geometry,
+    building_bounds_from_tags,
+    building_centers_from_tags,
+    cardinal_surface_from_tag,
+    face_center_from_bounds,
+)
 from .models import Screen
 from .utils import clamp, distance_xy, normalize_angle_deg
 
@@ -50,54 +56,36 @@ class MapModel:
         self.screens: Dict[int, Screen] = {}
         self._build_screens()
         self._build_obstacles()
-        self._fix_target_points()
         # Save static map layers so dynamic obstacles can be cleared
         self._static_grid = self.grid.copy()
         self._static_cost = self.cost.copy()
         self.dynamic_obstacles: List[dict] = []
 
     def _build_screens(self) -> None:
-        centers_by_group: Dict[int, List[np.ndarray]] = {}
-        centers_by_id: Dict[int, np.ndarray] = {}
+        building_centers = building_centers_from_tags(self.tag_poses)
+        building_bounds = building_bounds_from_tags(self.tag_poses)
         excluded_ids = {int(item) for item in self.cfg["map"].get("excluded_screen_ids", [])}
         for key, corners in self.tag_poses.items():
             tag_id = int(key)
-            if 1 <= tag_id <= 36 and tag_id not in excluded_ids:
-                center = np.mean(np.array(corners, dtype=np.float64)[:4, :2], axis=0)
-                group_id = (tag_id - 1) // 4
-                centers_by_group.setdefault(group_id, []).append(center)
-                centers_by_id[tag_id] = center
-
-        group_centers = {
-            group_id: np.mean(np.vstack(points), axis=0)
-            for group_id, points in centers_by_group.items()
-        }
-        target_distance = float(self.cfg["map"]["target_arrival_distance_cm"])
-        interaction_cfg = self.cfg["interaction"]
-        margin = float(self.cfg["map"].get("approach_margin_cm", max(5.0, float(self.cfg["navigation"]["safe_wall_distance_cm"]) + 10.0)))
-
-        for tag_id, center in centers_by_id.items():
+            if not (1 <= tag_id <= 36) or tag_id in excluded_ids:
+                continue
+            center = np.mean(np.array(corners, dtype=np.float64)[:4, :2], axis=0)
             group_id = (tag_id - 1) // 4
-            normal = center - group_centers[group_id]
-            norm = np.linalg.norm(normal)
-            if norm < 1e-6:
-                normal = self._plane_normal_xy(self.tag_poses[str(tag_id)])
-                norm = np.linalg.norm(normal)
-            normal = normal / max(norm, 1e-6)
-            target = center + normal * target_distance
-            target = np.array(
-                [
-                    clamp(float(target[0]), margin, self.width_cm - margin),
-                    clamp(float(target[1]), margin, self.height_cm - margin),
-                ],
-                dtype=np.float64,
+            surface = cardinal_surface_from_tag(
+                self.tag_poses[str(tag_id)],
+                building_centers[group_id],
             )
-            # normal points from the screen plane into its visible/front side.
-            # A robot standing in front therefore faces -normal during interaction.
+            face_center = face_center_from_bounds(building_bounds[group_id], surface["face"])
             geometry = build_interaction_geometry(
-                (float(center[0]), float(center[1])),
-                (float(normal[0]), float(normal[1])),
-                interaction_cfg,
+                face_center,
+                surface["normal_xy"],
+                self.cfg["interaction"],
+            )
+            target = geometry["target_xy"]
+            target_distance = float(self.cfg["interaction"]["target_distance_cm"])
+            tag_front = (
+                face_center[0] + surface["normal_xy"][0] * target_distance,
+                face_center[1] + surface["normal_xy"][1] * target_distance,
             )
             self.screens[tag_id] = Screen(
                 screen_id=tag_id,
@@ -105,12 +93,17 @@ class MapModel:
                 center_xy=(float(center[0]), float(center[1])),
                 normal_xy=geometry["normal_xy"],
                 normal_yaw_deg=geometry["normal_yaw_deg"],
-                target_xy=(float(target[0]), float(target[1])),
+                target_xy=target,
                 interaction_xy=geometry["interaction_xy"],
                 interaction_yaw_deg=geometry["interaction_yaw_deg"],
                 reader_xy=geometry["reader_xy"],
                 screen_left_tangent_xy=geometry["screen_left_tangent_xy"],
-                interaction_staging_xy=geometry["interaction_staging_xy"],
+                surface_face=surface["face"],
+                cardinal_normal_xy=surface["normal_xy"],
+                face_center_xy=face_center,
+                tag_front_xy=tag_front,
+                task_target_xy=target,
+                task_target_yaw_deg=geometry["interaction_yaw_deg"],
                 worker_id=int(tag_id),
             )
 
@@ -179,15 +172,6 @@ class MapModel:
         ratio = 1.0 - (float(distance_cm) - hard_margin) / soft_span
         power = max(0.1, float(map_cfg.get("obstacle_cost_power", 2.0)))
         return max_cost * max(0.0, ratio) ** power
-
-    def _fix_target_points(self) -> None:
-        for screen in self.screens.values():
-            if self.is_traversable_xy(screen.target_xy):
-                continue
-            # Target navigation may move to a nearby free cell, but never
-            # flip the physical screen normal: interaction yaw/reader geometry
-            # must continue to describe the screen's actual visible front.
-            screen.target_xy = self.nearest_traversable_xy(screen.target_xy)
 
     def clear_dynamic_obstacles(self) -> None:
         """Remove all dynamic obstacles, restoring the static map layers."""
@@ -292,19 +276,38 @@ class MapModel:
             if 0 <= nxt[0] < self.rows and 0 <= nxt[1] < self.cols:
                 yield nxt
 
-    def line_clear(self, start_xy, goal_xy, step_cm=2.0, max_cost: Optional[float] = None) -> bool:
+    def line_clear(
+        self,
+        start_xy,
+        goal_xy,
+        step_cm=2.0,
+        max_cost: Optional[float] = None,
+        allow_goal_high_cost: bool = False,
+    ) -> bool:
         dist = distance_xy(start_xy, goal_xy)
         if dist < 1e-6:
+            if allow_goal_high_cost:
+                return self.is_free_xy(goal_xy)
             return self.is_traversable_xy(start_xy, max_cost=max_cost)
         if not self.in_bounds_xy(start_xy) or not self.in_bounds_xy(goal_xy):
             return False
+        goal_node = self.grid_pos(goal_xy)
         steps = max(1, int(dist / step_cm))
         for i in range(1, steps):
             t = i / float(steps)
             x = start_xy[0] + (goal_xy[0] - start_xy[0]) * t
             y = start_xy[1] + (goal_xy[1] - start_xy[1]) * t
-            if not self.is_traversable_xy((x, y), max_cost=max_cost):
+            sample = (x, y)
+            # The only high-cost exception is the grid cell containing the
+            # locked task endpoint.  Physical obstacle cells remain blocked.
+            in_goal_cell = allow_goal_high_cost and self.grid_pos(sample) == goal_node
+            if in_goal_cell:
+                if not self.is_free_xy(sample):
+                    return False
+            elif not self.is_traversable_xy(sample, max_cost=max_cost):
                 return False
+        if allow_goal_high_cost:
+            return self.is_free_xy(goal_xy)
         return self.is_traversable_xy(goal_xy, max_cost=max_cost)
 
     def is_dangerously_close_to_wall(self, xy, yaw_deg, safe_dist_cm) -> bool:
@@ -316,12 +319,14 @@ class MapModel:
                 return True
         return False
 
-    def plan(self, start_xy, goal_xy) -> List[Tuple[float, float]]:
+    def plan(self, start_xy, goal_xy, allow_goal_high_cost: bool = False) -> List[Tuple[float, float]]:
         start = self.grid_pos(start_xy)
         goal = self.grid_pos(goal_xy)
         if not self.in_bounds_xy(start_xy) or not self.is_free_grid(start):
             start = self.grid_pos(self.nearest_free_xy(start_xy))
-        if not self.in_bounds_xy(goal_xy) or not self.is_traversable_xy(goal_xy):
+        if allow_goal_high_cost and (not self.in_bounds_xy(goal_xy) or not self.is_free_xy(goal_xy)):
+            return []
+        if not allow_goal_high_cost and (not self.in_bounds_xy(goal_xy) or not self.is_traversable_xy(goal_xy)):
             goal = self.grid_pos(self.nearest_traversable_xy(goal_xy))
 
         open_heap = []
@@ -332,7 +337,14 @@ class MapModel:
         while open_heap:
             _, current = heapq.heappop(open_heap)
             if current == goal:
-                return self._reconstruct_path(came, current)
+                path = self._reconstruct_path(came, current)
+                if allow_goal_high_cost:
+                    exact_goal = (float(goal_xy[0]), float(goal_xy[1]))
+                    if self.grid_pos(path[-1]) == goal:
+                        path[-1] = exact_goal
+                    elif distance_xy(path[-1], exact_goal) > 0.1:
+                        path.append(exact_goal)
+                return path
             for nxt in self._neighbors(current, include_diagonal=True):
                 if not self.is_free_grid(nxt):
                     continue
@@ -436,6 +448,8 @@ class MapModel:
         yaw_bins: int,
         segment_max_cost: float,
         obstacle_cost_scale: float,
+        goal_node=None,
+        allow_goal_high_cost: bool = False,
     ):
         gx, gy, yaw_idx = state
         current_xy = self.xy_from_grid((gx, gy))
@@ -456,9 +470,15 @@ class MapModel:
         )
         if not self.is_free_xy(next_xy):
             return None
-        if not self.line_clear(current_xy, next_xy, max_cost=segment_max_cost):
-            return None
         nx, ny = self.grid_pos(next_xy)
+        is_goal = bool(allow_goal_high_cost and goal_node is not None and (nx, ny) == tuple(goal_node))
+        if not self.line_clear(
+            current_xy,
+            next_xy,
+            max_cost=segment_max_cost,
+            allow_goal_high_cost=is_goal,
+        ):
+            return None
         if (nx, ny) == (gx, gy):
             return None
         move_cost = float(action["base_cost"])
@@ -478,11 +498,20 @@ class MapModel:
                 points.append(xy)
         return points
 
-    def plan_action_path(self, start_pose, goal_xy, navigation_cfg: dict, motion_cfg: dict) -> List[Tuple[float, float]]:
+    def plan_action_path(
+        self,
+        start_pose,
+        goal_xy,
+        navigation_cfg: dict,
+        motion_cfg: dict,
+        allow_goal_high_cost: bool = False,
+    ) -> List[Tuple[float, float]]:
         start_xy = start_pose.xy()
         if not self.in_bounds_xy(start_xy) or not self.is_free_xy(start_xy):
             start_xy = self.nearest_free_xy(start_xy)
-        if not self.in_bounds_xy(goal_xy) or not self.is_traversable_xy(goal_xy):
+        if allow_goal_high_cost and (not self.in_bounds_xy(goal_xy) or not self.is_free_xy(goal_xy)):
+            return []
+        if not allow_goal_high_cost and (not self.in_bounds_xy(goal_xy) or not self.is_traversable_xy(goal_xy)):
             goal_xy = self.nearest_traversable_xy(goal_xy)
 
         yaw_bin_deg = max(5.0, float(navigation_cfg.get("action_planner_yaw_bin_deg", 15.0)))
@@ -519,8 +548,18 @@ class MapModel:
             closed.add(current)
             current_g = g.get(current, float("inf"))
             current_xy = self.xy_from_grid((current[0], current[1]))
-            if (current[0], current[1]) == goal_node or distance_xy(current_xy, goal_xy) <= goal_tolerance:
-                return self._reconstruct_action_path(came, current, start_xy)
+            goal_reached = (current[0], current[1]) == goal_node
+            if not allow_goal_high_cost:
+                goal_reached = goal_reached or distance_xy(current_xy, goal_xy) <= goal_tolerance
+            if goal_reached:
+                path = self._reconstruct_action_path(came, current, start_xy)
+                if allow_goal_high_cost:
+                    exact_goal = (float(goal_xy[0]), float(goal_xy[1]))
+                    if self.grid_pos(path[-1]) == goal_node:
+                        path[-1] = exact_goal
+                    elif distance_xy(path[-1], exact_goal) > 0.1:
+                        path.append(exact_goal)
+                return path
             expansions += 1
             for action in actions:
                 transition = self.action_planner_transition(
@@ -530,6 +569,8 @@ class MapModel:
                     yaw_bins,
                     segment_max_cost,
                     obstacle_cost_scale,
+                    goal_node=goal_node,
+                    allow_goal_high_cost=allow_goal_high_cost,
                 )
                 if transition is None:
                     continue

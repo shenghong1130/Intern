@@ -39,10 +39,6 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "obstacle_cost_max": 80.0,
         "obstacle_cost_power": 2.0,
         "obstacle_line_clear_max_cost": 60.0,
-        # Map-safe approach waypoint for A*.  Task arrival/classification is
-        # controlled separately by the 15 cm cardinal interaction geometry.
-        "target_arrival_distance_cm": 34.0,
-        "approach_margin_cm": 30.0,
         "excluded_screen_ids": [4, 6, 10, 20, 25],
     },
     "localization": {
@@ -83,6 +79,8 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "navigation": {
         "arrival_radius_cm": 23.0,
         "arrival_yaw_tolerance_deg": 30.0,
+        "target_arrival_radius_cm": 3.0,
+        "target_arrival_yaw_tolerance_deg": 10.0,
         "turn_tolerance_deg": 20.0,
         "relocalize_after_actions": 6,
         "max_steps_per_target": 80,
@@ -159,8 +157,6 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "visual_progress_min_feature_shift_px": 1.8,
         "visual_progress_min_tracked_features": 12,
         "reserve_stop_distance_cm": 14.0,
-        "target_body_reaim_enabled": True,
-        "target_body_reaim_min_deg": 12.0,
     },
     "motion": {
         "imu_yaw_scale": 25.5,
@@ -169,6 +165,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
             "stand": {"group": "stand", "times": 1, "with_stand": False, "settle_s": 0.25},
             "forward_fast": {"group": "go_forward_fast", "times": 1, "with_stand": True, "forward_cm": 3.5, "settle_s": 0.35},
             "forward_micro": {"group": "go_forward_one_small_step", "times": 1, "with_stand": False, "forward_cm": 2.0, "settle_s": 0.25},
+            "interaction_forward_3cm": {"group": "go_forward_one_small_step", "times": 1, "with_stand": False, "forward_cm": 3.0, "settle_s": 0.25},
             "back_fast": {
                 "sequence": [
                     {"group": "back_start", "times": 1, "with_stand": False},
@@ -204,21 +201,12 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         },
     },
     "interaction": {
-        "interaction_distance_cm": 15.0,
-        "interaction_distance_tolerance_cm": 4.0,
-        "interaction_yaw_tolerance_deg": 10.0,
+        "target_distance_cm": 17.0,
+        "pre_change_forward_cm": 3.0,
         "sensor_left_offset_cm": 5.0,
-        "interaction_lateral_tolerance_cm": 4.0,
         # TonyPi left-hand center relative to body center along body-left.
         # No reliable mechanical measurement is available yet; calibrate on site.
         "left_hand_body_offset_cm": 0.0,
-        "interaction_staging_distance_cm": 34.0,
-        "interaction_staging_arrival_radius_cm": 8.0,
-        "interaction_pose_max_age_s": 3.0,
-        "interaction_pose_min_confidence": "HIGH",
-        "interaction_relocalize_before_action": True,
-        "interaction_relocalize_each_step": True,
-        "interaction_max_alignment_steps": 20,
         "flower_change_scan_timeout_s": 0.0,
         "left_hand_settle_s": 0.5,
     },

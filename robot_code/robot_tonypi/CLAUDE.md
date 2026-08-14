@@ -2,23 +2,33 @@
 
 TonyPi competition controller for a 300 × 300 cm field. Read `robot_decision_tree.html` before changing task logic.
 
-## Non-negotiable interaction boundary
+## Non-negotiable task boundary
 
-Transit vision is geometry-only: `observe_transit_bindings()` may detect a screen quad and bind its left-upper Tag, but it must use `extract_crops=False` and cannot classify, vote, update flower state, lift the hand, or call a Worker. `classify_arrived_target()` is the only task-level classifier entry and requires the locked target, `ARRIVED_AT_TARGET`, and the 15 cm cardinal arrival geometry gate.
+Transit vision is geometry-only: `observe_transit_bindings()` may detect a screen quad and bind its left-upper Tag with `extract_crops=False`, but it cannot classify, vote, update flower state, move 3 cm, lift the hand, or call a Worker.
 
-Physical flower change is exclusively:
+After initial localization, the task locks the nearest unfinished screen by distance to its single 17 cm body target. The target is built from the complete building face center, its quantized outward normal, and the existing reader/left-hand tangent compensation. `target_xy`, `interaction_xy`, and `task_target_xy` must refer to that same coordinate. Do not restore a 34 cm approach point or a separate 15 cm alignment stage.
+
+Classification is allowed only after direct navigation reaches the locked 17 cm coordinate and its cardinal yaw. One live frame must contain the same 1–36 Tag and a screen quad bound to that Tag. A stable non-target FPGA result creates a target-specific `VisualAuthorization`.
+
+Physical change is exclusively:
 
 ```text
-NEEDS_CHANGE → recheck/near-target realignment when needed
-→ centralized full interaction gate → stand → lift_left_hand(stand=False)
-→ second pose gate → robotall.send_request → finally stand
+NEEDS_CHANGE + locked visual authorization
+→ interaction_forward_3cm exactly once
+→ stand → lift_left_hand(stand=False)
+→ recheck the same locked authorization
+→ robotall.send_request → finally stand
 ```
 
-Do not restore the deleted HTTP `ApiClient` or the deleted four-waypoint scripted route. Competition numbering is identical: AprilTag ID == `screen_id` == NFC `worker_id`; use `worker_id = screen_id` and do not restore manual mapping configuration.
+There is no localization, capture, body alignment, turning, strafing, backing, or second forward action after the 3 cm motion. Selecting another target clears the authorization. Competition numbering is identical: AprilTag ID == `screen_id` == NFC `worker_id`.
 
-## Run
+## Planning rules
 
-From the directory containing this package:
+Keep static/dynamic obstacles, inflation, obstacle costs, A*, action-level A*, collision recovery, and near-wall recovery. The exact locked 17 cm goal cell may be accepted as a high-cost terminal, but it must remain physically free. Only samples in that terminal grid cell receive the exception; costs are not cleared and buildings remain impassable. Do not relocate the task goal with `nearest_free_xy()` or `nearest_traversable_xy()`.
+
+Tag face normals must be exactly one of `(-1,0)`, `(1,0)`, `(0,-1)`, `(0,1)`. Final yaw must be `0°`, `-180°`, `+90°`, or `-90°`. Viewer-left is `(normal.y, -normal.x)`.
+
+## Run and test
 
 ```bash
 python3 -u -m robot_tonypi.main \
@@ -26,48 +36,18 @@ python3 -u -m robot_tonypi.main \
   --classifier-url http://192.168.31.81:8080/predict \
   --team red --robot-id red-1 --robot-secret 1234 \
   --skip-change --debug --debug-host 0.0.0.0 --debug-port 8090
-```
 
-Remove `--skip-change` only after screen binding and physical calibration are confirmed. `--dry-run` means no hardware. `--skip-api` is only a deprecated alias for `--skip-change`.
-
-## Tests
-
-```bash
 python3 -m unittest discover -s tests -v
 python3 -m compileall -q .
 ```
 
-Robot-only localization, motion, camera and FPGA integration checks remain hardware tests and are not replaced by the mock suite.
-
-## Architecture
-
-```text
-main.py → TaskManager
-TaskManager → MapModel, Localizer, ScreenDetector, ClassifierClient
-            → MotionController, TonyPiHardware, DebugReporter
-            → RobotInteractionClient
-interaction_logic.py → pure observation/state and pose-gate rules
-RobotInteractionClient → robotall.act + robotall.send_request
-```
-
-Task arrival and the map-safe approach point are deliberately distinct:
-
-- `target_xy`: legacy/map-safe ~34 cm approach point used only as an internal A* waypoint. It cannot set `ARRIVED_AT_TARGET` or open classification.
-- `face_center_xy`: center of the Tag's complete rectangular building face, derived from the building bounds; the Tag only selects the face.
-- `tag_front_xy`: face center plus 15 cm along the quantized outward normal, before hand/body lateral compensation.
-- `task_target_xy` / `interaction_xy`: the unique 15 cm body target after the existing reader/left-hand tangent compensation.
-
-Mission target selection is recomputed after every processed screen using Euclidean distance from the latest pose to `task_target_xy`, with `screen_id` (the bound Tag ID) as the stable tie-breaker. Do not restore pass-by/opportunistic classification, discovery scans, task-level observation stops, or fixed routes.
-
-The task layer derives each Tag face from its four immutable world corners: fixed X means west/east and fixed Y means south/north. The outward `normal_xy` must be exactly one of `(-1,0)`, `(1,0)`, `(0,-1)`, `(0,1)`; final yaw must be `0°`, `-180°`, `+90°`, or `-90°`. Viewer-left is `(normal.y, -normal.x)`.
-
-The pre-classification arrival geometry gate checks only pose confidence/freshness, 15 cm normal distance, cardinal body yaw, and tangent alignment. The full interaction gate reuses those checks and additionally requires a non-target flower and stable `from_flower`; Worker ID is the already-bound screen ID.
+`--dry-run` means no hardware. `--skip-change` performs real navigation and classification but skips the dedicated 3 cm action, arm movement, and Worker request. `--skip-api` is its deprecated alias.
 
 ## Conventions
 
-- World position is centimeters; yaw is degrees.
-- World yaw 0° points +X, positive is counterclockwise.
+- World position is centimeters; yaw is degrees; yaw 0° points +X and positive is counterclockwise.
 - Head pan 100 is center, greater is left, less is right.
 - `(0, 0)` is the bottom-left of the field map.
-- Python defaults in `config.py` and overrides in `config/competition_config.json` must remain aligned.
-- `left_hand_body_offset_cm` is unknown mechanical geometry and must be field-calibrated; do not replace it with an invented precise value.
+- Python defaults and `config/competition_config.json` must remain aligned.
+- Keep `max_screen_area_ratio` at its current configured value unless a separate task explicitly changes it.
+- `left_hand_body_offset_cm` and the real displacement of `interaction_forward_3cm` require field calibration.

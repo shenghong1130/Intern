@@ -48,7 +48,7 @@ def parse_args(argv=None):
     parser.add_argument("--debug-port", type=int, default=None)
     parser.add_argument("--debug-host", default=None, help="debug dashboard bind host, e.g. 0.0.0.0 for LAN access")
     parser.add_argument("--dry-run", action="store_true")
-    parser.add_argument("--skip-change", "--skip-api", dest="skip_change", action="store_true", help="simulate the aligned left-hand Worker transaction without sending NFC request")
+    parser.add_argument("--skip-change", "--skip-api", dest="skip_change", action="store_true", help="classify at the 17 cm target but skip the 3 cm action, arm motion, and Worker request")
     parser.add_argument("--start-x", type=float, default=None, help="test-only manual start x")
     parser.add_argument("--start-y", type=float, default=None, help="test-only manual start y")
     parser.add_argument("--start-yaw", type=float, default=None, help="test-only manual start yaw")

@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Pure flower-observation and interaction-pose rules.
+"""Pure target-geometry and flower-observation rules.
 
 This module intentionally has no camera, numpy, hardware, or network dependency,
 so the safety rules can be tested on a development computer.
 """
 
 import math
-from typing import Optional, Tuple
+from typing import Tuple
 
-from .models import InteractionPoseCheck, RobotPose, Screen, ScreenStatus, WorkerChangeResult
-from .utils import angle_diff_deg, distance_xy, now_s
+from .models import Screen, ScreenStatus, WorkerChangeResult
+from .utils import now_s
 
 
 def cardinal_surface_from_tag(tag_corners_3d, building_center_xy: Tuple[float, float], plane_epsilon_cm: float = 0.5) -> dict:
@@ -117,19 +117,14 @@ def build_interaction_geometry(center_xy: Tuple[float, float], normal_xy: Tuple[
     screen_left = (normal[1], -normal[0])
     sensor_left = float(cfg["sensor_left_offset_cm"])
     body_lateral = sensor_left - float(cfg["left_hand_body_offset_cm"])
-    interaction_distance = float(cfg["interaction_distance_cm"])
-    staging_distance = float(cfg["interaction_staging_distance_cm"])
+    target_distance = float(cfg["target_distance_cm"])
     reader = (
         float(center_xy[0]) + screen_left[0] * sensor_left,
         float(center_xy[1]) + screen_left[1] * sensor_left,
     )
     interaction = (
-        float(center_xy[0]) + normal[0] * interaction_distance + screen_left[0] * body_lateral,
-        float(center_xy[1]) + normal[1] * interaction_distance + screen_left[1] * body_lateral,
-    )
-    staging = (
-        float(center_xy[0]) + normal[0] * staging_distance + screen_left[0] * body_lateral,
-        float(center_xy[1]) + normal[1] * staging_distance + screen_left[1] * body_lateral,
+        float(center_xy[0]) + normal[0] * target_distance + screen_left[0] * body_lateral,
+        float(center_xy[1]) + normal[1] * target_distance + screen_left[1] * body_lateral,
     )
     normal_yaw = math.degrees(math.atan2(normal[1], normal[0]))
     return {
@@ -137,63 +132,10 @@ def build_interaction_geometry(center_xy: Tuple[float, float], normal_xy: Tuple[
         "normal_yaw_deg": ((normal_yaw + 180.0) % 360.0) - 180.0,
         "screen_left_tangent_xy": screen_left,
         "reader_xy": reader,
+        "target_xy": interaction,
         "interaction_xy": interaction,
-        "interaction_staging_xy": staging,
         "interaction_yaw_deg": ((normal_yaw + 360.0) % 360.0) - 180.0,
     }
-
-
-def evaluate_arrival_geometry(
-    screen: Screen,
-    pose: Optional[RobotPose],
-    cfg: dict,
-    check_time_s: Optional[float] = None,
-) -> InteractionPoseCheck:
-    """Geometry-only 15 cm arrival gate used before flower classification."""
-    if pose is None:
-        return InteractionPoseCheck(ready=False, pose_valid=False, reasons=["pose_missing"])
-
-    reasons = []
-    pose_valid = True
-    required_confidence = str(cfg.get("interaction_pose_min_confidence", "HIGH")).upper()
-    allowed = {"HIGH"} if required_confidence == "HIGH" else {"HIGH", "MEDIUM"}
-    if pose.confidence.value not in allowed:
-        pose_valid = False
-        reasons.append("pose_confidence_{}".format(pose.confidence.value.lower()))
-    check_time = now_s() if check_time_s is None else float(check_time_s)
-    max_age = float(cfg.get("interaction_pose_max_age_s", 3.0))
-    if pose.last_update_s <= 0.0 or check_time - pose.last_update_s > max_age:
-        pose_valid = False
-        reasons.append("pose_stale")
-
-    geometry_center = screen.face_center_xy or screen.center_xy
-    rel_x = pose.x_cm - geometry_center[0]
-    rel_y = pose.y_cm - geometry_center[1]
-    distance_cm = rel_x * screen.normal_xy[0] + rel_y * screen.normal_xy[1]
-    distance_error = distance_cm - float(cfg["interaction_distance_cm"])
-    desired_lateral = float(cfg["sensor_left_offset_cm"]) - float(cfg["left_hand_body_offset_cm"])
-    actual_lateral = rel_x * screen.screen_left_tangent_xy[0] + rel_y * screen.screen_left_tangent_xy[1]
-    lateral_error = actual_lateral - desired_lateral
-    yaw_error = angle_diff_deg(screen.interaction_yaw_deg, pose.yaw_deg)
-    target_error = distance_xy(pose.xy(), screen.interaction_xy)
-
-    if abs(distance_error) > float(cfg["interaction_distance_tolerance_cm"]):
-        reasons.append("distance")
-    if abs(yaw_error) > float(cfg["interaction_yaw_tolerance_deg"]):
-        reasons.append("yaw")
-    if abs(lateral_error) > float(cfg["interaction_lateral_tolerance_cm"]):
-        reasons.append("lateral")
-
-    return InteractionPoseCheck(
-        ready=pose_valid and not reasons,
-        pose_valid=pose_valid,
-        distance_cm=round(distance_cm, 3),
-        distance_error_cm=round(distance_error, 3),
-        yaw_error_deg=round(yaw_error, 3),
-        lateral_error_cm=round(lateral_error, 3),
-        target_error_cm=round(target_error, 3),
-        reasons=reasons,
-    )
 
 
 def store_flower_observation(screen: Screen, target_flower: str, flower: str, confidence: float) -> str:
@@ -207,39 +149,6 @@ def store_flower_observation(screen: Screen, target_flower: str, flower: str, co
         return "changed_verified" if screen.status == ScreenStatus.CHANGED else "already_target_observed"
     screen.status = ScreenStatus.NEEDS_CHANGE
     return "needs_physical_interaction"
-
-
-def evaluate_interaction_pose(
-    screen: Screen,
-    pose: Optional[RobotPose],
-    target_flower: str,
-    cfg: dict,
-    worker_id: Optional[int],
-    expected_from_flower: Optional[str] = None,
-    check_time_s: Optional[float] = None,
-) -> InteractionPoseCheck:
-    """Central safety gate for distance, body yaw, lateral reader alignment and pose."""
-    geometry = evaluate_arrival_geometry(screen, pose, cfg, check_time_s=check_time_s)
-    reasons = list(geometry.reasons)
-    if screen.last_classification is None:
-        reasons.append("flower_unknown")
-    elif screen.last_classification == target_flower:
-        reasons.append("already_target")
-    elif expected_from_flower is not None and screen.last_classification != expected_from_flower:
-        reasons.append("flower_changed_since_alignment")
-    if worker_id is None:
-        reasons.append("worker_id_missing")
-
-    return InteractionPoseCheck(
-        ready=geometry.pose_valid and not reasons,
-        pose_valid=geometry.pose_valid,
-        distance_cm=geometry.distance_cm,
-        distance_error_cm=geometry.distance_error_cm,
-        yaw_error_deg=geometry.yaw_error_deg,
-        lateral_error_cm=geometry.lateral_error_cm,
-        target_error_cm=geometry.target_error_cm,
-        reasons=reasons,
-    )
 
 
 def apply_worker_change_result(screen: Screen, result: WorkerChangeResult) -> bool:

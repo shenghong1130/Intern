@@ -13,20 +13,15 @@ from robot_tonypi.interaction_logic import (
     building_bounds_from_tags,
     building_centers_from_tags,
     cardinal_surface_from_tag,
-    evaluate_arrival_geometry,
-    evaluate_interaction_pose,
     face_center_from_bounds,
     store_flower_observation,
 )
 from robot_tonypi.models import (
-    Confidence,
-    InteractionPoseCheck,
-    RobotPose,
+    InteractionAuthorizationCheck,
     Screen,
     ScreenStatus,
     WorkerChangeResult,
 )
-from robot_tonypi.utils import now_s
 from robot_tonypi.load_pos import load_tag_pos
 
 
@@ -39,22 +34,19 @@ def make_screen(worker_id=12):
         center_xy=(0.0, 0.0),
         normal_xy=(1.0, 0.0),
         normal_yaw_deg=0.0,
-        target_xy=(48.0, 0.0),
-        interaction_xy=(15.0, -5.0),
+        target_xy=(17.0, -5.0),
+        interaction_xy=(17.0, -5.0),
         interaction_yaw_deg=180.0,
         reader_xy=(0.0, -5.0),
         screen_left_tangent_xy=(0.0, -1.0),
-        interaction_staging_xy=(34.0, -5.0),
+        task_target_xy=(17.0, -5.0),
+        task_target_yaw_deg=180.0,
         worker_id=worker_id,
     )
 
 
-def fresh_pose(x, y, yaw):
-    return RobotPose(x, y, yaw, Confidence.HIGH, "TEST", now_s())
-
-
 def ready_check():
-    return InteractionPoseCheck(ready=True, pose_valid=True, distance_cm=15.0)
+    return InteractionAuthorizationCheck(ready=True)
 
 
 def make_client(actions, response=None, error=None):
@@ -125,15 +117,15 @@ class InteractionFlowTests(unittest.TestCase):
         self.assertTrue(result.simulated)
         self.assertEqual(actions, [])
 
-    def test_four_tag_planes_quantize_to_cardinal_faces_and_15cm_targets(self):
+    def test_four_tag_planes_quantize_to_cardinal_faces_and_17cm_targets(self):
         tag_poses = load_tag_pos()
         centers = building_centers_from_tags(tag_poses)
         bounds = building_bounds_from_tags(tag_poses)
         expected = {
-            1: ("WEST", (-1.0, 0.0), (196.0, 17.5), (181.0, 17.5), (181.0, 22.5), 0.0),
-            2: ("SOUTH", (0.0, -1.0), (208.5, 5.0), (208.5, -10.0), (203.5, -10.0), 90.0),
-            3: ("EAST", (1.0, 0.0), (221.0, 17.5), (236.0, 17.5), (236.0, 12.5), -180.0),
-            4: ("NORTH", (0.0, 1.0), (208.5, 30.0), (208.5, 45.0), (213.5, 45.0), -90.0),
+            1: ("WEST", (-1.0, 0.0), (196.0, 17.5), (179.0, 17.5), (179.0, 22.5), 0.0),
+            2: ("SOUTH", (0.0, -1.0), (208.5, 5.0), (208.5, -12.0), (203.5, -12.0), 90.0),
+            3: ("EAST", (1.0, 0.0), (221.0, 17.5), (238.0, 17.5), (238.0, 12.5), -180.0),
+            4: ("NORTH", (0.0, 1.0), (208.5, 30.0), (208.5, 47.0), (213.5, 47.0), -90.0),
         }
         cfg = load_config(None)["interaction"]
         for tag_id, (face, normal, face_center, tag_front, body_target, yaw) in expected.items():
@@ -144,92 +136,22 @@ class InteractionFlowTests(unittest.TestCase):
             self.assertEqual(surface["normal_xy"], normal)
             self.assertEqual(actual_face_center, face_center)
             base_target = (
-                actual_face_center[0] + normal[0] * cfg["interaction_distance_cm"],
-                actual_face_center[1] + normal[1] * cfg["interaction_distance_cm"],
+                actual_face_center[0] + normal[0] * cfg["target_distance_cm"],
+                actual_face_center[1] + normal[1] * cfg["target_distance_cm"],
             )
             self.assertEqual(base_target, tag_front)
             self.assertEqual(geometry["interaction_xy"], body_target)
             self.assertEqual(geometry["interaction_yaw_deg"], yaw)
             self.assertIn(yaw, (0.0, -180.0, 90.0, -90.0))
 
-    def test_arrival_geometry_gate_does_not_require_flower_or_worker(self):
-        screen = make_screen(worker_id=None)
-        screen.last_classification = None
-        check = evaluate_arrival_geometry(
-            screen,
-            fresh_pose(15.0, -5.0, 180.0),
-            load_config(None)["interaction"],
-        )
-        self.assertTrue(check.ready)
-        self.assertNotIn("flower_unknown", check.reasons)
-        self.assertNotIn("worker_id_missing", check.reasons)
-
-    def test_arrival_geometry_uses_face_center_instead_of_tag_center(self):
-        screen = make_screen()
-        screen.center_xy = (0.0, 8.0)  # Deliberately off the full-face center.
-        screen.face_center_xy = (0.0, 0.0)
-        check = evaluate_arrival_geometry(
-            screen,
-            fresh_pose(15.0, -5.0, 180.0),
-            load_config(None)["interaction"],
-        )
-        self.assertTrue(check.ready)
-        self.assertEqual(check.distance_error_cm, 0.0)
-        self.assertEqual(check.lateral_error_cm, 0.0)
-
-    def test_arrival_geometry_gate_rejects_distance_yaw_confidence_and_stale_pose(self):
-        cfg = load_config(None)["interaction"]
-        screen = make_screen()
-        self.assertIn("distance", evaluate_arrival_geometry(screen, fresh_pose(34, -5, 180), cfg).reasons)
-        self.assertIn("yaw", evaluate_arrival_geometry(screen, fresh_pose(15, -5, 90), cfg).reasons)
-        low = RobotPose(15, -5, 180, Confidence.LOW, "TEST", now_s())
-        self.assertFalse(evaluate_arrival_geometry(screen, low, cfg).pose_valid)
-        stale = RobotPose(15, -5, 180, Confidence.HIGH, "TEST", 1.0)
-        self.assertIn("pose_stale", evaluate_arrival_geometry(screen, stale, cfg, check_time_s=10.0).reasons)
-
     def test_interaction_geometry_uses_viewer_left_and_faces_screen(self):
         geometry = build_interaction_geometry((0.0, 0.0), (1.0, 0.0), load_config(None)["interaction"])
 
         self.assertEqual(geometry["screen_left_tangent_xy"], (0.0, -1.0))
         self.assertEqual(geometry["reader_xy"], (0.0, -5.0))
-        self.assertEqual(geometry["interaction_xy"], (15.0, -5.0))
+        self.assertEqual(geometry["target_xy"], (17.0, -5.0))
+        self.assertEqual(geometry["interaction_xy"], geometry["target_xy"])
         self.assertEqual(abs(geometry["interaction_yaw_deg"]), 180.0)
-
-    def test_case_1_far_classification_records_only_and_never_interacts(self):
-        screen = make_screen()
-
-        decision = store_flower_observation(screen, "hehua", "chuju", 0.91)
-        gate = evaluate_interaction_pose(
-            screen,
-            fresh_pose(80.0, -5.0, 180.0),
-            "hehua",
-            load_config(None)["interaction"],
-            12,
-        )
-
-        self.assertEqual(decision, "needs_physical_interaction")
-        self.assertEqual(screen.last_classification, "chuju")
-        self.assertEqual(screen.status, ScreenStatus.NEEDS_CHANGE)
-        self.assertFalse(gate.ready)
-        self.assertIn("distance", gate.reasons)
-
-    def test_case_2_close_but_wrong_yaw_is_blocked(self):
-        screen = make_screen()
-        screen.last_classification = "chuju"
-
-        check = evaluate_interaction_pose(screen, fresh_pose(15.0, -5.0, 30.0), "hehua", load_config(None)["interaction"], 12)
-
-        self.assertFalse(check.ready)
-        self.assertIn("yaw", check.reasons)
-
-    def test_case_3_wrong_reader_lateral_alignment_is_blocked(self):
-        screen = make_screen()
-        screen.last_classification = "chuju"
-
-        check = evaluate_interaction_pose(screen, fresh_pose(15.0, 2.0, 180.0), "hehua", load_config(None)["interaction"], 12)
-
-        self.assertFalse(check.ready)
-        self.assertIn("lateral", check.reasons)
 
     def test_case_4_valid_pose_runs_notebook_order_and_arguments(self):
         actions = []
@@ -318,7 +240,7 @@ class InteractionFlowTests(unittest.TestCase):
         checks = iter(
             [
                 ready_check(),
-                InteractionPoseCheck(ready=False, pose_valid=True, reasons=["pose_stale"]),
+                InteractionAuthorizationCheck(ready=False, reasons=["authorization_revoked"]),
             ]
         )
         client = make_client(actions, response={"ok": True})
@@ -333,22 +255,6 @@ class InteractionFlowTests(unittest.TestCase):
         self.assertFalse(result.success)
         self.assertFalse(any(item[0] == "send_request" for item in actions))
         self.assertEqual(actions[-1], ("act", "stand", {}))
-
-    def test_bound_from_flower_cannot_change_before_request(self):
-        screen = make_screen()
-        screen.last_classification = "chuju"
-        check = evaluate_interaction_pose(
-            screen,
-            fresh_pose(15.0, -5.0, 180.0),
-            "hehua",
-            load_config(None)["interaction"],
-            12,
-            expected_from_flower="lamei",
-        )
-
-        self.assertFalse(check.ready)
-        self.assertIn("flower_changed_since_alignment", check.reasons)
-
 
 if __name__ == "__main__":
     unittest.main()

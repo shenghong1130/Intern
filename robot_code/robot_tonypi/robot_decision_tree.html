@@ -3,141 +3,108 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>TonyPi 15 cm 四向目标决策树</title>
+  <title>TonyPi 17 cm 直接任务决策树</title>
   <style>
-    :root{--bg:#f6f8fb;--ink:#17212b;--muted:#5b6773;--line:#d8e0e8;--panel:#fff;--blue:#2563eb;--green:#07845b;--orange:#b45309;--red:#b42318;--purple:#6d28d9;--cyan:#087990}
-    *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--ink);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",Arial,sans-serif;line-height:1.62}header{background:#102033;color:#fff;padding:32px 22px 28px;border-bottom:6px solid #2fb477}header .wrap,main{max-width:1180px;margin:auto}main{padding:22px}h1{margin:0 0 10px;font-size:30px}h2{margin:34px 0 12px;font-size:24px;border-bottom:2px solid var(--line);padding-bottom:6px}h3{margin:24px 0 8px}p{margin:8px 0}code{background:#edf1f5;border:1px solid #d9e1e8;border-radius:4px;padding:1px 5px;font-family:Consolas,monospace}.lead{max-width:980px;color:#d9e9f8}.toc,.grid,.flow{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:10px;margin:18px 0 24px}.toc a,.card,.tree,.step,.notice{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:12px 14px;box-shadow:0 1px 2px #0f172a0a}.toc a{color:var(--ink);text-decoration:none;border-left:5px solid var(--blue)}.step{border-top:4px solid var(--cyan);min-height:80px}.notice{border-left:6px solid var(--orange);background:#fffdf8}.tree ul{list-style:none;margin-left:12px;padding-left:18px;border-left:2px solid var(--line)}.tree li{margin:8px 0;position:relative}.tree li:before{content:"";position:absolute;left:-18px;top:13px;width:12px;border-top:2px solid var(--line)}.node{display:inline-block;background:#f8fafc;border:1px solid var(--line);border-radius:6px;padding:5px 8px}.decision{border-left:5px solid var(--blue)}.action{border-left:5px solid var(--green)}.guard{border-left:5px solid var(--orange)}.error{border-left:5px solid var(--red)}.state{border-left:5px solid var(--purple)}table{border-collapse:collapse;width:100%;background:#fff;margin:10px 0}th,td{border:1px solid var(--line);padding:8px;vertical-align:top}th{background:#eef3f8;text-align:left}.formula{white-space:pre-wrap;background:#102033;color:#eef7ff;border-radius:7px;padding:12px;overflow:auto;font-family:Consolas,monospace}.ok{color:var(--green);font-weight:700}.bad{color:var(--red);font-weight:700}.warn{color:var(--orange);font-weight:700}.small{font-size:13px;color:var(--muted)}.toolbar{position:fixed;right:14px;bottom:14px;display:flex;gap:6px;z-index:5}.toolbar button{border:1px solid var(--line);background:#fff;border-radius:6px;padding:7px 10px;cursor:pointer}@media(max-width:650px){main{padding:14px}.toolbar{display:none}}
+    :root{--bg:#0d1422;--card:#172238;--line:#59759d;--blue:#57a6ff;--green:#65d28a;--yellow:#ffd166;--red:#ff7b7b;--text:#e9f0fa;--muted:#a7b5c8}
+    *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:15px/1.55 system-ui,-apple-system,"Segoe UI",sans-serif}
+    main{max-width:1180px;margin:auto;padding:28px 18px 60px}h1{margin:0 0 8px;font-size:30px}h2{margin:34px 0 14px;color:#cfe4ff}h3{margin:0 0 8px}p{margin:7px 0}.lead,.muted{color:var(--muted)}code,pre{font-family:ui-monospace,SFMono-Regular,Consolas,monospace}code{color:#b9dcff}
+    .notice{border-left:5px solid var(--yellow);background:#302c20;padding:13px 16px;border-radius:6px;margin:18px 0}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px}.card{background:var(--card);border:1px solid #2d4262;border-radius:10px;padding:15px}
+    .flow{display:flex;align-items:stretch;gap:8px;overflow-x:auto;padding:6px 0 12px}.node{min-width:150px;padding:11px;border:2px solid var(--blue);border-radius:9px;background:#13253d;text-align:center}.node.decision{border-color:var(--yellow);background:#302c20}.node.good{border-color:var(--green);background:#173323}.node.bad{border-color:var(--red);background:#382020}.arrow{align-self:center;color:var(--line);font-size:24px;font-weight:bold}
+    .tree{border-left:2px solid var(--line);margin-left:14px;padding-left:20px}.branch{position:relative;margin:12px 0}.branch:before{content:"";position:absolute;left:-20px;top:13px;width:16px;border-top:2px solid var(--line)}
+    table{width:100%;border-collapse:collapse;background:var(--card)}th,td{padding:9px;border:1px solid #314865;text-align:left;vertical-align:top}th{background:#20304b}.ok{color:var(--green)}.stop{color:var(--red)}
   </style>
 </head>
-<body>
-<header><div class="wrap">
-  <h1>TonyPi 15 cm 四向目标决策树</h1>
-  <p class="lead">本页对应当前代码：原地图、Tag 世界坐标和初始 AprilTag 定位流程保持不变；定位成功后，任务层为每个 Tag 构造唯一的四向 15 cm 最终位姿，只有几何到达门通过后才拍摄、裁剪和分类。</p>
-  <p class="small">主流程：<code>TaskManager.run_mission()</code>；几何规则：<code>interaction_logic.py</code>。</p>
-</div></header>
-<main id="page">
-  <nav class="toc">
-    <a href="#overview">1. 总流程</a><a href="#localize">2. 原定位树</a><a href="#geometry">3. 四向位姿</a><a href="#select">4. 最近目标</a><a href="#navigate">5. 导航与对准</a><a href="#classify">6. 到达后分类</a><a href="#change">7. 换花事务</a><a href="#modules">8. 代码对应</a>
-  </nav>
+<body><main>
+  <h1>TonyPi 17 cm 直接任务决策树</h1>
+  <p class="lead">本页对应当前代码。地图、Tag 世界坐标、初始定位、屏幕检测、左上 Tag 绑定、FPGA 分类和 Worker 协议保持不变；定位成功后的任务层改为单一 17 cm 目标。</p>
+  <div class="notice"><b>核心边界：</b>没有 34 cm 安全接近点，也没有 15 cm 二次对准。到达 17 cm 后必须在同一实时画面确认当前 Tag 与绑定屏幕；需要换花时只前进一次 3 cm，之后不再定位、拍摄或调整。</div>
 
-  <section id="overview"><h2>1. 总体状态机</h2>
-    <div class="flow">
-      <div class="step"><b>LOCALIZE</b><br>原初始定位</div><div class="step"><b>SELECT_NEAREST_TARGET</b><br>按 15 cm 身体目标排序</div><div class="step"><b>BUILD_CARDINAL_TARGET_POSE</b><br>固定面、法向和 yaw</div><div class="step"><b>NAVIGATE_TO_APPROACH</b><br>地图安全接近</div><div class="step"><b>FINAL_ALIGN_15CM</b><br>闭环微调位置与身体 yaw</div><div class="step"><b>ARRIVED_AT_TARGET</b><br>几何门通过</div><div class="step"><b>CAPTURE / CLASSIFY</b><br>只识别锁定目标</div><div class="step"><b>ALREADY / NEEDS_CHANGE</b><br>正确则完成，否则换花</div><div class="step"><b>MARK_TARGET_COMPLETE</b><br>最新 pose 重新排序</div><div class="step"><b>COMPLETE / FAILED</b><br>成功完成或明确任务失败</div>
-    </div>
-    <div class="notice"><b>硬边界：</b>34 cm 安全接近点不是任务到达点；15 cm 几何门通过前不能分类；完整换花门通过前不能举手或请求 Worker。途中看到其他 Tag 也不能切换锁定目标。</div>
-  </section>
+  <h2>1. 主状态机</h2>
+  <div class="flow">
+    <div class="node">LOCALIZE<br>原初始定位</div><div class="arrow">→</div>
+    <div class="node">SELECT_NEAREST_TARGET<br>按 17 cm 点排序</div><div class="arrow">→</div>
+    <div class="node">BUILD_CARDINAL_TARGET_POSE<br>面中心、法向、yaw</div><div class="arrow">→</div>
+    <div class="node">NAVIGATE_TO_TARGET<br>直接到唯一目标</div><div class="arrow">→</div>
+    <div class="node good">ARRIVED_AT_TARGET<br>坐标和 yaw 到达</div>
+  </div>
+  <div class="flow">
+    <div class="node">CAPTURE_TARGET_SCREEN<br>实时 Tag + 屏幕</div><div class="arrow">→</div>
+    <div class="node">CLASSIFY_TARGET_FLOWER<br>FPGA 投票</div><div class="arrow">→</div>
+    <div class="node decision">目标花？</div><div class="arrow">→</div>
+    <div class="node good">ALREADY_TARGET<br>直接完成</div>
+    <div class="node">或 NEEDS_CHANGE</div><div class="arrow">→</div>
+    <div class="node">FORWARD_3CM<br>专用动作一次</div><div class="arrow">→</div>
+    <div class="node good">EXECUTE_CHANGE<br>举手 + Worker</div>
+  </div>
 
-  <section id="localize"><h2>2. 初始定位决策树（保持原行为）</h2>
-    <div class="tree"><span class="node state">LOCALIZE / <code>initial_localize()</code></span><ul>
-      <li>按原 pan 顺序 <code>[100,135,65,155,45]</code> 拍摄、检测 AprilTag，并由原 <code>Localizer</code> 求世界 pose。</li>
-      <li><span class="node decision">获得有效 pose？</span><ul><li><span class="ok">是：</span>写入状态并进入最近目标选择。</li><li><span class="bad">否：</span>继续原搜索动作、失败计数、边界过滤和重新定位流程。</li></ul></li>
-      <li>定位帧允许更新屏幕四边形与左上方 Tag 的几何绑定，但 <b>不裁剪花朵、不分类、不换花</b>。</li>
-    </ul></div>
-    <p class="small"><code>load_pos.py</code>、<code>localizer.py</code>、地图坐标、Tag 坐标和初始定位判断均未改变。</p>
-  </section>
+  <h2>2. 唯一 17 cm 位姿</h2>
+  <div class="grid">
+    <div class="card"><h3>面判断</h3><p>Tag 四角固定 X 表示西/东面，固定 Y 表示南/北面；Tag 相对所属四方形中心的符号决定具体一面。法向严格量化为四个轴向。</p></div>
+    <div class="card"><h3>基础点</h3><pre>face_center = 整个建筑面的中心
+base_17 = face_center + normal × 17 cm</pre><p>Tag 只选择建筑面，不用单个 Tag 中心生成目标。</p></div>
+    <div class="card"><h3>身体目标</h3><pre>screen_left = (normal.y, -normal.x)
+lateral = sensor_left_offset
+          - left_hand_body_offset
+task_target = base_17
+            + screen_left × lateral</pre></div>
+  </div>
+  <table>
+    <tr><th>建筑面</th><th>外法向</th><th>17 cm 基础位置</th><th>最终身体 yaw</th></tr>
+    <tr><td>西面</td><td>(-1, 0)</td><td>(x_min - 17, center_y)</td><td>0°，朝 +X</td></tr>
+    <tr><td>东面</td><td>(+1, 0)</td><td>(x_max + 17, center_y)</td><td>-180°，朝 -X</td></tr>
+    <tr><td>南面</td><td>(0, -1)</td><td>(center_x, y_min - 17)</td><td>+90°，朝 +Y</td></tr>
+    <tr><td>北面</td><td>(0, +1)</td><td>(center_x, y_max + 17)</td><td>-90°，朝 -Y</td></tr>
+  </table>
 
-  <section id="geometry"><h2>3. 从 Tag 平面构造四向 15 cm 位姿</h2>
-    <div class="tree"><span class="node state"><code>configure_cardinal_task_targets()</code></span><ul>
-      <li>每四个 Tag 属于同一四方形；从该组 Tag 四角坐标包围盒得到建筑物中心，不修改原坐标。</li>
-      <li>Tag 四角 X 基本相同：这是西/东侧面；比较 Tag 中心 X 与建筑物中心 X。</li>
-      <li>Tag 四角 Y 基本相同：这是南/北侧面；比较 Tag 中心 Y 与建筑物中心 Y。</li>
-      <li>外法向严格量化为 <code>(-1,0)</code>、<code>(+1,0)</code>、<code>(0,-1)</code>、<code>(0,+1)</code>，不使用斜向中心差。</li>
-    </ul></div>
-    <table><tr><th>Tag 面</th><th>外法向 n</th><th>所在面中心正前方基础点</th><th>身体目标 yaw</th></tr>
-      <tr><td>WEST / 西侧</td><td>(-1, 0)</td><td>(cx − 15, cy)</td><td>0°</td></tr>
-      <tr><td>EAST / 东侧</td><td>(+1, 0)</td><td>(cx + 15, cy)</td><td>-180°（等价 180°）</td></tr>
-      <tr><td>SOUTH / 南侧</td><td>(0, -1)</td><td>(cx, cy − 15)</td><td>+90°</td></tr>
-      <tr><td>NORTH / 北侧</td><td>(0, +1)</td><td>(cx, cy + 15)</td><td>-90°</td></tr>
-    </table>
-    <div class="formula">C = center of the complete rectangular face selected by the Tag
-n = quantized outward normal
-tag_front_xy = C + 15cm × n
-screen_left_tangent = (ny, -nx)
-body_lateral = sensor_left_offset_cm - left_hand_body_offset_cm
-task_target_xy = tag_front_xy + body_lateral × screen_left_tangent
-target_yaw = atan2(-ny, -nx)</div>
-    <p>Tag 只用于判断西/东/南/北面。<code>tag_front_xy</code> 是整个四方形对应面中心正前方 15 cm 的基础点；<code>task_target_xy</code> 是叠加既有左手/读卡器切向补偿后的机器人身体点。补偿只改变切向位置，不改变 15 cm 法向距离和四向 yaw。</p>
-  </section>
+  <h2>3. 目标选择与导航</h2>
+  <div class="tree">
+    <div class="branch"><b>选择目标：</b>只考虑非终止目标；用最新 pose 到 <code>task_target_xy</code> 的欧氏距离排序，距离相同按 <code>screen_id/tag_id</code> 升序。</div>
+    <div class="branch"><b>锁定：</b>导航途中看到其他 Tag 只更新几何绑定，不切换目标、不分类。</div>
+    <div class="branch"><b>直接规划：</b><code>navigate_directly_to_target()</code> 把唯一 17 cm 坐标和四向 yaw 交给 <code>navigate_to_xy()</code>，到达半径默认 3 cm。</div>
+    <div class="branch"><b>代价保留：</b>静态/动态障碍、膨胀、cost、A*、action planner、碰撞和近墙恢复继续工作。</div>
+    <div class="branch"><b>终点特例：</b>只允许当前精确终点所在网格接受高代价；该网格仍必须是物理自由空间，代价不清零，建筑实体绝不放行，目标也不被推远。</div>
+    <div class="branch"><span class="stop">路径无法安全到达：</span>按现有目标重试机制记录失败，本轮不拍摄、不前进 3 cm、不换花。</div>
+  </div>
 
-  <section id="select"><h2>4. 最近未处理目标选择</h2>
-    <div class="formula">stable_key = (distance(robot.pose.xy, screen.task_target_xy), screen_id)</div>
-    <div class="tree"><span class="node state">SELECT_NEAREST_TARGET / <code>choose_nearest_screen()</code></span><ul>
-      <li>只从未终止目标中选择；<code>CHANGED</code>、<code>ALREADY_TARGET</code> 和达到重试上限的 <code>FAILED</code> 不再入选，但 <code>FAILED</code> 不计入成功处理数。</li>
-      <li>距离使用当前最新 pose 到 15 cm 身体目标 <code>task_target_xy</code>，不再使用旧 34 cm <code>target_xy</code>。</li>
-      <li>同距离按 screen/tag ID 升序，保证稳定排序。</li>
-      <li>锁定后，途中看到其他屏幕或 Tag 只更新几何信息，不能抢占目标。</li>
-      <li>每处理完一个目标，清锁并用最新定位重新计算，不生成固定路线。</li>
-    </ul></div>
-    <p>Dashboard 记录 screen/tag ID、面方向、外法向、15 cm 基础点、补偿后身体点、目标 yaw、当前距离和完整排序结果。比赛编号一致：AprilTag ID、<code>screen_id</code> 与 NFC <code>worker_id</code> 使用同一编号。</p>
-  </section>
+  <h2>4. 到达后的实时视觉授权</h2>
+  <div class="flow"><div class="node">静止拍摄</div><div class="arrow">→</div><div class="node decision">当前 Tag 存在？</div><div class="arrow">→</div><div class="node decision">屏幕框存在？</div><div class="arrow">→</div><div class="node decision">左上绑定到同一 ID？</div><div class="arrow">→</div><div class="node good">允许 FPGA</div></div>
+  <div class="tree">
+    <div class="branch">Tag 必须在 1～36 内，且 <code>tag_id == current_target_screen_id</code>。</div>
+    <div class="branch">屏幕候选必须使用现有 <code>ScreenDetector</code> 左上 Tag 绑定，并满足 <code>candidate.screen_id == candidate.tag.tag_id == current target</code>。</div>
+    <div class="branch">少量拍摄重试可以改变头部 pan，但不允许身体转向、平移、前后移动或重新导航。</div>
+    <div class="branch">稳定投票成功后保存 <code>VisualAuthorization</code>：screen_id、tag_id、binding_ok、flower、confidence、captured_s。选择新目标时立即清空。</div>
+    <div class="branch"><span class="stop">缺 Tag、缺屏幕、绑定错误、FPGA 失败或投票不稳定：</span>禁止 3 cm 动作和 Worker 事务。</div>
+  </div>
 
-  <section id="navigate"><h2>5. 常规接近与最终闭环对准</h2>
-    <div class="grid">
-      <div class="card"><h3>NAVIGATE_TO_APPROACH</h3><p>A*、action-level A*、障碍膨胀、碰撞/无进展和边界恢复保持原样。约 34 cm <code>screen.target_xy</code> 仅作为地图自由区的内部安全接近 waypoint。</p><p class="bad">到达该点不能设置 ARRIVED，不能裁花或分类。</p></div>
-      <div class="card"><h3>FINAL_ALIGN_15CM</h3><p>接近后通过 AprilTag 反复更新 pose，按顺序用小转、左右平移、微前进或后退修正 yaw、切向误差和法向距离。</p><p>地图无法直接规划到 15 cm 时，也不修改地图或把安全点冒充最终点。</p></div>
-    </div>
-    <div class="tree"><span class="node state"><code>navigate_to_task_pose(screen)</code></span><ul>
-      <li>常规导航到 <code>screen.target_xy</code>；此时强制 <code>arrived_at_target=False</code>。</li>
-      <li>进入 <code>FINAL_ALIGN_15CM</code>，调用 <code>align_for_screen_interaction(..., geometry_only=True)</code>。</li>
-      <li><span class="node guard">到达几何门</span> 检查：目标锁仍由上层保持、pose 存在、置信度达标、pose 新鲜、法向距离为 15 cm±容差、横向误差在容差内、yaw 与四向标准值误差在容差内。</li>
-      <li><span class="node decision">几何门通过？</span><ul><li><span class="ok">是：</span>上层设置 <code>ARRIVED_AT_TARGET</code>，允许拍摄。</li><li><span class="bad">否：</span>继续局部微调；超过对准步数则当前导航失败，绝不分类。</li></ul></li>
-    </ul></div>
-    <h3>普通导航动作选择（保持原运动模型）</h3>
-    <div class="formula">world delta → robot-local components
-forward = dx·cos(yaw) + dy·sin(yaw)
-lateral = -dx·sin(yaw) + dy·cos(yaw)
-progress = old waypoint distance - predicted waypoint distance</div>
-    <table><tr><th>情况</th><th>选择</th><th>保护</th></tr>
-      <tr><td>局部 forward 有足够进展</td><td><code>forward_fast</code>，按剩余距离与置信度决定次数</td><td>地图线段、边界、停止预留距离</td></tr>
-      <tr><td>局部 lateral 更有效</td><td><code>strafe_left_fast</code> / <code>strafe_right_fast</code></td><td>预测线段可通行且产生最小进展</td></tr>
-      <tr><td>无可行平移动作</td><td>向 waypoint 转身；大误差用 large，小误差用 fast</td><td>边界感知转向与 turn progress watchdog</td></tr>
-      <tr><td>最终 15 cm 对准</td><td>micro turn、单步 lateral、forward_micro/back_fast</td><td>每步后重定位并重新检查几何门</td></tr>
-    </table>
-    <div class="tree"><span class="node error">前方近墙恢复</span><ul>
-      <li>先检查身体后方路径；安全时保持 yaw 不变，小步后退，随后重新定位并重算前方墙距，最多执行配置次数。</li>
-      <li>仍近墙时比较身体左右两侧地图空间，只向路径安全且空间更大的一侧小步侧移；每步后同样重新定位与复查。</li>
-      <li>后退和侧移均不可行或无效后，才向更安全侧执行一次受限小角度转身，不使用 large turn。</li>
-      <li>连续达到配置次数且位姿、yaw、墙距均无有效变化：立即返回 <code>RECOVERY_NO_PROGRESS</code>，本次导航失败，不继续消耗 80 个导航步骤。</li>
-      <li>导航失败先增加当前目标 <code>attempts</code>、重新定位并重试；超过 <code>max_target_attempts</code> 才成为终止 <code>FAILED</code>。</li>
-      <li>没有剩余可选目标时：全部成功才进入 <code>MISSION_COMPLETE</code>；存在终止失败目标则进入 <code>MISSION_FAILED</code>。</li>
-    </ul></div>
-  </section>
+  <h2>5. 分类分支与 3 cm 动作</h2>
+  <table>
+    <tr><th>结果</th><th>行为</th><th>禁止行为</th></tr>
+    <tr><td class="ok">flower == target_flower</td><td>标记 <code>ALREADY_TARGET</code>，重新选择最近目标</td><td>不前进、不举手、不请求 Worker</td></tr>
+    <tr><td>稳定非目标花</td><td>标记 <code>NEEDS_CHANGE</code>，检查锁定视觉授权，执行 <code>interaction_forward_3cm ×1</code></td><td>不得循环计算次数；动作失败不得换花</td></tr>
+  </table>
+  <p>专用动作配置使用 <code>go_forward_one_small_step</code>、<code>times=1</code>、模型位移 3.0 cm。它不复用含停车余量和循环次数的普通 <code>move_forward()</code>。</p>
 
-  <section id="classify"><h2>6. 通过到达几何门后才分类</h2>
-    <div class="tree"><span class="node state">ARRIVED_AT_TARGET → CAPTURE_TARGET_SCREEN</span><ul>
-      <li><code>classifier_gate_open()</code> 同时要求：当前目标锁匹配、ARRIVED 标志有效、状态允许且 <code>evaluate_arrival_geometry()</code> 通过。</li>
-      <li>拍摄帧若得到新视觉 pose，会再次检查几何门；如果位置或 yaw 已漂移，先在当前目标附近重新对准，不调用分类器。</li>
-      <li>屏幕候选必须绑定当前锁定 screen/tag ID；其他候选被忽略。</li>
-      <li>只有 <code>classify_arrived_target()</code> 能调用 FPGA 分类器；原 28×28 裁剪、置信度、投票和最小票数逻辑不变。</li>
-      <li><span class="node decision">稳定花朵 == target_flower？</span><ul><li><span class="ok">是：</span><code>ALREADY_TARGET</code>，不举手、不请求 Worker，目标完成。</li><li><span class="warn">否：</span><code>NEEDS_CHANGE</code>，在当前 15 cm 位姿进入完整换花门。</li></ul></li>
-    </ul></div>
-  </section>
+  <h2>6. 前进后的原子换花事务</h2>
+  <div class="flow"><div class="node">FORWARD_3CM 成功</div><div class="arrow">→</div><div class="node">stand</div><div class="arrow">→</div><div class="node">lift_left_hand<br>stand=False</div><div class="arrow">→</div><div class="node">复查同一视觉授权</div><div class="arrow">→</div><div class="node">send_request</div><div class="arrow">→</div><div class="node good">finally: stand</div></div>
+  <div class="notice">3 cm 动作之后不得调用定位、摄像头、姿态对准、转向、横移、后退或第二次前进。交互客户端保留两次授权检查、举手、Worker 响应解析、审计日志与最终站立；第二次检查仍读取已锁定快照，不读取移动后的实时 pose。</div>
 
-  <section id="change"><h2>7. 完整安全门与原子换花事务</h2>
-    <div class="flow"><div class="step"><b>NEEDS_CHANGE</b><br>已有可靠 from_flower</div><div class="step"><b>VERIFY_INTERACTION_POSE</b><br>重新确认当前 15 cm 位姿</div><div class="step"><b>完整安全门</b><br>几何 + 花朵 + Worker</div><div class="step"><b>stand + lift</b><br><code>stand=False</code></div><div class="step"><b>第二次完整门</b><br>举手后再次验证</div><div class="step"><b>send_request</b><br>等待 Worker 响应</div><div class="step"><b>finally: stand</b><br>任何结果都收手</div></div>
-    <table><tr><th>阶段</th><th>检查范围</th><th>用途</th></tr>
-      <tr><td>到达几何门</td><td>pose 有效/新鲜、15 cm 法向、切向补偿、四向 yaw</td><td>允许拍摄与分类；不要求花朵或 Worker</td></tr>
-      <tr><td>完整换花门</td><td>全部几何条件 + 非目标 from_flower + 显式 worker mapping</td><td>允许举手和 <code>send_request</code></td></tr>
-    </table>
-    <p>分类后不会再导航回 34 cm staging。若拍摄、重新定位或举手准备导致几何门失效，只在当前目标附近重新微调。举手前与举手后两次完整门均保留；Worker <code>ok=False</code>、超时或异常均不能标记 <code>CHANGED</code>，且最终始终 <code>stand</code>。</p>
-    <div class="notice"><code>--dry-run</code> 仍不连接真实相机、动作、FPGA 或 Worker；<code>--skip-change</code>/<code>--skip-api</code> 仍允许真实定位、导航和分类，但不真实举手或发送请求。</div>
-  </section>
+  <h2>7. 安全模式、失败与调试</h2>
+  <div class="grid">
+    <div class="card"><h3>dry-run</h3><p>不操作相机、动作或 Worker；日志记录计划中的 17 cm 坐标、yaw、目标视觉绑定条件和 3 cm 专用动作。</p></div>
+    <div class="card"><h3>skip-change</h3><p>真实定位、导航和 FPGA 识别；不执行 3 cm 动作，不举手，不发送 Worker 请求。</p></div>
+    <div class="card"><h3>失败</h3><p>视觉或动作失败进入现有目标重试。超过上限才终止失败；所有目标失败进入 <code>MISSION_FAILED</code>，不冒充完成。</p></div>
+    <div class="card"><h3>Dashboard</h3><p>显示唯一 17 cm 目标、目标 yaw、到达标志、实时 Tag/屏幕绑定、FPGA 结果、视觉授权、3 cm 动作与 Worker 响应。地图不再画黄色 34 cm 点。</p></div>
+  </div>
 
-  <section id="modules"><h2>8. 状态与代码对应</h2>
-    <table><tr><th>代码</th><th>真实职责</th></tr>
-      <tr><td><code>configure_cardinal_task_targets()</code></td><td>从只读 Tag 四角建立建筑中心、四向法线、15 cm 基础点与补偿后身体点。</td></tr>
-      <tr><td><code>choose_nearest_screen()</code></td><td>按最新 pose 到 15 cm <code>task_target_xy</code> 排序并按 ID 破平局。</td></tr>
-      <tr><td><code>navigate_to_task_pose()</code></td><td>34 cm 安全接近 + 15 cm 最终闭环；只有后者能返回任务到达。</td></tr>
-      <tr><td><code>evaluate_arrival_geometry()</code></td><td>分类前的纯定位/几何门。</td></tr>
-      <tr><td><code>classify_arrived_target()</code></td><td>唯一任务级分类入口，并在新视觉 pose 后复检几何门。</td></tr>
-      <tr><td><code>evaluate_interaction_pose()</code></td><td>增加花朵状态与 Worker 映射的完整换花门。</td></tr>
-      <tr><td><code>RobotInteractionClient</code></td><td>stand、举左手、第二安全门、send_request、finally stand。</td></tr>
-      <tr><td><code>DebugReporter</code></td><td>展示面方向、法向、15 cm 目标、yaw、距离、门控结果和 Worker 事务。</td></tr>
-    </table>
-    <p class="small">未改核心算法：<code>map_model.py</code>、<code>load_pos.py</code>、<code>localizer.py</code>、<code>vision.py</code>、<code>classifier.py</code>、<code>motion.py</code>、<code>fpga_server_api_ready.py</code>。</p>
-  </section>
-</main>
-<div class="toolbar"><button onclick="zoom(-.1)">−</button><button onclick="zoom(0)">100%</button><button onclick="zoom(.1)">＋</button><button onclick="scrollTo({top:0,behavior:'smooth'})">顶部</button></div>
-<script>let z=1;function zoom(d){z=d===0?1:Math.max(.7,Math.min(1.5,z+d));document.getElementById('page').style.zoom=z}</script>
-</body>
-</html>
+  <h2>8. 代码对应</h2>
+  <table>
+    <tr><th>函数/模块</th><th>职责</th></tr>
+    <tr><td><code>configure_cardinal_task_targets()</code></td><td>从只读 Tag 四角与建筑边界建立唯一 17 cm 身体目标。</td></tr>
+    <tr><td><code>choose_nearest_screen()</code></td><td>按最新 pose 到 17 cm 目标排序并按 ID 破平局。</td></tr>
+    <tr><td><code>navigate_directly_to_target()</code></td><td>直接导航到精确目标并收敛四向 yaw。</td></tr>
+    <tr><td><code>classify_arrived_target()</code></td><td>实时验证当前 Tag+屏幕绑定，调用 FPGA 并创建视觉授权。</td></tr>
+    <tr><td><code>execute_pre_change_forward()</code></td><td>专用 3 cm 动作，强制单次执行。</td></tr>
+    <tr><td><code>visual_authorization_check()</code></td><td>验证快照属于当前锁定目标和稳定的非目标花。</td></tr>
+    <tr><td><code>RobotInteractionClient.change_flower()</code></td><td>原子举手、Worker 请求、响应处理与 finally 站立。</td></tr>
+  </table>
+</main></body></html>

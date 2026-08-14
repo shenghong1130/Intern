@@ -21,7 +21,7 @@ if __package__ in (None, ""):
     from robot_tonypi.interaction_client import RobotInteractionClient
     from robot_tonypi.localizer import AprilTagDetector
     from robot_tonypi.main import VALID_FLOWERS
-    from robot_tonypi.models import InteractionPoseCheck
+    from robot_tonypi.models import InteractionAuthorizationCheck
     from robot_tonypi.vision import ScreenDetector
 else:
     from ..classifier import ClassifierClient
@@ -30,7 +30,7 @@ else:
     from ..interaction_client import RobotInteractionClient
     from ..localizer import AprilTagDetector
     from ..main import VALID_FLOWERS
-    from ..models import InteractionPoseCheck
+    from ..models import InteractionAuthorizationCheck
     from ..vision import ScreenDetector
 
 
@@ -68,11 +68,10 @@ def worker_id_for_screen(screen_id: int) -> int:
     return int(screen_id)
 
 
-def manual_operator_gate(confirmed: bool) -> InteractionPoseCheck:
+def manual_operator_gate(confirmed: bool) -> InteractionAuthorizationCheck:
     """Return the test-only manual-position gate, never a visual pose claim."""
-    return InteractionPoseCheck(
+    return InteractionAuthorizationCheck(
         ready=bool(confirmed),
-        pose_valid=False,
         reasons=[] if confirmed else ["manual_position_not_confirmed"],
     )
 

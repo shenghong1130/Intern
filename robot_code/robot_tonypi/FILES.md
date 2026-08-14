@@ -14,7 +14,7 @@ main.py
    ├─ vision.py：途中几何检测/左上 Tag 绑定，以及到达后的目标裁剪
    ├─ classifier.py：调用 FPGA 花朵分类服务
    ├─ map_model.py：Screen 几何、障碍地图和 A*
-   ├─ interaction_logic.py：纯交互几何和安全判断
+   ├─ interaction_logic.py：四向 17 cm 目标几何和识别状态更新
    ├─ interaction_client.py：举左手和 Worker 原子事务
    ├─ debug.py：日志、图片、地图和 8090 Dashboard
    └─ models.py / utils.py：共享数据结构和工具函数
@@ -28,7 +28,7 @@ main.py
 
 ### `robot_decision_tree.html`
 
-面向调试和评审的可视化决策树。它描述程序从定位到识别、导航、最终对准、双重安全门、举手、Worker 响应和重试的真实分支。
+面向调试和评审的可视化决策树。它描述程序从定位、17 cm 直接导航、目标视觉授权、一次 3 cm 前进到举手、Worker 响应和重试的真实分支。
 
 ### `FILES.md`
 
@@ -70,28 +70,29 @@ python3 -m robot_tonypi.main ...
 - 相机和头部舵机参数；
 - 地图、导航和动作模型参数；
 - AprilTag 定位和屏幕视觉阈值；
-- interaction pose、安全容差和 Worker 映射；
+- 17 cm 目标、专用 3 cm 动作、左手横向补偿和 Worker 参数；
 - 任务时限、障碍检测和 Debug 设置。
 
 `default_config_path()` 返回 `config/competition_config.json`。
 
 ### `config/competition_config.json`
 
-现场优先调整的配置覆盖文件。它会覆盖 `config.py` 中同名字段。正式使用时主要在这里填写 Worker 映射和调节场地参数，而不是直接散改业务代码。
+现场优先调整的配置覆盖文件。它会覆盖 `config.py` 中同名字段。比赛编号直接使用 `worker_id = screen_id = tag_id`，无需手工 Worker 映射。
 
 ### `models.py`
 
 所有模块共享的数据模型：
 
 - `Confidence`：定位置信度；
-- `MissionState`：定位、最近目标选择、四向目标构造、安全接近、15 cm 最终对准、到达门、分类、交互和完成等任务状态；
+- `MissionState`：定位、最近目标选择、四向 17 cm 目标构造、直接导航、视觉确认、分类、3 cm 前进、交互和完成等任务状态；
 - `ScreenStatus`：`UNKNOWN`、`NEEDS_CHANGE`、`INTERACTING`、`CHANGED` 等目标处理状态；
 - `RobotPose`：机器人世界坐标、yaw、来源和时间；
-- `Screen`：屏幕中心、normal、任务目标点、交互点、reader 点和 worker_id；
+- `Screen`：屏幕中心、normal、唯一 17 cm 任务目标、reader 点和 worker_id；
 - `TagDetection`：AprilTag 检测结果；
 - `ScreenCandidate`：视觉屏幕候选；
 - `ClassificationResult`：FPGA 分类结果；
-- `InteractionPoseCheck`：距离、yaw、lateral 和 pose 安全判断；
+- `VisualAuthorization`：锁定目标的 Tag/屏幕绑定、FPGA 结果、置信度和拍摄时间；
+- `InteractionAuthorizationCheck`：交互客户端复用的视觉/人工授权检查结果容器；
 - `WorkerChangeResult`：Worker 请求结果；
 - `ActionResult`：动作执行及推算位移。
 
@@ -106,14 +107,14 @@ python3 -m robot_tonypi.main ...
 中央调度器，也是项目最大的业务文件和完整任务流程入口。主要职责：
 
 1. 创建地图、相机、AprilTag、视觉、FPGA、动作、交互和 Debug 组件；
-2. 执行初始定位，然后按最新 pose 到各 15 cm 任务位姿的距离选择最近未处理目标；
-3. 从 Tag 四角固定 X/Y 平面生成四向 normal、15 cm 点和标准 yaw；
-4. 锁定目标后先到约 34 cm 地图安全接近点，再小步闭环对准 15 cm；途中只更新屏幕框与左上 Tag 几何绑定；
-5. 定位新鲜度、15 cm、横向和四向 yaw 的到达几何门通过后，才裁剪和分类当前目标；
+2. 执行初始定位，然后按最新 pose 到各 17 cm 任务位姿的距离选择最近未处理目标；
+3. 从 Tag 四角固定 X/Y 平面生成四向 normal、建筑面中心、17 cm 点和标准 yaw；
+4. 锁定目标后使用完整障碍代价直接导航到唯一 17 cm 目标及标准 yaw；途中只更新屏幕框与左上 Tag 几何绑定；
+5. 到达后要求实时画面同时包含当前 Tag 和绑定到它的屏幕，才裁剪并分类；
 6. 将非目标花标记为 `NEEDS_CHANGE`，将目标花标记为 `ALREADY_TARGET`；
 7. 执行 A* 导航、障碍和边界恢复，不插入 passby/观察识别停靠；
-8. 非目标花在当前位置复核完整换花安全门，偏离时只在当前目标附近重新对准；
-9. 通过完整安全门后调用 `RobotInteractionClient`；
+8. 非目标花只执行一次专用 3 cm 前进，随后不再定位、拍摄或调整；
+9. 使用已锁定的视觉授权调用 `RobotInteractionClient`；
 10. 发布 Dashboard 状态并写交互审计日志；
 11. 退出时关闭硬件、相机和日志。
 
@@ -182,9 +183,9 @@ FPGA 分类服务客户端。它把 28×28 屏幕裁剪编码为 JPEG，通过 H
 构造 300×300 cm 场地模型并负责路径规划：
 
 - 根据 Tag 世界坐标生成 Screen；
-- 计算屏幕 normal、任务 target point、interaction point、reader point 和 interaction yaw；
+- 计算建筑面中心、四向 normal、唯一 17 cm target、reader point 和目标 yaw；
 - 建立建筑物障碍、软膨胀 cost 和动态机器人障碍；
-- 提供网格 A*、路径平滑和直线可通行检查；
+- 提供网格 A*、路径平滑和直线可通行检查，并只为当前精确任务终点提供受限高代价终点例外；
 - 提供考虑机器人转向/横移宏动作的 action-level A*；
 - 统计未完成 Screen 和实际换花成功数。
 
@@ -206,10 +207,8 @@ FPGA 分类服务客户端。它把 28×28 屏幕裁剪编码为 JPEG，通过 H
 不依赖相机、NumPy、硬件或网络的纯逻辑层：
 
 - 根据不可变 Tag 四角和所属四方形中心判断西/东/南/北面，并将 normal 量化为四个轴向之一；
-- 构造 Tag 所在四方形面中心正前方 15 cm 基础点，以及保留左侧 reader/手臂切向补偿后的机器人身体目标点；
-- 分离分类前到达几何门与分类后的完整换花安全门；
+- 构造 Tag 所在四方形面中心正前方 17 cm 基础点，以及保留左侧 reader/手臂切向补偿后的机器人身体目标点；
 - 视觉识别只更新 `ALREADY_TARGET` 或 `NEEDS_CHANGE`；
-- 集中检查 pose 新鲜度和置信度、15 cm 距离、身体 yaw、横向误差、花朵状态和 Worker 映射；
 - 根据 Worker 结果设置 `CHANGED` 或恢复为 `NEEDS_CHANGE`。
 
 因为安全规则集中在纯函数中，可以在没有机器人硬件时测试。
@@ -219,10 +218,10 @@ FPGA 分类服务客户端。它把 28×28 屏幕裁剪编码为 JPEG，通过 H
 封装唯一的实体换花事务：
 
 ```text
-安全门
+当前锁定目标的视觉授权
 → robotall.act('stand')
 → robotall.act('lift_left_hand', stand=False)
-→ 再次安全门
+→ 再次检查同一视觉授权
 → robotall.send_request(...)
 → finally robotall.act('stand')
 ```
@@ -238,9 +237,9 @@ FPGA 分类服务客户端。它把 28×28 屏幕裁剪编码为 JPEG，通过 H
 - 输出结构化事件；
 - 保存相机标注图和屏幕裁剪；
 - 保存 `latest_state.json`；
-- 绘制机器人、路线、task target、interaction 和 reader 的场地图；
+- 绘制机器人、实际路线、唯一 17 cm task target 和 reader 的场地图；
 - 启动内置 HTTP Server，默认端口 8090；
-- 在网页显示 pose、目标面/外法向、15 cm 目标位姿、到达几何门误差、投票、Screen 状态、完整换花门和 Worker 响应。
+- 在网页显示 pose、目标面/外法向、17 cm 目标位姿、Tag/屏幕视觉授权、3 cm 动作、投票、Screen 状态和 Worker 响应。
 
 Debug 目录默认在 `/home/pi/TonyPi/debug_runs/<timestamp>/`。
 
@@ -260,21 +259,22 @@ Debug 目录默认在 `/home/pi/TonyPi/debug_runs/<timestamp>/`。
 
 验证以下交互纯逻辑：
 
-- 到达门前不能识别或换花；
-- 距离、yaw、lateral 不满足时安全门拒绝；
+- 四向建筑面和唯一 17 cm 目标几何；
 - 正确事务顺序和 notebook 参数；
 - `ok=False` 和异常不能标记成功；
 - `finally` 必须 stand；
 - 途中几何绑定不调用分类器或换花；
-- 最近目标动态选择、平局规则和完成后重选；
-- 分类器只有到达当前锁定目标后才能调用；
-- from_flower 在发送前发生变化时拒绝请求。
+- 定位扫描和途中几何绑定不能旁路分类或换花。
 
 其中动作和 `send_request` 都由假函数记录，因此不会举手、执行真实动作组、访问 Worker、网络或 FPGA。
 
 ### `tests/test_mission_scheduler.py`
 
-验证任务调度和导航保护的局部逻辑：地图/Tag 参考值、15 cm 最近目标选择、旧 34 cm 点禁止分类、最终对准、分类调用边界、初始定位配置、CLI 安全语义、转向 watchdog、近墙“后退→侧移→小转”恢复、恢复无进展终止、目标重试及 `MISSION_FAILED` 判定。它使用假地图、假 pose 和轻量 `TaskManager` 对象，不初始化真实硬件。
+验证任务调度和导航保护的局部逻辑：地图/Tag 参考值、17 cm 最近目标选择、旧两阶段函数已删除、直接导航参数、视觉授权锁、分类调用边界、初始定位配置、CLI 安全语义、转向 watchdog、近墙“后退→侧移→小转”恢复、恢复无进展终止、目标重试及 `MISSION_FAILED` 判定。它使用假地图、假 pose 和轻量 `TaskManager` 对象，不初始化真实硬件。
+
+### `tests/test_direct_17cm_flow.py`
+
+验证新流程核心边界：单一 17 cm 目标和横向补偿、精确高代价终点例外、物理障碍仍阻挡、目标 Tag 与绑定屏幕共同授权 FPGA、分类失败/已是目标花分支、专用 3 cm 动作恰好一次、动作失败阻止 Worker，以及视觉授权不能跨目标复用。全部硬件、FPGA 和 Worker 调用均为假对象。
 
 ### `tests/test_vision_tag_binding.py`
 
@@ -323,7 +323,7 @@ turn_right_small_step_s85.d6a
 | `config/competition_config.json` | TonyPi 树莓派读取 |
 | `fpga_server_api_ready.py` | PYNQ FPGA 板 |
 | `action_groups/*.d6a` | 安装到 TonyPi SDK 动作目录后由 SDK 执行 |
-| 四个 `tests/test_*.py` 自动化单元测试 | 开发电脑或 TonyPi，不触发真实硬件 |
+| 五个带 `unittest.TestCase` 的自动化测试模块 | 开发电脑或 TonyPi，不触发真实硬件 |
 | `tests/test_capture_fpga_change.py` | TonyPi 实机；按参数使用相机、FPGA，并可在双重确认后换花 |
 | `robot_decision_tree.html` | 任意浏览器离线查看 |
 | `README.md`、`FILES.md` | 使用者和维护者阅读 |

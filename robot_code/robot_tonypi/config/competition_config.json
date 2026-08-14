@@ -29,13 +29,11 @@
     ]
   },
   "map": {
-    "target_arrival_distance_cm": 34.0,
     "obstacle_inflation_cm": 30.0,
     "obstacle_hard_margin_cm": 17.0,
     "obstacle_cost_max": 80.0,
     "obstacle_cost_power": 2.0,
     "obstacle_line_clear_max_cost": 60.0,
-    "approach_margin_cm": 30.0,
     "excluded_screen_ids": [2, 6, 9, 20, 28]
   },
   "localization": {
@@ -53,6 +51,13 @@
         "with_stand": true,
         "forward_cm": 3.5,
         "settle_s": 0.35
+      },
+      "interaction_forward_3cm": {
+        "group": "go_forward_one_small_step",
+        "times": 1,
+        "with_stand": false,
+        "forward_cm": 3.0,
+        "settle_s": 0.25
       },
       "back_fast": {
         "sequence": [
@@ -134,6 +139,8 @@
     }
   },
   "navigation": {
+    "target_arrival_radius_cm": 3.0,
+    "target_arrival_yaw_tolerance_deg": 10.0,
     "near_wall_backoff_step_cm": 5.0,
     "near_wall_backoff_max_attempts": 2,
     "near_wall_lateral_step_cm": 4.0,
@@ -205,9 +212,7 @@
     "visual_progress_resize_width": 160,
     "visual_progress_min_absdiff": 4.5,
     "visual_progress_min_feature_shift_px": 1.8,
-    "visual_progress_min_tracked_features": 12,
-    "target_body_reaim_enabled": true,
-    "target_body_reaim_min_deg": 12.0
+    "visual_progress_min_tracked_features": 12
   },
   "vision": {
     "scan_after_turn_enabled": true,
@@ -228,19 +233,10 @@
     "enabled": false
   },
   "interaction": {
-    "interaction_distance_cm": 15.0,
-    "interaction_distance_tolerance_cm": 4.0,
-    "interaction_yaw_tolerance_deg": 10.0,
+    "target_distance_cm": 17.0,
+    "pre_change_forward_cm": 3.0,
     "sensor_left_offset_cm": 5.0,
-    "interaction_lateral_tolerance_cm": 4.0,
     "left_hand_body_offset_cm": 0.0,
-    "interaction_staging_distance_cm": 34.0,
-    "interaction_staging_arrival_radius_cm": 8.0,
-    "interaction_pose_max_age_s": 3.0,
-    "interaction_pose_min_confidence": "HIGH",
-    "interaction_relocalize_before_action": true,
-    "interaction_relocalize_each_step": true,
-    "interaction_max_alignment_steps": 20,
     "flower_change_scan_timeout_s": 0.0,
     "left_hand_settle_s": 0.5
   },
