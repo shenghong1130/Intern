@@ -64,7 +64,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "min_votes": 1,
         "min_confidence": 0.20,
         "min_screen_area_px": 100.0,
-        "max_screen_area_ratio": 0.85,
+        "max_screen_area_ratio": 0.90,
         "min_aspect_ratio": 0.25,
         "max_aspect_ratio": 4.8,
         "max_screen_width_height_ratio": 1.0,

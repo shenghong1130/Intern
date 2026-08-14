@@ -215,6 +215,7 @@
     "vote_frames": 1,
     "min_votes": 1,
     "min_screen_area_px": 120.0,
+    "max_screen_area_ratio": 0.90,
     "max_tagged_center_white_ratio": 0.96,
     "max_screen_width_height_ratio": 1.0,
     "harvest_pan_angles": [100, 130, 70],
