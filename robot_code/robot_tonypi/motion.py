@@ -14,10 +14,12 @@ class RobotState:
         self.config = config
         self.pose: Optional[RobotPose] = None
         self.actions_since_localize = 0
+        self.motion_uncertainty = 0.0
 
     def set_pose(self, pose: RobotPose) -> None:
         self.pose = pose
         self.actions_since_localize = 0
+        self.motion_uncertainty = 0.0
 
     def set_manual_pose(self, x_cm: float, y_cm: float, yaw_deg: float, source: str = "MANUAL") -> None:
         self.set_pose(
@@ -34,19 +36,39 @@ class RobotState:
     def apply_action_result(self, result) -> None:
         if self.pose is None:
             return
+        actual_cycles = getattr(result, "executed_times", None)
+        if actual_cycles is None:
+            actual_cycles = int(getattr(result, "times", 0)) if bool(getattr(result, "ok", False)) else 0
+        actual_cycles = max(0, int(actual_cycles))
+        if actual_cycles <= 0:
+            return
+        requested_cycles = max(1, int(getattr(result, "times", actual_cycles)))
+        executed_fraction = min(1.0, actual_cycles / float(requested_cycles))
         yaw_rad = math.radians(self.pose.yaw_deg)
         left_rad = yaw_rad + math.pi / 2.0
-        self.pose.x_cm += result.model_forward_cm * math.cos(yaw_rad)
-        self.pose.y_cm += result.model_forward_cm * math.sin(yaw_rad)
-        self.pose.x_cm += result.model_lateral_cm * math.cos(left_rad)
-        self.pose.y_cm += result.model_lateral_cm * math.sin(left_rad)
-        self.pose.yaw_deg = normalize_angle_deg(self.pose.yaw_deg + result.model_yaw_deg)
+        self.pose.x_cm += result.model_forward_cm * executed_fraction * math.cos(yaw_rad)
+        self.pose.y_cm += result.model_forward_cm * executed_fraction * math.sin(yaw_rad)
+        self.pose.x_cm += result.model_lateral_cm * executed_fraction * math.cos(left_rad)
+        self.pose.y_cm += result.model_lateral_cm * executed_fraction * math.sin(left_rad)
+        self.pose.yaw_deg = normalize_angle_deg(self.pose.yaw_deg + result.model_yaw_deg * executed_fraction)
         self.pose.source = "DEAD_RECKONING"
         self.pose.last_update_s = now_s()
-        self.actions_since_localize += 1
-        if self.actions_since_localize >= self.config["navigation"]["relocalize_after_actions"]:
+        self.actions_since_localize += actual_cycles
+        nav = self.config["navigation"]
+        per_cycle_forward = abs(float(result.model_forward_cm)) / actual_cycles
+        per_cycle_lateral = abs(float(result.model_lateral_cm)) / actual_cycles
+        per_cycle_yaw = abs(float(result.model_yaw_deg)) / actual_cycles
+        if per_cycle_yaw > 1e-6:
+            uncertainty = float(nav.get("turn_uncertainty_per_cycle", 2.0))
+        elif per_cycle_lateral > 1e-6:
+            uncertainty = float(nav.get("strafe_uncertainty_per_cycle", 1.5))
+        else:
+            uncertainty = float(nav.get("forward_uncertainty_per_cycle", 1.0))
+        self.motion_uncertainty += actual_cycles * uncertainty
+        threshold = float(nav.get("relocalize_uncertainty_threshold", 6.0))
+        if self.motion_uncertainty >= threshold or self.actions_since_localize >= nav["relocalize_after_actions"]:
             self.pose.confidence = Confidence.LOW
-        elif self.pose.confidence == Confidence.HIGH and self.actions_since_localize >= 3:
+        elif self.pose.confidence == Confidence.HIGH and self.motion_uncertainty >= threshold * 0.5:
             self.pose.confidence = Confidence.MEDIUM
 
     def needs_relocalize(self) -> bool:
@@ -54,12 +76,17 @@ class RobotState:
             return True
         if self.pose.confidence == Confidence.LOW:
             return True
+        if self.motion_uncertainty >= float(
+            self.config["navigation"].get("relocalize_uncertainty_threshold", 6.0)
+        ):
+            return True
         return self.actions_since_localize >= int(self.config["navigation"]["relocalize_after_actions"])
 
     def as_dict(self):
         return {
             "pose": None if self.pose is None else self.pose.as_dict(),
             "actions_since_localize": self.actions_since_localize,
+            "motion_uncertainty": round(self.motion_uncertainty, 3),
         }
 
 
@@ -70,8 +97,12 @@ class MotionController:
         self.debug = debug
 
     def run(self, key: str, times_override: Optional[int] = None):
+        requested_cycles = int(times_override if times_override is not None else self.state.config["motion"]["actions"][key].get("times", 1))
         result = self.hardware.run_action(key, times_override=times_override)
         self.state.apply_action_result(result)
+        actual_cycles = getattr(result, "executed_times", None)
+        if actual_cycles is None:
+            actual_cycles = int(result.times) if result.ok else 0
         if self.debug:
             self.debug.event(
                 "action",
@@ -84,6 +115,10 @@ class MotionController:
                 model_yaw_deg=result.model_yaw_deg,
                 ok=result.ok,
                 error=result.error,
+                requested_action_cycles=requested_cycles,
+                actual_action_cycles=int(actual_cycles),
+                actions_since_localize=self.state.actions_since_localize,
+                motion_uncertainty=round(self.state.motion_uncertainty, 3),
             )
         return result
 
@@ -99,6 +134,13 @@ class MotionController:
                 step = abs(float(actions[key].get("yaw_deg", 45.0)))
                 cycles = max(1, int(math.floor((abs(diff_yaw_deg) + tolerance) / max(1.0, step))))
                 max_cycles = int(self.state.config["navigation"].get("max_large_turn_cycles_per_step", 2))
+                if self.state.pose.confidence == Confidence.HIGH:
+                    adaptive_max = int(self.state.config["navigation"].get("max_turn_cycles_high", 2))
+                elif self.state.pose.confidence == Confidence.MEDIUM:
+                    adaptive_max = int(self.state.config["navigation"].get("max_turn_cycles_medium", 1))
+                else:
+                    adaptive_max = int(self.state.config["navigation"].get("max_turn_cycles_low", 1))
+                max_cycles = min(max_cycles, max(1, adaptive_max))
                 cycles = max(1, min(max_cycles, cycles))
                 return self.run(key, times_override=cycles)
         if diff_yaw_deg > 0:
@@ -109,6 +151,13 @@ class MotionController:
         excess = max(0.0, abs(diff_yaw_deg) - tolerance)
         cycles = max(1, int(math.ceil(excess / max(1.0, step))))
         max_cycles = int(self.state.config["navigation"].get("max_turn_cycles_per_step", 4))
+        if self.state.pose.confidence == Confidence.HIGH:
+            adaptive_max = int(self.state.config["navigation"].get("max_turn_cycles_high", 2))
+        elif self.state.pose.confidence == Confidence.MEDIUM:
+            adaptive_max = int(self.state.config["navigation"].get("max_turn_cycles_medium", 1))
+        else:
+            adaptive_max = int(self.state.config["navigation"].get("max_turn_cycles_low", 1))
+        max_cycles = min(max_cycles, max(1, adaptive_max))
         cycles = max(1, min(max_cycles, cycles))
         return self.run(key, times_override=cycles)
 

@@ -196,6 +196,10 @@ class TonyPiHardware:
             model_yaw_deg=float(spec.get("yaw_deg", 0.0)) * times,
             ok=ok,
             error=error,
+            # The blocking TonyPi API only confirms the full batch.  On an
+            # exception the completed prefix is unknown, so never claim the
+            # requested count was executed.
+            executed_times=times if ok else 0,
         )
 
     def set_interaction_active(self, active: bool) -> None:

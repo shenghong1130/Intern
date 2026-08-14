@@ -459,6 +459,12 @@ class MapModel:
         in_place_turn_penalty = max(
             0.0, float(navigation_cfg.get("action_planner_in_place_turn_penalty_cm", 10.0))
         )
+        path_reversal_penalty = max(
+            0.0, float(navigation_cfg.get("action_planner_path_reversal_penalty_cm", 80.0))
+        )
+        away_from_goal_scale = max(
+            0.0, float(navigation_cfg.get("action_planner_away_from_goal_penalty_scale", 3.0))
+        )
 
         actions = [
             {
@@ -467,6 +473,9 @@ class MapModel:
                 "lateral_cm": 0.0,
                 "yaw_deg": 0.0,
                 "base_cost": forward_step * forward_cost,
+                "motion_code": 1,
+                "path_reversal_penalty": path_reversal_penalty,
+                "away_from_goal_penalty_scale": away_from_goal_scale,
             },
             {
                 "name": "strafe_left",
@@ -474,6 +483,9 @@ class MapModel:
                 "lateral_cm": strafe_step,
                 "yaw_deg": 0.0,
                 "base_cost": strafe_step * strafe_cost,
+                "motion_code": 2,
+                "path_reversal_penalty": path_reversal_penalty,
+                "away_from_goal_penalty_scale": away_from_goal_scale,
             },
             {
                 "name": "strafe_right",
@@ -481,6 +493,9 @@ class MapModel:
                 "lateral_cm": -strafe_step,
                 "yaw_deg": 0.0,
                 "base_cost": strafe_step * strafe_cost,
+                "motion_code": -2,
+                "path_reversal_penalty": path_reversal_penalty,
+                "away_from_goal_penalty_scale": away_from_goal_scale,
             },
         ]
         turn_specs = [
@@ -536,6 +551,7 @@ class MapModel:
     ):
         gx, gy, yaw_idx = state[:3]
         previous_turn_sign = int(state[3]) if len(state) >= 4 else 0
+        previous_motion_code = int(state[4]) if len(state) >= 5 else 0
         current_xy = self.xy_from_grid((gx, gy))
         yaw_delta = float(action.get("yaw_deg", 0.0))
         if abs(yaw_delta) > 1e-6:
@@ -546,7 +562,7 @@ class MapModel:
                 turn_cost += float(action.get("consecutive_turn_penalty", 0.0))
             elif previous_turn_sign == -turn_sign:
                 turn_cost += float(action.get("reverse_turn_penalty", 0.0))
-            return (gx, gy, (yaw_idx + bin_delta) % yaw_bins, turn_sign), turn_cost
+            return (gx, gy, (yaw_idx + bin_delta) % yaw_bins, turn_sign, previous_motion_code), turn_cost
 
         yaw = math.radians(self.yaw_from_action_bin(yaw_idx, yaw_bin_deg))
         left_yaw = yaw + math.pi / 2.0
@@ -573,7 +589,14 @@ class MapModel:
             return None
         move_cost = float(action["base_cost"])
         move_cost += obstacle_cost_scale * self.segment_obstacle_cost(current_xy, next_xy)
-        return (nx, ny, yaw_idx, 0), move_cost
+        motion_code = int(action.get("motion_code", 0))
+        if previous_motion_code and motion_code == -previous_motion_code:
+            move_cost += float(action.get("path_reversal_penalty", 0.0))
+        if goal_node is not None:
+            goal_xy = self.xy_from_grid(tuple(goal_node))
+            away_cm = max(0.0, distance_xy(next_xy, goal_xy) - distance_xy(current_xy, goal_xy))
+            move_cost += away_cm * float(action.get("away_from_goal_penalty_scale", 0.0))
+        return (nx, ny, yaw_idx, 0, motion_code), move_cost
 
     def _reconstruct_action_path(self, came, current, start_xy) -> List[Tuple[float, float]]:
         states = [current]
@@ -613,6 +636,7 @@ class MapModel:
             start_grid[0],
             start_grid[1],
             self.yaw_to_action_bin(start_pose.yaw_deg, yaw_bin_deg, yaw_bins),
+            0,
             0,
         )
         goal_node = self.grid_pos(goal_xy)

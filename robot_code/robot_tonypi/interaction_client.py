@@ -11,7 +11,7 @@ from .models import InteractionAuthorizationCheck, WorkerChangeResult
 class RobotInteractionClient:
     """Execute the physical left-hand NFC transaction from the proven notebook flow.
 
-    The caller supplies the locked visual authorization captured at the 17 cm
+    The caller supplies the locked visual authorization captured at the 19 cm
     target. It is checked before arm motion and again before ``send_request``.
     """
 

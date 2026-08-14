@@ -32,8 +32,9 @@ class MissionState(str, Enum):
     TARGET_DIRECT_APPROACH = "TARGET_DIRECT_APPROACH"
     ARRIVED_AT_TARGET = "ARRIVED_AT_TARGET"
     CONFIRM_TARGET_SCREEN = "CONFIRM_TARGET_SCREEN"
+    TARGET_VISIBILITY_RECOVERY = "TARGET_VISIBILITY_RECOVERY"
     TARGET_TAG_SCREEN_CONFIRMED = "TARGET_TAG_SCREEN_CONFIRMED"
-    FORWARD_3CM = "FORWARD_3CM"
+    FORWARD_5CM = "FORWARD_5CM"
     CAPTURE_TARGET_SCREEN = "CAPTURE_TARGET_SCREEN"
     CLASSIFY_TARGET_FLOWER = "CLASSIFY_TARGET_FLOWER"
     TARGET_ALREADY_CORRECT = "TARGET_ALREADY_CORRECT"
@@ -42,6 +43,14 @@ class MissionState(str, Enum):
     MARK_TARGET_COMPLETE = "MARK_TARGET_COMPLETE"
     MISSION_COMPLETE = "MISSION_COMPLETE"
     MISSION_FAILED = "MISSION_FAILED"
+
+
+class NearWallRecoveryResult(str, Enum):
+    RECOVERED = "RECOVERED"
+    RETRY_WITH_NEW_POSE = "RETRY_WITH_NEW_POSE"
+    STILL_NEAR_WALL = "STILL_NEAR_WALL"
+    LOCALIZATION_REQUIRED = "LOCALIZATION_REQUIRED"
+    HARDWARE_FAILURE = "HARDWARE_FAILURE"
 
 
 @dataclass
@@ -172,7 +181,7 @@ class ClassificationResult:
 
 @dataclass
 class TargetVisualConfirmation:
-    """One live 17 cm observation binding the locked Tag to its screen."""
+    """One live 19 cm observation binding the locked Tag to its screen."""
     screen_id: int
     tag_id: int
     binding_ok: bool
@@ -241,3 +250,4 @@ class ActionResult:
     imu_yaw_delta_deg: Optional[float] = None
     ok: bool = True
     error: str = ""
+    executed_times: Optional[int] = None

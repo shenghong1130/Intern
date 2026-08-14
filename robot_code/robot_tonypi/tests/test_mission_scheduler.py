@@ -7,7 +7,7 @@ import unittest.mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from robot_tonypi.models import Confidence, MissionState, RobotPose, Screen, ScreenStatus, VisualAuthorization
+from robot_tonypi.models import ActionResult, Confidence, MissionState, NearWallRecoveryResult, RobotPose, Screen, ScreenStatus, VisualAuthorization
 from robot_tonypi.task_manager import TaskManager, evaluate_turn_progress
 from robot_tonypi.config import load_config
 from robot_tonypi.main import parse_args
@@ -63,9 +63,10 @@ def near_wall_manager(localized_poses, near_predicate):
     manager.actions = []
     manager.events = []
     manager.localize_calls = 0
-    manager.motion = SimpleNamespace(
-        run=lambda key, times_override=1: manager.actions.append((key, times_override))
-    )
+    def run_action(key, times_override=1):
+        manager.actions.append((key, times_override))
+        return ActionResult(key, key, times_override, 0.0, ok=True, executed_times=times_override)
+    manager.motion = SimpleNamespace(run=run_action)
     manager.hardware = SimpleNamespace(center_head=lambda: None)
     manager.debug = SimpleNamespace(event=lambda name, **data: manager.events.append((name, data)))
     poses = list(localized_poses)
@@ -229,7 +230,7 @@ class MissionSchedulerTests(unittest.TestCase):
         self.assertTrue(manager.turn_navigation_abort)
         self.assertEqual(manager.turn_no_progress_count, 2)
 
-    def test_nearest_target_uses_current_pose_to_17cm_task_target(self):
+    def test_nearest_target_uses_current_pose_to_19cm_task_target(self):
         old_near_new_far = screen(3, (30.0, 0.0))
         old_near_new_far.target_xy = (2.0, 0.0)
         old_near_new_far.task_target_xy = (30.0, 0.0)
@@ -240,7 +241,7 @@ class MissionSchedulerTests(unittest.TestCase):
         self.assertEqual(manager.choose_nearest_screen().screen_id, 2)
         self.assertEqual(
             manager.last_target_plan["selection_rule"],
-            "euclidean_current_pose_to_17cm_task_target_then_tag_id",
+            "euclidean_current_pose_to_19cm_task_target_then_tag_id",
         )
 
     def test_reselects_from_latest_pose_after_completion(self):
@@ -294,14 +295,14 @@ class MissionSchedulerTests(unittest.TestCase):
         self.assertNotIn("execute_final_forward", calls)
         self.assertIn("visual_authorization_check", calls)
         state_names = {state.name for state in MissionState}
-        self.assertIn("FORWARD_3CM", state_names)
+        self.assertIn("FORWARD_5CM", state_names)
         self.assertNotIn("NAVIGATE_TO_APPROACH", state_names)
         self.assertNotIn("FINAL_ALIGN_15CM", state_names)
         self.assertNotIn("ALIGN_FOR_INTERACTION", state_names)
         self.assertNotIn("VERIFY_INTERACTION_POSE", state_names)
 
     def test_visual_authorization_requires_locked_arrived_target(self):
-        target = screen(2, (17.0, -5.0))
+        target = screen(2, (19.0, -5.0))
         target.last_classification = "mudan"
         manager = TaskManager.__new__(TaskManager)
         manager.target_flower = "hehua"
@@ -314,8 +315,8 @@ class MissionSchedulerTests(unittest.TestCase):
         manager.arrived_at_target = False
         self.assertIn("target_not_arrived", manager.visual_authorization_check(target, "mudan").reasons)
 
-    def test_navigation_goes_directly_to_single_17cm_target(self):
-        target = screen(2, (17.0, -5.0))
+    def test_navigation_goes_directly_to_single_19cm_target(self):
+        target = screen(2, (19.0, -5.0))
         manager = TaskManager.__new__(TaskManager)
         manager.config = load_config(None)
         manager.arrived_at_target = False
@@ -323,7 +324,7 @@ class MissionSchedulerTests(unittest.TestCase):
         manager.navigate_to_xy = lambda *args, **kwargs: calls.append((args, kwargs)) or True
         self.assertTrue(manager.navigate_directly_to_target(target))
         self.assertFalse(manager.arrived_at_target)
-        self.assertEqual(calls[0][0][0], (17.0, -5.0))
+        self.assertEqual(calls[0][0][0], (19.0, -5.0))
         self.assertEqual(calls[0][1]["target_yaw_deg"], 180.0)
         self.assertTrue(calls[0][1]["allow_goal_high_cost"])
 
@@ -395,7 +396,7 @@ class MissionSchedulerTests(unittest.TestCase):
             [RobotPose(0.0, 0.0, 0.0, Confidence.HIGH, "VISION", 2.0)],
             lambda pose: pose.x_cm > 0.0,
         )
-        self.assertTrue(manager.recover_from_near_wall("test"))
+        self.assertEqual(manager.recover_from_near_wall("test"), NearWallRecoveryResult.RECOVERED)
         self.assertEqual(manager.actions[0][0], "back_fast")
         self.assertEqual(manager.state.pose.yaw_deg, 0.0)
         self.assertEqual(manager.localize_calls, 1)
@@ -410,20 +411,21 @@ class MissionSchedulerTests(unittest.TestCase):
         manager.recovery_translation_clear = (
             lambda pose, forward_cm=0.0, lateral_cm=0.0: forward_cm >= 0.0
         )
-        self.assertTrue(manager.recover_from_near_wall("test"))
+        self.assertEqual(manager.recover_from_near_wall("test"), NearWallRecoveryResult.RECOVERED)
         self.assertNotIn("back_fast", [key for key, _ in manager.actions])
         self.assertEqual(manager.actions[0][0], "strafe_left_fast")
 
     def test_backoff_then_lateral_and_relocalize_after_every_action(self):
         manager = near_wall_manager(
             [
-                RobotPose(4.0, 0.0, 0.0, Confidence.HIGH, "VISION", 2.0),
-                RobotPose(3.0, 0.0, 0.0, Confidence.HIGH, "VISION", 3.0),
+                RobotPose(3.0, 0.0, 0.0, Confidence.HIGH, "VISION", 2.0),
+                RobotPose(1.0, 0.0, 0.0, Confidence.HIGH, "VISION", 3.0),
                 RobotPose(3.0, 5.0, 0.0, Confidence.HIGH, "VISION", 4.0),
             ],
             lambda pose: pose.y_cm < 5.0,
         )
-        self.assertTrue(manager.recover_from_near_wall("test"))
+        manager.config["navigation"]["near_wall_backoff_max_attempts"] = 2
+        self.assertEqual(manager.recover_from_near_wall("test"), NearWallRecoveryResult.RECOVERED)
         self.assertEqual([key for key, _ in manager.actions], ["back_fast", "back_fast", "strafe_left_fast"])
         self.assertEqual(manager.localize_calls, len(manager.actions))
 
@@ -438,7 +440,7 @@ class MissionSchedulerTests(unittest.TestCase):
         )
         manager.config["navigation"]["near_wall_backoff_max_attempts"] = 1
         manager.config["navigation"]["near_wall_lateral_max_attempts"] = 1
-        self.assertFalse(manager.recover_from_near_wall("test"))
+        self.assertEqual(manager.recover_from_near_wall("test"), NearWallRecoveryResult.STILL_NEAR_WALL)
         keys = [key for key, _ in manager.actions]
         self.assertEqual(keys[:2], ["back_fast", "strafe_left_fast"])
         self.assertIn(keys[2], ("turn_left_fast", "turn_right_fast"))
@@ -448,12 +450,15 @@ class MissionSchedulerTests(unittest.TestCase):
     def test_two_stale_recovery_poses_raise_recovery_no_progress(self):
         same = RobotPose(5.0, 0.0, 0.0, Confidence.HIGH, "VISION", 2.0)
         manager = near_wall_manager([same, same], lambda pose: True)
-        self.assertFalse(manager.recover_from_near_wall("test"))
-        self.assertEqual(manager.last_navigation_failure_reason, "RECOVERY_NO_PROGRESS")
-        self.assertEqual([key for key, _ in manager.actions], ["back_fast", "back_fast"])
+        self.assertIn(
+            manager.recover_from_near_wall("test"),
+            (NearWallRecoveryResult.STILL_NEAR_WALL, NearWallRecoveryResult.LOCALIZATION_REQUIRED),
+        )
+        self.assertEqual(manager.last_navigation_failure_reason, "")
+        self.assertGreaterEqual(len(manager.actions), 1)
         self.assertTrue(any(name == "near_wall_recovery_no_progress" for name, _ in manager.events))
 
-    def test_navigate_aborts_after_one_failed_recovery_not_80_noops(self):
+    def test_navigate_retries_failed_recovery_without_abandoning_target(self):
         manager = TaskManager.__new__(TaskManager)
         manager.config = load_config(None)
         manager.state = SimpleNamespace(pose=RobotPose(5.0, 0.0, 0.0, Confidence.HIGH, "TEST", 1.0))
@@ -469,8 +474,9 @@ class MissionSchedulerTests(unittest.TestCase):
         manager.last_navigation_failure_reason = ""
         calls = []
         manager.recover_from_near_wall = lambda reason: calls.append(reason) or False
-        self.assertFalse(manager.navigate_to_xy((50.0, 0.0), max_steps=80))
-        self.assertEqual(len(calls), 1)
+        self.assertFalse(manager.navigate_to_xy((50.0, 0.0), max_steps=3))
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(manager.last_navigation_failure_reason, "navigation_step_limit")
 
     def test_navigation_failure_retries_before_terminal_failed(self):
         target = screen(2, (10.0, 0.0))

@@ -1,4 +1,5 @@
 import ast
+import math
 from pathlib import Path
 import sys
 import unittest
@@ -34,12 +35,12 @@ def make_screen(worker_id=12):
         center_xy=(0.0, 0.0),
         normal_xy=(1.0, 0.0),
         normal_yaw_deg=0.0,
-        target_xy=(17.0, -5.0),
-        interaction_xy=(17.0, -5.0),
+        target_xy=(19.0, -5.0),
+        interaction_xy=(19.0, -5.0),
         interaction_yaw_deg=180.0,
         reader_xy=(0.0, -5.0),
         screen_left_tangent_xy=(0.0, -1.0),
-        task_target_xy=(17.0, -5.0),
+        task_target_xy=(19.0, -5.0),
         task_target_yaw_deg=180.0,
         worker_id=worker_id,
     )
@@ -117,15 +118,15 @@ class InteractionFlowTests(unittest.TestCase):
         self.assertTrue(result.simulated)
         self.assertEqual(actions, [])
 
-    def test_four_tag_planes_quantize_to_cardinal_faces_and_17cm_targets(self):
+    def test_four_tag_planes_quantize_to_cardinal_faces_and_19cm_targets(self):
         tag_poses = load_tag_pos()
         centers = building_centers_from_tags(tag_poses)
         bounds = building_bounds_from_tags(tag_poses)
         expected = {
-            1: ("WEST", (-1.0, 0.0), (196.0, 17.5), (179.0, 17.5), (179.0, 22.5), 0.0),
-            2: ("SOUTH", (0.0, -1.0), (208.5, 5.0), (208.5, -12.0), (203.5, -12.0), 90.0),
-            3: ("EAST", (1.0, 0.0), (221.0, 17.5), (238.0, 17.5), (238.0, 12.5), -180.0),
-            4: ("NORTH", (0.0, 1.0), (208.5, 30.0), (208.5, 47.0), (213.5, 47.0), -90.0),
+            1: ("WEST", (-1.0, 0.0), (196.0, 17.5), (177.0, 17.5), (177.0, 15.5), 0.0),
+            2: ("SOUTH", (0.0, -1.0), (208.5, 5.0), (208.5, -14.0), (210.5, -14.0), 90.0),
+            3: ("EAST", (1.0, 0.0), (221.0, 17.5), (240.0, 17.5), (240.0, 19.5), -180.0),
+            4: ("NORTH", (0.0, 1.0), (208.5, 30.0), (208.5, 49.0), (206.5, 49.0), -90.0),
         }
         cfg = load_config(None)["interaction"]
         for tag_id, (face, normal, face_center, tag_front, body_target, yaw) in expected.items():
@@ -140,16 +141,25 @@ class InteractionFlowTests(unittest.TestCase):
                 actual_face_center[1] + normal[1] * cfg["target_distance_cm"],
             )
             self.assertEqual(base_target, tag_front)
-            self.assertEqual(geometry["interaction_xy"], body_target)
+            self.assertAlmostEqual(geometry["interaction_xy"][0], body_target[0])
+            self.assertAlmostEqual(geometry["interaction_xy"][1], body_target[1])
             self.assertEqual(geometry["interaction_yaw_deg"], yaw)
             self.assertIn(yaw, (0.0, -180.0, 90.0, -90.0))
+            yaw_rad = math.radians(yaw)
+            robot_left = (-math.sin(yaw_rad), math.cos(yaw_rad))
+            lateral = (
+                (geometry["interaction_xy"][0] - base_target[0]) * robot_left[0]
+                + (geometry["interaction_xy"][1] - base_target[1]) * robot_left[1]
+            )
+            self.assertAlmostEqual(lateral, cfg["target_lateral_offset_cm"])
 
     def test_interaction_geometry_uses_viewer_left_and_faces_screen(self):
         geometry = build_interaction_geometry((0.0, 0.0), (1.0, 0.0), load_config(None)["interaction"])
 
         self.assertEqual(geometry["screen_left_tangent_xy"], (0.0, -1.0))
         self.assertEqual(geometry["reader_xy"], (0.0, -5.0))
-        self.assertEqual(geometry["target_xy"], (17.0, -5.0))
+        self.assertAlmostEqual(geometry["target_xy"][0], 19.0)
+        self.assertAlmostEqual(geometry["target_xy"][1], 2.0)
         self.assertEqual(geometry["interaction_xy"], geometry["target_xy"])
         self.assertEqual(abs(geometry["interaction_yaw_deg"]), 180.0)
 

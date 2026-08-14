@@ -3,6 +3,7 @@ from types import SimpleNamespace
 import ast
 import sys
 import unittest
+from unittest import mock
 
 import numpy as np
 
@@ -26,7 +27,7 @@ from robot_tonypi.models import (
 from robot_tonypi.task_manager import TaskManager
 
 
-def make_screen(screen_id=1, xy=(17.0, -5.0)):
+def make_screen(screen_id=1, xy=(19.0, -5.0)):
     return Screen(
         screen_id=screen_id,
         tag_corners_3d=None,
@@ -64,6 +65,7 @@ def classification_manager(tag_ids, candidates, classification):
     manager.config["vision"]["vote_frames"] = 1
     manager.config["vision"]["min_votes"] = 1
     manager.config["vision"]["harvest_pan_angles"] = [100]
+    manager.config["interaction"]["target_confirmation_retry_interval_s"] = 0.0
     manager.args = SimpleNamespace(dry_run=False, skip_change=False)
     manager.target_flower = "hehua"
     manager.current_target_screen_id = 1
@@ -73,9 +75,12 @@ def classification_manager(tag_ids, candidates, classification):
     manager.target_visual_confirmation = None
     manager.visual_authorization = None
     manager.final_forward_executed = False
+    manager.target_confirmation_retry_count = 0
+    manager.target_confirmation_recovery_cycle = 0
+    manager.last_target_confirmation_diagnostics = {}
     manager.last_vote_summary = {}
     manager.state = SimpleNamespace(
-        pose=RobotPose(17.0, -5.0, 180.0, Confidence.HIGH, "TEST", 1.0)
+        pose=RobotPose(19.0, -5.0, 180.0, Confidence.HIGH, "TEST", 1.0)
     )
     manager.debug = DebugStub()
     tags = [SimpleNamespace(tag_id=value) for value in tag_ids]
@@ -100,14 +105,11 @@ def candidate(screen_id=1, tag_id=1):
     )
 
 
-class Direct17cmFlowTests(unittest.TestCase):
-    def test_map_screens_have_one_17cm_target_with_lateral_offset(self):
+class Direct19cmFlowTests(unittest.TestCase):
+    def test_map_screens_have_one_19cm_target_with_lateral_offset(self):
         config = load_config(None)
         model = MapModel(load_tag_pos(), config)
-        desired_lateral = (
-            config["interaction"]["sensor_left_offset_cm"]
-            - config["interaction"]["left_hand_body_offset_cm"]
-        )
+        desired_lateral = config["interaction"]["target_lateral_offset_cm"]
         for item in model.screens.values():
             rel = (
                 item.task_target_xy[0] - item.face_center_xy[0],
@@ -115,14 +117,14 @@ class Direct17cmFlowTests(unittest.TestCase):
             )
             normal_distance = rel[0] * item.cardinal_normal_xy[0] + rel[1] * item.cardinal_normal_xy[1]
             lateral_distance = rel[0] * item.screen_left_tangent_xy[0] + rel[1] * item.screen_left_tangent_xy[1]
-            self.assertAlmostEqual(normal_distance, 17.0)
+            self.assertAlmostEqual(normal_distance, 19.0)
             self.assertAlmostEqual(lateral_distance, desired_lateral)
             self.assertEqual(item.target_xy, item.task_target_xy)
             self.assertEqual(item.interaction_xy, item.task_target_xy)
         west = model.screens[1]
         self.assertEqual(west.face_center_xy, (196.0, 17.5))
-        self.assertEqual(west.tag_front_xy, (179.0, 17.5))
-        self.assertEqual(west.task_target_xy, (179.0, 22.5))
+        self.assertEqual(west.tag_front_xy, (177.0, 17.5))
+        self.assertEqual(west.task_target_xy, (177.0, 15.5))
         self.assertEqual(west.target_xy, west.task_target_xy)
         self.assertEqual(west.interaction_xy, west.task_target_xy)
 
@@ -185,6 +187,66 @@ class Direct17cmFlowTests(unittest.TestCase):
         self.assertFalse(manager.confirm_target_tag_and_screen(make_screen()))
         self.assertIsNone(manager.visual_authorization)
 
+    def test_confirmation_retries_use_fresh_frames_and_configured_interval(self):
+        manager = classification_manager([1], [candidate()], ClassificationResult(True, "chuju", confidence=0.95))
+        manager.config["interaction"]["target_confirmation_retry_interval_s"] = 0.125
+        calls = []
+        outcomes = [None, None, candidate()]
+
+        def capture(*args, **kwargs):
+            calls.append(len(calls) + 1)
+            manager.last_target_confirmation_diagnostics = {
+                "target_tag_detected": True,
+                "detected_tag_ids": [1],
+                "screen_candidate_count": 0,
+                "matched_screen_count": 0,
+                "failure_reason": "target_screen_binding_missing",
+            }
+            return outcomes.pop(0)
+
+        manager.capture_locked_target_candidate = capture
+        with mock.patch("robot_tonypi.task_manager.time.sleep") as sleep:
+            self.assertTrue(manager.confirm_target_tag_and_screen(make_screen()))
+        self.assertEqual(calls, [1, 2, 3])
+        self.assertEqual(sleep.call_count, 2)
+        sleep.assert_called_with(0.125)
+        self.assertEqual(manager.target_confirmation_retry_count, 0)
+
+    def test_confirmation_round_exhaustion_counts_failures_without_selecting_target(self):
+        manager = classification_manager([1], [], ClassificationResult(True, "chuju", confidence=0.95))
+        manager.config["interaction"]["target_confirmation_retry_interval_s"] = 0.0
+        self.assertFalse(manager.confirm_target_tag_and_screen(make_screen()))
+        self.assertEqual(manager.target_confirmation_retry_count, 3)
+        states = [data.get("state") for name, data in manager.debug.events if name == "mission_state"]
+        self.assertNotIn(MissionState.SELECT_NEAREST_TARGET.value, states)
+
+    def test_visibility_recovery_success_keeps_target_and_reconfirms(self):
+        manager = classification_manager([1], [], ClassificationResult(True, "chuju", confidence=0.95))
+        target = make_screen()
+        confirmations = [False, True]
+        recoveries = []
+        manager.confirm_target_tag_and_screen = lambda screen: confirmations.pop(0)
+        manager.recover_target_visibility = lambda screen, cycle: recoveries.append((screen.screen_id, cycle)) or True
+        self.assertTrue(manager.confirm_target_with_visibility_recovery(target))
+        self.assertEqual(recoveries, [(1, 1)])
+        self.assertEqual(manager.current_target_screen_id, 1)
+
+    def test_unresolved_confirmation_stops_finitely_and_preserves_target(self):
+        manager = classification_manager([1], [], ClassificationResult(True, "chuju", confidence=0.95))
+        target = make_screen()
+        manager.confirm_target_tag_and_screen = lambda screen: False
+        manager.recover_target_visibility = lambda screen, cycle: False
+        manager.preserve_current_target = lambda screen, reason: setattr(manager, "current_target_screen_id", screen.screen_id)
+        manager.last_navigation_failure_reason = ""
+        self.assertFalse(manager.confirm_target_with_visibility_recovery(target))
+        self.assertEqual(manager.mission_state, MissionState.MISSION_FAILED)
+        self.assertEqual(manager.current_target_screen_id, 1)
+        self.assertEqual(target.attempts, 1)
+        self.assertFalse(manager.final_forward_executed)
+        unresolved = [data for name, data in manager.debug.events if name == "target_screen_confirmation_unresolved"]
+        self.assertEqual(len(unresolved), 1)
+        self.assertTrue(unresolved[0]["target_preserved"])
+
     def test_fpga_failure_blocks_authorization(self):
         manager = classification_manager([1], [candidate()], ClassificationResult(False, error="fpga_down"))
         target = make_screen()
@@ -206,8 +268,8 @@ class Direct17cmFlowTests(unittest.TestCase):
         target = make_screen()
         manager.motion = SimpleNamespace(
             run=lambda key, times_override=1: ActionResult(
-                key=key, group="go_forward_one_small_step", times=times_override,
-                elapsed_s=0.0, model_forward_cm=3.0, ok=True,
+                key=key, group="go_forward_one_step", times=times_override,
+                elapsed_s=0.0, model_forward_cm=5.0, ok=True,
             )
         )
         self.assertTrue(manager.confirm_target_tag_and_screen(target))
@@ -239,10 +301,10 @@ class Direct17cmFlowTests(unittest.TestCase):
             run=lambda key, times_override=1: manager.sequence.append(("motion", key, times_override))
             or ActionResult(
                 key=key,
-                group="go_forward_one_small_step",
+                group="go_forward_one_step",
                 times=1,
                 elapsed_s=0.0,
-                model_forward_cm=3.0,
+                model_forward_cm=5.0,
                 ok=motion_ok,
                 error="" if motion_ok else "failed",
             )
@@ -264,7 +326,7 @@ class Direct17cmFlowTests(unittest.TestCase):
         self.assertTrue(manager.final_forward_executed)
         self.assertEqual(target.status, ScreenStatus.CHANGED)
 
-    def test_3cm_path_contains_no_sensing_or_extra_navigation_calls(self):
+    def test_5cm_path_contains_no_sensing_or_extra_navigation_calls(self):
         source = (Path(__file__).resolve().parents[1] / "task_manager.py").read_text(encoding="utf-8")
         tree = ast.parse(source)
         forbidden = {
@@ -282,17 +344,19 @@ class Direct17cmFlowTests(unittest.TestCase):
 
     def test_configuration_has_no_old_two_stage_distance(self):
         config = load_config(None)
-        self.assertEqual(config["interaction"]["target_distance_cm"], 17.0)
-        self.assertEqual(config["interaction"]["target_final_forward_cm"], 3.0)
+        self.assertEqual(config["interaction"]["target_distance_cm"], 19.0)
+        self.assertEqual(config["interaction"]["target_lateral_offset_cm"], -2.0)
+        self.assertEqual(config["interaction"]["target_final_forward_cm"], 5.0)
         self.assertEqual(config["navigation"]["target_arrival_radius_cm"], 3.0)
         self.assertNotIn("target_arrival_distance_cm", config["map"])
         self.assertNotIn("interaction_staging_distance_cm", config["interaction"])
         self.assertNotIn("interaction_staging_arrival_radius_cm", config["interaction"])
         self.assertEqual(
-            config["motion"]["actions"]["interaction_forward_3cm"]["forward_cm"],
-            3.0,
+            config["motion"]["actions"]["interaction_forward_5cm"]["forward_cm"],
+            5.0,
         )
-        self.assertEqual(config["motion"]["actions"]["interaction_forward_3cm"]["times"], 1)
+        self.assertEqual(config["motion"]["actions"]["interaction_forward_5cm"]["times"], 1)
+        self.assertEqual(config["motion"]["actions"]["interaction_forward_5cm"]["group"], "go_forward_one_step")
         self.assertEqual(config["vision"]["max_screen_area_ratio"], 0.98)
 
     def test_flow_order_is_confirm_then_forward_then_classify_then_change(self):
@@ -306,24 +370,31 @@ class Direct17cmFlowTests(unittest.TestCase):
         for call in (node for node in ast.walk(fn) if isinstance(node, ast.Call)):
             name = getattr(call.func, "attr", "")
             if name in {
-                "confirm_target_tag_and_screen",
+                "confirm_target_with_visibility_recovery",
                 "execute_final_forward",
                 "classify_after_final_forward",
                 "process_screen_interaction",
             }:
                 line.setdefault(name, call.lineno)
-        self.assertLess(line["confirm_target_tag_and_screen"], line["execute_final_forward"])
+        self.assertLess(line["confirm_target_with_visibility_recovery"], line["execute_final_forward"])
         self.assertLess(line["execute_final_forward"], line["classify_after_final_forward"])
         self.assertLess(line["classify_after_final_forward"], line["process_screen_interaction"])
 
-    def test_3cm_failure_blocks_change(self):
+    def test_5cm_failure_blocks_change(self):
         manager, target = self.interaction_manager(motion_ok=False)
         manager.final_forward_executed = False
         self.assertFalse(manager.execute_final_forward(target))
-        self.assertEqual(manager.sequence, [("motion", "interaction_forward_3cm", 1)])
+        self.assertEqual(manager.sequence, [("motion", "interaction_forward_5cm", 1)])
         self.assertEqual(target.status, ScreenStatus.NEEDS_CHANGE)
 
-    def test_skip_change_runs_no_3cm_hardware_action(self):
+    def test_final_5cm_is_executed_only_once(self):
+        manager, target = self.interaction_manager()
+        manager.final_forward_executed = False
+        self.assertTrue(manager.execute_final_forward(target))
+        self.assertFalse(manager.execute_final_forward(target))
+        self.assertEqual(manager.sequence, [("motion", "interaction_forward_5cm", 1)])
+
+    def test_skip_change_runs_no_5cm_hardware_action(self):
         manager, target = self.interaction_manager(skip_change=True)
         self.assertTrue(manager.process_screen_interaction(target))
         self.assertEqual(manager.sequence, [("change", 1, 1)])
