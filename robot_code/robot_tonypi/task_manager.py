@@ -315,7 +315,7 @@ class TaskManager:
                     target_xy=target.task_target_xy,
                     target_yaw_deg=target.task_target_yaw_deg,
                     visual_confirmation="target_tag_and_bound_screen_required",
-                    final_forward_action="interaction_forward_13cm x1",
+                    final_forward_action="interaction_forward_15cm x1",
                 )
             self.set_mission_state(MissionState.NAVIGATE_TO_TARGET)
             ok = self.navigate_to_screen(target)
@@ -1087,7 +1087,7 @@ class TaskManager:
         return False
 
     def classify_after_final_forward(self, screen: Screen, *, allow_without_forward: bool = False) -> int:
-        """Capture once and classify after the dedicated final 13 cm motion."""
+        """Capture once and classify after the dedicated final 15 cm motion."""
         confirmation = self.target_visual_confirmation
         if (
             confirmation is None
@@ -1124,14 +1124,14 @@ class TaskManager:
             candidate = self.capture_locked_target_candidate(
                 screen,
                 extract_crops=True,
-                reason="after_final_forward_13cm",
+                reason="after_final_forward_15cm",
             )
             if candidate is None or candidate.crop_28x28 is None:
                 entry["decision"] = "post_forward_capture_failed"
                 return 0
             self.set_mission_state(MissionState.CLASSIFY_TARGET_FLOWER)
             result = self.classifier.classify_crop(candidate.crop_28x28)
-            self.debug.save_crop(screen.screen_id, candidate.crop_28x28, "post_forward_13cm")
+            self.debug.save_crop(screen.screen_id, candidate.crop_28x28, "post_forward_15cm")
             confidence = float(result.confidence) if result.ok else 0.0
             entry["observations"].append(
                 {
@@ -1346,7 +1346,7 @@ class TaskManager:
         )
 
     def execute_final_forward(self, screen: Screen) -> bool:
-        """Execute the dedicated 13 cm action exactly once before classification."""
+        """Execute the dedicated 15 cm action exactly once before classification."""
         if self.final_forward_executed:
             self.debug.event("target_final_forward_failed", screen_id=screen.screen_id, reason="already_executed")
             return False
@@ -1360,17 +1360,17 @@ class TaskManager:
             self.debug.event("target_final_forward_failed", screen_id=screen.screen_id, reason="target_confirmation_missing")
             return False
         distance = float(self.config["interaction"]["target_final_forward_cm"])
-        self.set_mission_state(MissionState.FORWARD_13CM)
+        self.set_mission_state(MissionState.FORWARD_15CM)
         self.debug.event(
             "target_final_forward_started",
             screen_id=screen.screen_id,
-            action="interaction_forward_13cm",
+            action="interaction_forward_15cm",
             final_forward_cm=distance,
             target_distance_cm=float(self.config["interaction"]["target_distance_cm"]),
             final_forward_executed=False,
             dry_run=self.args.dry_run,
         )
-        result = self.motion.run("interaction_forward_13cm", times_override=1)
+        result = self.motion.run("interaction_forward_15cm", times_override=1)
         self.final_forward_executed = True
         self.debug.event(
             "target_final_forward_done" if result.ok else "target_final_forward_failed",

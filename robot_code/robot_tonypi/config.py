@@ -202,13 +202,12 @@ DEFAULT_CONFIG: Dict[str, Any] = {
             "stand": {"group": "stand", "times": 1, "with_stand": False, "settle_s": 0.25},
             "forward_fast": {"group": "go_forward_fast", "times": 1, "with_stand": True, "forward_cm": 3.5, "settle_s": 0.35},
             "forward_micro": {"group": "go_forward_one_small_step", "times": 1, "with_stand": False, "forward_cm": 2.0, "settle_s": 0.25},
-            "interaction_forward_13cm": {
+            "interaction_forward_15cm": {
                 "sequence": [
-                    {"group": "go_forward_one_step", "times": 2, "with_stand": False},
-                    {"group": "go_forward_one_small_step", "times": 1, "with_stand": False},
+                    {"group": "go_forward_one_step", "times": 3, "with_stand": False},
                 ],
                 "times": 1,
-                "forward_cm": 13.0,
+                "forward_cm": 15.0,
                 "settle_s": 0.30,
             },
             "back_fast": {
@@ -247,8 +246,8 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     },
     "interaction": {
         "target_distance_cm": 25.0,
-        "target_lateral_offset_cm": -2.0,
-        "target_final_forward_cm": 13.0,
+        "target_lateral_offset_cm": -1.5,
+        "target_final_forward_cm": 15.0,
         "target_confirmation_max_retries": 3,
         "target_confirmation_retry_interval_s": 0.5,
         "target_confirmation_recovery_max_cycles": 2,

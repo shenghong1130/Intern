@@ -53,21 +53,16 @@
         "forward_cm": 3.5,
         "settle_s": 0.35
       },
-      "interaction_forward_13cm": {
+      "interaction_forward_15cm": {
         "sequence": [
           {
             "group": "go_forward_one_step",
-            "times": 2,
-            "with_stand": false
-          },
-          {
-            "group": "go_forward_one_small_step",
-            "times": 1,
+            "times": 3,
             "with_stand": false
           }
         ],
         "times": 1,
-        "forward_cm": 13.0,
+        "forward_cm": 15.0,
         "settle_s": 0.3
       },
       "back_fast": {
