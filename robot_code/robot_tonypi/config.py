@@ -14,7 +14,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "tonypi_root": "/home/pi/TonyPi",
         "tonypi_sdk": "/home/pi/TonyPi/HiwonderSDK",
         "action_group_dir": "/home/pi/TonyPi/ActionGroups",
-        "camera_calibration": "/home/pi/TonyPi/Functions/CameraCalibration/calibration_param.npz",
+        "camera_calibration": "/home/pi/robot_tonypi/camera_distortion_calibration/calibration_param.npz",
         "debug_root": "/home/pi/TonyPi/debug_runs",
     },
     "camera": {
@@ -27,8 +27,18 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "settle_s": 0.55,
         "discard_frames": 3,
         "frame_gap_s": 0.08,
-        "default_matrix": [[441.5962, 0.0, 290.2693], [0.0, 441.6984, 278.6220], [0.0, 0.0, 1.0]],
-        "default_dist_coeff": [-0.3405, 0.1252, 0.0, 0.0],
+        "default_matrix": [
+            [442.7764263403395, 0.0, 312.0124313067304],
+            [0.0, 442.27334821002967, 221.54782360751392],
+            [0.0, 0.0, 1.0],
+        ],
+        "default_dist_coeff": [
+            -0.3563573203841699,
+            0.16913777232573327,
+            0.0,
+            0.0,
+            0.0,
+        ],
     },
     "map": {
         "width_cm": 300.0,
@@ -80,7 +90,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "navigation": {
         "arrival_radius_cm": 23.0,
         "arrival_yaw_tolerance_deg": 30.0,
-        "target_arrival_radius_cm": 3.0,
+        "target_arrival_radius_cm": 4.0,
         "target_arrival_yaw_tolerance_deg": 10.0,
         "target_direct_approach_distance_cm": 40.0,
         "target_direct_corridor_half_width_cm": 6.0,
@@ -202,12 +212,12 @@ DEFAULT_CONFIG: Dict[str, Any] = {
             "stand": {"group": "stand", "times": 1, "with_stand": False, "settle_s": 0.25},
             "forward_fast": {"group": "go_forward_fast", "times": 1, "with_stand": True, "forward_cm": 3.5, "settle_s": 0.35},
             "forward_micro": {"group": "go_forward_one_small_step", "times": 1, "with_stand": False, "forward_cm": 2.0, "settle_s": 0.25},
-            "interaction_forward_15cm": {
+            "interaction_forward_10cm": {
                 "sequence": [
-                    {"group": "go_forward_one_step", "times": 3, "with_stand": False},
+                    {"group": "go_forward_one_step", "times": 2, "with_stand": False},
                 ],
                 "times": 1,
-                "forward_cm": 15.0,
+                "forward_cm": 10.0,
                 "settle_s": 0.30,
             },
             "back_fast": {
@@ -245,9 +255,9 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         },
     },
     "interaction": {
-        "target_distance_cm": 25.0,
+        "target_distance_cm": 19.0,
         "target_lateral_offset_cm": -1.5,
-        "target_final_forward_cm": 15.0,
+        "target_final_forward_cm": 10.0,
         "target_confirmation_max_retries": 3,
         "target_confirmation_retry_interval_s": 0.5,
         "target_confirmation_recovery_max_cycles": 2,

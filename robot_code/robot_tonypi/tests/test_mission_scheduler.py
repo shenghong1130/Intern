@@ -230,7 +230,7 @@ class MissionSchedulerTests(unittest.TestCase):
         self.assertTrue(manager.turn_navigation_abort)
         self.assertEqual(manager.turn_no_progress_count, 2)
 
-    def test_nearest_target_uses_current_pose_to_25cm_task_target(self):
+    def test_nearest_target_uses_current_pose_to_19cm_task_target(self):
         old_near_new_far = screen(3, (30.0, 0.0))
         old_near_new_far.target_xy = (2.0, 0.0)
         old_near_new_far.task_target_xy = (30.0, 0.0)
@@ -241,7 +241,7 @@ class MissionSchedulerTests(unittest.TestCase):
         self.assertEqual(manager.choose_nearest_screen().screen_id, 2)
         self.assertEqual(
             manager.last_target_plan["selection_rule"],
-            "euclidean_current_pose_to_25cm_task_target_then_tag_id",
+            "euclidean_current_pose_to_19cm_task_target_then_tag_id",
         )
 
     def test_reselects_from_latest_pose_after_completion(self):
@@ -295,7 +295,7 @@ class MissionSchedulerTests(unittest.TestCase):
         self.assertNotIn("execute_final_forward", calls)
         self.assertIn("visual_authorization_check", calls)
         state_names = {state.name for state in MissionState}
-        self.assertIn("FORWARD_15CM", state_names)
+        self.assertIn("FORWARD_10CM", state_names)
         self.assertNotIn("NAVIGATE_TO_APPROACH", state_names)
         self.assertNotIn("FINAL_ALIGN_15CM", state_names)
         self.assertNotIn("ALIGN_FOR_INTERACTION", state_names)
@@ -315,7 +315,7 @@ class MissionSchedulerTests(unittest.TestCase):
         manager.arrived_at_target = False
         self.assertIn("target_not_arrived", manager.visual_authorization_check(target, "mudan").reasons)
 
-    def test_navigation_goes_directly_to_single_25cm_target(self):
+    def test_navigation_goes_directly_to_single_19cm_target(self):
         target = screen(2, (25.0, -2.0))
         manager = TaskManager.__new__(TaskManager)
         manager.config = load_config(None)

@@ -28,7 +28,7 @@ from robot_tonypi.models import (
 from robot_tonypi.task_manager import TaskManager
 
 
-def make_screen(screen_id=1, xy=(25.0, -2.0)):
+def make_screen(screen_id=1, xy=(19.0, -1.5)):
     return Screen(
         screen_id=screen_id,
         tag_corners_3d=None,
@@ -81,7 +81,7 @@ def classification_manager(tag_ids, candidates, classification):
     manager.last_target_confirmation_diagnostics = {}
     manager.last_vote_summary = {}
     manager.state = SimpleNamespace(
-        pose=RobotPose(25.0, -2.0, 180.0, Confidence.HIGH, "TEST", 1.0)
+        pose=RobotPose(19.0, -1.5, 180.0, Confidence.HIGH, "TEST", 1.0)
     )
     manager.debug = DebugStub()
     tags = [SimpleNamespace(tag_id=value) for value in tag_ids]
@@ -106,8 +106,8 @@ def candidate(screen_id=1, tag_id=1):
     )
 
 
-class Direct25cmFlowTests(unittest.TestCase):
-    def test_map_screens_have_one_25cm_target_with_lateral_offset(self):
+class Direct19cmFlowTests(unittest.TestCase):
+    def test_map_screens_have_one_19cm_target_with_lateral_offset(self):
         config = load_config(None)
         model = MapModel(load_tag_pos(), config)
         desired_lateral = config["interaction"]["target_lateral_offset_cm"]
@@ -118,14 +118,14 @@ class Direct25cmFlowTests(unittest.TestCase):
             )
             normal_distance = rel[0] * item.cardinal_normal_xy[0] + rel[1] * item.cardinal_normal_xy[1]
             lateral_distance = rel[0] * item.screen_left_tangent_xy[0] + rel[1] * item.screen_left_tangent_xy[1]
-            self.assertAlmostEqual(normal_distance, 25.0)
+            self.assertAlmostEqual(normal_distance, 19.0)
             self.assertAlmostEqual(lateral_distance, desired_lateral)
             self.assertEqual(item.target_xy, item.task_target_xy)
             self.assertEqual(item.interaction_xy, item.task_target_xy)
         west = model.screens[1]
         self.assertEqual(west.face_center_xy, (196.0, 17.5))
-        self.assertEqual(west.tag_front_xy, (171.0, 17.5))
-        self.assertEqual(west.task_target_xy, (171.0, 16.0))
+        self.assertEqual(west.tag_front_xy, (177.0, 17.5))
+        self.assertEqual(west.task_target_xy, (177.0, 16.0))
         self.assertEqual(west.target_xy, west.task_target_xy)
         self.assertEqual(west.interaction_xy, west.task_target_xy)
 
@@ -270,7 +270,7 @@ class Direct25cmFlowTests(unittest.TestCase):
         manager.motion = SimpleNamespace(
             run=lambda key, times_override=1: ActionResult(
                 key=key, group="go_forward_one_step", times=times_override,
-                elapsed_s=0.0, model_forward_cm=15.0, ok=True,
+                elapsed_s=0.0, model_forward_cm=10.0, ok=True,
             )
         )
         self.assertTrue(manager.confirm_target_tag_and_screen(target))
@@ -305,7 +305,7 @@ class Direct25cmFlowTests(unittest.TestCase):
                 group="go_forward_one_step",
                 times=1,
                 elapsed_s=0.0,
-                model_forward_cm=15.0,
+                model_forward_cm=10.0,
                 ok=motion_ok,
                 error="" if motion_ok else "failed",
             )
@@ -327,7 +327,7 @@ class Direct25cmFlowTests(unittest.TestCase):
         self.assertTrue(manager.final_forward_executed)
         self.assertEqual(target.status, ScreenStatus.CHANGED)
 
-    def test_15cm_path_contains_no_sensing_or_extra_navigation_calls(self):
+    def test_10cm_path_contains_no_sensing_or_extra_navigation_calls(self):
         source = (Path(__file__).resolve().parents[1] / "task_manager.py").read_text(encoding="utf-8")
         tree = ast.parse(source)
         forbidden = {
@@ -345,33 +345,33 @@ class Direct25cmFlowTests(unittest.TestCase):
 
     def test_configuration_has_no_old_two_stage_distance(self):
         config = load_config(None)
-        self.assertEqual(config["interaction"]["target_distance_cm"], 25.0)
+        self.assertEqual(config["interaction"]["target_distance_cm"], 19.0)
         self.assertEqual(config["interaction"]["target_lateral_offset_cm"], -1.5)
-        self.assertEqual(config["interaction"]["target_final_forward_cm"], 15.0)
-        self.assertEqual(config["navigation"]["target_arrival_radius_cm"], 3.0)
+        self.assertEqual(config["interaction"]["target_final_forward_cm"], 10.0)
+        self.assertEqual(config["navigation"]["target_arrival_radius_cm"], 4.0)
         self.assertNotIn("target_arrival_distance_cm", config["map"])
         self.assertNotIn("interaction_staging_distance_cm", config["interaction"])
         self.assertNotIn("interaction_staging_arrival_radius_cm", config["interaction"])
         self.assertEqual(
-            config["motion"]["actions"]["interaction_forward_15cm"]["forward_cm"],
-            15.0,
+            config["motion"]["actions"]["interaction_forward_10cm"]["forward_cm"],
+            10.0,
         )
-        final_action = config["motion"]["actions"]["interaction_forward_15cm"]
+        final_action = config["motion"]["actions"]["interaction_forward_10cm"]
         self.assertEqual(final_action["times"], 1)
         self.assertEqual(
             [(step["group"], step["times"]) for step in final_action["sequence"]],
-            [("go_forward_one_step", 3)],
+            [("go_forward_one_step", 2)],
         )
         self.assertEqual(config["vision"]["max_screen_area_ratio"], 0.98)
 
-    def test_final_15cm_hardware_sequence_is_one_logical_action(self):
+    def test_final_10cm_hardware_sequence_is_one_logical_action(self):
         hardware = TonyPiHardware(load_config(None), dry_run=True)
         with mock.patch("robot_tonypi.hardware.time.sleep"), mock.patch("builtins.print"):
-            result = hardware.run_action("interaction_forward_15cm", times_override=1)
+            result = hardware.run_action("interaction_forward_10cm", times_override=1)
         self.assertTrue(result.ok)
         self.assertEqual(result.times, 1)
         self.assertEqual(result.executed_times, 1)
-        self.assertEqual(result.model_forward_cm, 15.0)
+        self.assertEqual(result.model_forward_cm, 10.0)
         self.assertEqual(result.group, "go_forward_one_step")
 
     def test_flow_order_is_confirm_then_forward_then_classify_then_change(self):
@@ -395,21 +395,21 @@ class Direct25cmFlowTests(unittest.TestCase):
         self.assertLess(line["execute_final_forward"], line["classify_after_final_forward"])
         self.assertLess(line["classify_after_final_forward"], line["process_screen_interaction"])
 
-    def test_15cm_failure_blocks_change(self):
+    def test_10cm_failure_blocks_change(self):
         manager, target = self.interaction_manager(motion_ok=False)
         manager.final_forward_executed = False
         self.assertFalse(manager.execute_final_forward(target))
-        self.assertEqual(manager.sequence, [("motion", "interaction_forward_15cm", 1)])
+        self.assertEqual(manager.sequence, [("motion", "interaction_forward_10cm", 1)])
         self.assertEqual(target.status, ScreenStatus.NEEDS_CHANGE)
 
-    def test_final_15cm_is_executed_only_once(self):
+    def test_final_10cm_is_executed_only_once(self):
         manager, target = self.interaction_manager()
         manager.final_forward_executed = False
         self.assertTrue(manager.execute_final_forward(target))
         self.assertFalse(manager.execute_final_forward(target))
-        self.assertEqual(manager.sequence, [("motion", "interaction_forward_15cm", 1)])
+        self.assertEqual(manager.sequence, [("motion", "interaction_forward_10cm", 1)])
 
-    def test_skip_change_runs_no_15cm_hardware_action(self):
+    def test_skip_change_runs_no_10cm_hardware_action(self):
         manager, target = self.interaction_manager(skip_change=True)
         self.assertTrue(manager.process_screen_interaction(target))
         self.assertEqual(manager.sequence, [("change", 1, 1)])

@@ -28,7 +28,7 @@ main.py
 
 ### `robot_decision_tree.html`
 
-面向调试和评审的可视化决策树。它描述程序从定位、17 cm 直接导航、目标视觉授权、一次 3 cm 前进到举手、Worker 响应和重试的真实分支。
+面向调试和评审的可视化决策树。它描述程序从定位、19 cm 直接导航、目标视觉授权、一次 10 cm 前进到举手、Worker 响应和重试的真实分支。
 
 ### `FILES.md`
 
@@ -70,7 +70,7 @@ python3 -m robot_tonypi.main ...
 - 相机和头部舵机参数；
 - 地图、导航和动作模型参数；
 - AprilTag 定位和屏幕视觉阈值；
-- 17 cm 目标、专用 3 cm 动作、左手横向补偿和 Worker 参数；
+- 19 cm 目标、专用 10 cm 动作、左手横向补偿和 Worker 参数；
 - 任务时限、障碍检测和 Debug 设置。
 
 `default_config_path()` 返回 `config/competition_config.json`。
@@ -84,7 +84,7 @@ python3 -m robot_tonypi.main ...
 所有模块共享的数据模型：
 
 - `Confidence`：定位置信度；
-- `MissionState`：定位、最近目标选择、四向 17 cm 目标构造、直接导航、视觉确认、分类、3 cm 前进、交互和完成等任务状态；
+- `MissionState`：定位、最近目标选择、四向 19 cm 目标构造、直接导航、视觉确认、分类、10 cm 前进、交互和完成等任务状态；
 - `ScreenStatus`：`UNKNOWN`、`NEEDS_CHANGE`、`INTERACTING`、`CHANGED` 等目标处理状态；
 - `RobotPose`：机器人世界坐标、yaw、来源和时间；
 - `Screen`：屏幕中心、normal、唯一 17 cm 任务目标、reader 点和 worker_id；
@@ -110,10 +110,10 @@ python3 -m robot_tonypi.main ...
 2. 执行初始定位，然后按最新 pose 到各 17 cm 任务位姿的距离选择最近未处理目标；
 3. 从 Tag 四角固定 X/Y 平面生成四向 normal、建筑面中心、17 cm 点和标准 yaw；
 4. 锁定目标后远距离使用完整障碍代价导航；进入 40 cm 范围时优先检查只豁免当前目标膨胀代价的窄直达通道；
-5. 到达后要求单帧同时包含当前 Tag 和绑定到它的屏幕，然后执行一次专用 3 cm 前进；
+5. 到达后要求单帧同时包含当前 Tag 和绑定到它的屏幕，然后执行一次专用 10 cm 前进；
 6. 前进后立即重新拍摄、裁剪并调用 FPGA，将非目标花标记为 `NEEDS_CHANGE`，将目标花标记为 `ALREADY_TARGET`；
 7. 执行 A* 导航、障碍和边界恢复，不插入 passby/观察识别停靠；
-8. 3 cm 前进只执行一次；此后除分类所需的一次拍摄外，不再定位或执行导航调整；
+8. 10 cm 前进只执行一次；此后除分类所需的一次拍摄外，不再定位或执行导航调整；
 9. 使用已锁定的视觉授权调用 `RobotInteractionClient`；
 10. 发布 Dashboard 状态并写交互审计日志；
 11. 退出时关闭硬件、相机和日志。
@@ -239,7 +239,7 @@ FPGA 分类服务客户端。它把 28×28 屏幕裁剪编码为 JPEG，通过 H
 - 保存 `latest_state.json`；
 - 绘制机器人、实际路线、唯一 17 cm task target 和 reader 的场地图；
 - 启动内置 HTTP Server，默认端口 8090；
-- 在网页显示 pose、目标面/外法向、17 cm 目标位姿、Tag/屏幕视觉授权、3 cm 动作、投票、Screen 状态和 Worker 响应。
+- 在网页显示 pose、目标面/外法向、19 cm 目标位姿、Tag/屏幕视觉授权、10 cm 动作、投票、Screen 状态和 Worker 响应。
 
 Debug 目录默认在 `/home/pi/TonyPi/debug_runs/<timestamp>/`。
 
@@ -274,7 +274,7 @@ Debug 目录默认在 `/home/pi/TonyPi/debug_runs/<timestamp>/`。
 
 ### `tests/test_direct_17cm_flow.py`
 
-验证新流程核心边界：单一 17 cm 目标和横向补偿、目标 Tag 与绑定屏幕确认、确认后单次 3 cm、前进后 FPGA 分类、分类失败/已是目标花分支、动作失败阻止 Worker，以及授权不能跨目标复用。全部硬件、FPGA 和 Worker 调用均为假对象。
+验证新流程核心边界：单一 19 cm 目标和横向补偿、目标 Tag 与绑定屏幕确认、确认后单次 10 cm、前进后 FPGA 分类、分类失败/已是目标花分支、动作失败阻止 Worker，以及授权不能跨目标复用。全部硬件、FPGA 和 Worker 调用均为假对象。
 
 ### `tests/test_target_direct_approach.py`
 

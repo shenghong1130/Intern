@@ -118,15 +118,15 @@ class InteractionFlowTests(unittest.TestCase):
         self.assertTrue(result.simulated)
         self.assertEqual(actions, [])
 
-    def test_four_tag_planes_quantize_to_cardinal_faces_and_25cm_targets(self):
+    def test_four_tag_planes_quantize_to_cardinal_faces_and_19cm_targets(self):
         tag_poses = load_tag_pos()
         centers = building_centers_from_tags(tag_poses)
         bounds = building_bounds_from_tags(tag_poses)
         expected = {
-            1: ("WEST", (-1.0, 0.0), (196.0, 17.5), (171.0, 17.5), (171.0, 16.0), 0.0),
-            2: ("SOUTH", (0.0, -1.0), (208.5, 5.0), (208.5, -20.0), (210.0, -20.0), 90.0),
-            3: ("EAST", (1.0, 0.0), (221.0, 17.5), (246.0, 17.5), (246.0, 19.0), -180.0),
-            4: ("NORTH", (0.0, 1.0), (208.5, 30.0), (208.5, 55.0), (207.0, 55.0), -90.0),
+            1: ("WEST", (-1.0, 0.0), (196.0, 17.5), (177.0, 17.5), (177.0, 16.0), 0.0),
+            2: ("SOUTH", (0.0, -1.0), (208.5, 5.0), (208.5, -14.0), (210.0, -14.0), 90.0),
+            3: ("EAST", (1.0, 0.0), (221.0, 17.5), (240.0, 17.5), (240.0, 19.0), -180.0),
+            4: ("NORTH", (0.0, 1.0), (208.5, 30.0), (208.5, 49.0), (207.0, 49.0), -90.0),
         }
         cfg = load_config(None)["interaction"]
         for tag_id, (face, normal, face_center, tag_front, body_target, yaw) in expected.items():
@@ -158,7 +158,7 @@ class InteractionFlowTests(unittest.TestCase):
 
         self.assertEqual(geometry["screen_left_tangent_xy"], (0.0, -1.0))
         self.assertEqual(geometry["reader_xy"], (0.0, -5.0))
-        self.assertAlmostEqual(geometry["target_xy"][0], 25.0)
+        self.assertAlmostEqual(geometry["target_xy"][0], 19.0)
         self.assertAlmostEqual(geometry["target_xy"][1], 1.5)
         self.assertEqual(geometry["interaction_xy"], geometry["target_xy"])
         self.assertEqual(abs(geometry["interaction_yaw_deg"]), 180.0)

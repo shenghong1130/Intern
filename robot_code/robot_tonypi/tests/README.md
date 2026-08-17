@@ -43,7 +43,7 @@ python3 -m unittest robot_tonypi.tests.test_calibrate_motion -v
 
 验证交互纯逻辑和 `RobotInteractionClient` 的事务保护，包括：
 
-- 四种 Tag 平面、四向法线、17 cm 唯一目标和身体横向补偿；
+- 四种 Tag 平面、四向法线、19 cm 唯一目标和身体横向补偿；
 - `stand → lift_left_hand(stand=False) → send_request → finally stand` 顺序；
 - 举手后的第二次安全门；
 - Worker `ok=False` 或异常不能标记成功；
@@ -63,10 +63,10 @@ python3 -m unittest robot_tonypi.tests.test_interaction_flow -v
 验证任务调度和导航保护的局部逻辑，包括：
 
 - 地图与 Tag 参考坐标未改变；
-- 按 17 cm 最终目标选择最近 Screen，并按 ID 稳定破平局；
+- 按 19 cm 最终目标选择最近 Screen，并按 ID 稳定破平局；
 - 每处理一个目标后使用最新 pose 重新排序；
-- 旧 34/15 cm 两阶段函数和状态不再存在；
-- 导航直接使用唯一 17 cm 坐标、四向 yaw 和高代价终点参数；
+- 旧两阶段函数和状态不再存在；
+- 导航直接使用唯一 19 cm 坐标、四向 yaw 和高代价终点参数；
 - 分类器只能由到达当前锁定目标的入口调用；
 - 视觉授权要求目标锁匹配且已经到达；
 - 初始定位配置和 `--dry-run`/`--skip-change` 参数语义保持不变；
@@ -84,12 +84,12 @@ python3 -m unittest robot_tonypi.tests.test_mission_scheduler -v
 
 验证当前直接任务流程：
 
-- 所有别名字段都指向带横向补偿的唯一 17 cm 目标；
+- 所有别名字段都指向带横向补偿的唯一 19 cm 目标；
 - 当前精确终点可作为高代价终点，但建筑实体和普通目标不获得例外；
-- 正确目标 Tag 与绑定屏幕共同出现后才允许专用 3 cm 动作；
-- 缺 Tag、缺屏幕或绑定错误时不前进；3 cm 后 FPGA 失败不生成视觉授权；
-- 专用 3 cm 动作恰好一次，随后才分类；已是目标花时不调用 Worker；
-- 3 cm 动作失败时不调用 Worker，旧授权不能跨目标复用。
+- 正确目标 Tag 与绑定屏幕共同出现后才允许专用 10 cm 动作；
+- 缺 Tag、缺屏幕或绑定错误时不前进；10 cm 后 FPGA 失败不生成视觉授权；
+- 专用 10 cm 动作恰好一次，随后才分类；已是目标花时不调用 Worker；
+- 10 cm 动作失败时不调用 Worker，旧授权不能跨目标复用。
 
 测试使用假画面、假分类器、假动作和假 Worker，不访问真实硬件或网络。
 
