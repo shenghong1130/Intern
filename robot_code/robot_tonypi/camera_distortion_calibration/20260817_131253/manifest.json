@@ -1,0 +1,113 @@
+{
+  "frame_count": 15,
+  "requested_frame_count": 15,
+  "completed": true,
+  "confirmation_required_between_frames": true,
+  "captures": [
+    {
+      "index": 1,
+      "file": "frame_01.jpg",
+      "captured_at_unix_s": 1786943574.0524688,
+      "width": 640,
+      "height": 480
+    },
+    {
+      "index": 2,
+      "file": "frame_02.jpg",
+      "captured_at_unix_s": 1786943610.125904,
+      "width": 640,
+      "height": 480
+    },
+    {
+      "index": 3,
+      "file": "frame_03.jpg",
+      "captured_at_unix_s": 1786943613.5212882,
+      "width": 640,
+      "height": 480
+    },
+    {
+      "index": 4,
+      "file": "frame_04.jpg",
+      "captured_at_unix_s": 1786943649.549473,
+      "width": 640,
+      "height": 480
+    },
+    {
+      "index": 5,
+      "file": "frame_05.jpg",
+      "captured_at_unix_s": 1786943652.304214,
+      "width": 640,
+      "height": 480
+    },
+    {
+      "index": 6,
+      "file": "frame_06.jpg",
+      "captured_at_unix_s": 1786943654.397866,
+      "width": 640,
+      "height": 480
+    },
+    {
+      "index": 7,
+      "file": "frame_07.jpg",
+      "captured_at_unix_s": 1786943656.5098972,
+      "width": 640,
+      "height": 480
+    },
+    {
+      "index": 8,
+      "file": "frame_08.jpg",
+      "captured_at_unix_s": 1786943660.5770135,
+      "width": 640,
+      "height": 480
+    },
+    {
+      "index": 9,
+      "file": "frame_09.jpg",
+      "captured_at_unix_s": 1786943665.0499878,
+      "width": 640,
+      "height": 480
+    },
+    {
+      "index": 10,
+      "file": "frame_10.jpg",
+      "captured_at_unix_s": 1786943692.4181492,
+      "width": 640,
+      "height": 480
+    },
+    {
+      "index": 11,
+      "file": "frame_11.jpg",
+      "captured_at_unix_s": 1786943695.0415006,
+      "width": 640,
+      "height": 480
+    },
+    {
+      "index": 12,
+      "file": "frame_12.jpg",
+      "captured_at_unix_s": 1786943698.7605383,
+      "width": 640,
+      "height": 480
+    },
+    {
+      "index": 13,
+      "file": "frame_13.jpg",
+      "captured_at_unix_s": 1786943703.1932685,
+      "width": 640,
+      "height": 480
+    },
+    {
+      "index": 14,
+      "file": "frame_14.jpg",
+      "captured_at_unix_s": 1786943707.814952,
+      "width": 640,
+      "height": 480
+    },
+    {
+      "index": 15,
+      "file": "frame_15.jpg",
+      "captured_at_unix_s": 1786943712.1459272,
+      "width": 640,
+      "height": 480
+    }
+  ]
+}
