@@ -65,6 +65,8 @@ class RobotState:
             uncertainty = float(nav.get("turn_uncertainty_per_cycle", 2.0))
         elif per_cycle_lateral > 1e-6:
             uncertainty = float(nav.get("strafe_uncertainty_per_cycle", 1.5))
+        elif float(result.model_forward_cm) < -1e-6:
+            uncertainty = float(nav.get("reverse_uncertainty_per_cycle", 1.0))
         else:
             uncertainty = float(nav.get("forward_uncertainty_per_cycle", 1.0))
         self.motion_uncertainty += actual_cycles * uncertainty
@@ -197,6 +199,24 @@ class MotionController:
     def move_forward(self, distance_cm: float):
         cycles = self.forward_cycles_for_distance(distance_cm)
         return self.run("forward_fast", times_override=cycles)
+
+    def reverse_cycles_for_distance(self, distance_cm: float) -> int:
+        pose = self.state.pose
+        if pose is None:
+            return 1
+        step = abs(float(self.state.config["motion"]["actions"]["back_fast"].get("forward_cm", -2.5)))
+        cycles = max(1, int(math.floor(abs(float(distance_cm)) / max(0.1, step))))
+        if pose.confidence == Confidence.HIGH:
+            max_cycles = int(self.state.config["navigation"].get("max_reverse_cycles_high", 6))
+        elif pose.confidence == Confidence.MEDIUM:
+            max_cycles = int(self.state.config["navigation"].get("max_reverse_cycles_medium", 3))
+        else:
+            max_cycles = int(self.state.config["navigation"].get("max_reverse_cycles_low", 1))
+        return max(1, min(max_cycles, cycles))
+
+    def move_reverse(self, distance_cm: float):
+        cycles = self.reverse_cycles_for_distance(distance_cm)
+        return self.run("back_fast", times_override=cycles)
 
     def lateral_cycles_for_distance(self, distance_cm: float) -> int:
         pose = self.state.pose

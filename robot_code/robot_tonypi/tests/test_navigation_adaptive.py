@@ -126,6 +126,15 @@ class AdaptiveBatchTests(unittest.TestCase):
         turn = manager.select_adaptive_action_batch("turn", 8, 7.5, 100, 100)[0]
         self.assertEqual((forward, strafe, turn), (8, 4, 2))
 
+    def test_reverse_batch_cap_and_uncertainty_are_configured(self):
+        manager = adaptive_manager()
+        reverse = manager.select_adaptive_action_batch("reverse", 8, 2.5, 100, 100)[0]
+        self.assertEqual(reverse, 6)
+        self.assertGreater(
+            manager.config["navigation"]["reverse_uncertainty_per_cycle"],
+            manager.config["navigation"]["forward_uncertainty_per_cycle"],
+        )
+
     def test_near_wall_recovery_and_near_target_force_short_batches(self):
         manager = adaptive_manager()
         self.assertEqual(manager.select_adaptive_action_batch("forward", 6, 3.5, 100, 100, near_wall=True)[0], 1)
@@ -191,8 +200,158 @@ class PlannerPreferenceTests(unittest.TestCase):
         turn = next(item for item in actions if item["name"] == "turn_left_small")
         state = (*self.model.grid_pos((150.0, 150.0)), 0, 0, 0)
         _, cost = self.model.action_planner_transition(state, turn, 15.0, 24, 85.0, 1.0)
-        expected = 60.0 + 7.5 * 5.0 + 50.0
+        nav = self.config["navigation"]
+        expected = (
+            nav["action_planner_turn_fixed_cost_cm"]
+            + 7.5 * nav["action_planner_turn_cost_cm_per_deg"]
+            + nav["action_planner_in_place_turn_penalty_cm"]
+        )
         self.assertEqual(cost, expected)
+
+    def translation_manager(self, confidence=Confidence.HIGH):
+        manager = adaptive_manager(confidence)
+        manager.map = MapModel(load_tag_pos(), manager.config)
+        manager.motion = SimpleNamespace(
+            forward_cycles_for_distance=lambda distance: min(8, max(1, int(abs(distance) / 3.5))),
+            lateral_cycles_for_distance=lambda distance: min(4, max(1, int(abs(distance) / 4.0))),
+            reverse_cycles_for_distance=lambda distance: min(6, max(1, int(abs(distance) / 2.5))),
+        )
+        return manager
+
+    def test_target_directly_behind_prefers_reverse_without_turn(self):
+        manager = self.translation_manager()
+        action = manager.choose_translation_action(manager.state.pose, (100.0, 150.0))
+        self.assertIsNotNone(action)
+        self.assertEqual(action["kind"], "reverse")
+        self.assertLess(action["planned_cm"], 0.0)
+        event = next(data for name, data in manager.debug.events if name == "translation_preferred")
+        self.assertTrue(event["reverse_preferred"])
+        self.assertEqual(event["turn_penalty"], 20.0)
+
+    def test_reverse_batch_executes_back_fast_then_requests_relocalize(self):
+        manager = self.translation_manager()
+        action = manager.choose_translation_action(manager.state.pose, (100.0, 150.0))
+        calls = []
+        manager.motion = SimpleNamespace(
+            reverse_cycles_for_distance=lambda distance: 6,
+            run=lambda key, times_override=1: calls.append((key, times_override))
+            or ActionResult(
+                key,
+                "back",
+                times_override,
+                0.0,
+                model_forward_cm=-2.5 * times_override,
+                executed_times=times_override,
+            ),
+        )
+        manager.forward_map_block_count = 0
+        manager.clear_turn_progress_watchdog = lambda reason: None
+        relocalized = []
+        manager.post_action_relocalize = (
+            lambda reason, pose, result, waypoint: relocalized.append((reason, waypoint)) or True
+        )
+        status = manager.execute_translation_action(
+            action,
+            manager.state.pose,
+            (100.0, 150.0),
+            50.0,
+            {"reason": "test"},
+        )
+        self.assertEqual(status, "moved")
+        self.assertEqual(calls, [("back_fast", 6)])
+        self.assertEqual(relocalized, [("translation_reverse", (100.0, 150.0))])
+
+    def test_low_confidence_rejects_direct_reverse(self):
+        manager = self.translation_manager(Confidence.LOW)
+        action = manager.choose_translation_action(manager.state.pose, (100.0, 150.0))
+        self.assertTrue(action is None or action["kind"] != "reverse")
+        event = next(data for name, data in manager.debug.events if name == "reverse_preference_evaluated")
+        self.assertEqual(event["reverse_rejected_reason"], "localization_confidence_low")
+
+    def test_action_planner_uses_reverse_without_turn_for_rear_goal(self):
+        pose = RobotPose(150.0, 150.0, 0.0, Confidence.HIGH, "VISION", now_s())
+        path = self.model.plan_action_path(
+            pose,
+            (100.0, 150.0),
+            self.config["navigation"],
+            self.config["motion"],
+        )
+        self.assertTrue(path)
+        actions = self.model.last_action_plan_metrics["selected_actions"]
+        self.assertTrue(actions)
+        self.assertEqual(set(actions), {"reverse"})
+        self.assertEqual(self.model.last_action_plan_metrics["turn_cost"], 0.0)
+
+    def test_rear_wall_rejects_reverse(self):
+        manager = self.translation_manager()
+        manager.map.add_dynamic_obstacle((140.0, 150.0), size_cm=8.0)
+        action = manager.choose_translation_action(manager.state.pose, (100.0, 150.0))
+        self.assertTrue(action is None or action["kind"] != "reverse")
+        event = next(data for name, data in manager.debug.events if name == "reverse_preference_evaluated")
+        self.assertEqual(event["reverse_rejected_reason"], "rear_corridor_blocked")
+
+    def test_large_rear_lateral_error_rejects_blind_reverse(self):
+        manager = self.translation_manager()
+        action = manager.choose_translation_action(manager.state.pose, (100.0, 170.0))
+        self.assertTrue(action is None or action["kind"] != "reverse")
+        event = next(data for name, data in manager.debug.events if name == "reverse_preference_evaluated")
+        self.assertEqual(event["reverse_rejected_reason"], "lateral_error_too_large")
+
+    def test_reverse_batch_does_not_cross_rear_target(self):
+        manager = self.translation_manager()
+        action = manager.choose_translation_action(manager.state.pose, (140.0, 150.0))
+        self.assertEqual(action["kind"], "reverse")
+        self.assertLessEqual(abs(action["planned_cm"]), 6.0)
+        self.assertGreater(manager.state.pose.x_cm + action["planned_cm"], 140.0)
+
+    def test_safe_lateral_target_selects_strafe(self):
+        manager = self.translation_manager()
+        action = manager.choose_translation_action(manager.state.pose, (150.0, 180.0))
+        self.assertEqual(action["kind"], "strafe")
+
+    def test_side_wall_blocks_lateral_corridor(self):
+        manager = self.translation_manager()
+        manager.map.add_dynamic_obstacle((150.0, 160.0), size_cm=6.0)
+        action = manager.choose_translation_action(manager.state.pose, (150.0, 180.0))
+        self.assertIsNone(action)
+
+    def test_slightly_longer_path_wins_when_wall_clearance_is_larger(self):
+        manager = self.translation_manager()
+        manager.map.grid[:] = 0
+        manager.map.cost[:] = 0.0
+        manager.map.dynamic_obstacles = []
+        manager.map.building_bounds = {999: {
+            "x_min": 170.0,
+            "x_max": 190.0,
+            "y_min": 130.0,
+            "y_max": 136.0,
+        }}
+        short = [(150.0, 150.0), (210.0, 150.0)]
+        safe = [(150.0, 150.0), (150.0, 180.0), (210.0, 180.0), (210.0, 150.0)]
+        short_metrics = manager.normal_path_metrics(manager.state.pose, short, translation_only=True)
+        safe_metrics = manager.normal_path_metrics(manager.state.pose, safe, translation_only=True)
+        self.assertGreater(
+            safe_metrics["minimum_wall_clearance_cm"],
+            short_metrics["minimum_wall_clearance_cm"],
+        )
+        self.assertLess(safe_metrics["total_cost"], short_metrics["total_cost"])
+        selected_path = manager.plan_navigation_path(manager.state.pose, (210.0, 150.0))
+        selected_metrics = manager.normal_path_metrics(manager.state.pose, selected_path)
+        self.assertGreater(
+            selected_metrics["minimum_wall_clearance_cm"],
+            short_metrics["minimum_wall_clearance_cm"],
+        )
+        event = next(
+            data for name, data in reversed(manager.debug.events)
+            if name == "navigation_path_selected"
+        )
+        self.assertEqual(event["selected_path_type"], "action_planner")
+
+    def test_segment_threshold_is_below_map_maximum_cost(self):
+        self.assertLess(
+            self.config["navigation"]["action_planner_segment_max_cost"],
+            self.config["map"]["obstacle_cost_max"],
+        )
 
     def test_consecutive_reverse_and_strafe_reversal_penalties_accumulate(self):
         actions = self.model.action_planner_actions(self.config["navigation"], self.config["motion"])

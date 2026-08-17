@@ -1463,6 +1463,107 @@ class TaskManager:
                 out.append(clean)
         return out
 
+    def movement_corridor_metrics(
+        self,
+        start_xy,
+        end_xy,
+        allow_goal_high_cost: bool = False,
+    ) -> dict:
+        nav = self.config["navigation"]
+        half_width = float(nav.get("translation_corridor_half_width_cm", 0.0))
+        max_cost = min(
+            float(nav.get("normal_navigation_max_cost", 55.0)),
+            float(self.config["map"].get("obstacle_cost_max", 80.0)),
+        )
+        if hasattr(self.map, "translation_corridor_metrics"):
+            return self.map.translation_corridor_metrics(
+                start_xy,
+                end_xy,
+                half_width,
+                max_cost,
+                allow_goal_high_cost=allow_goal_high_cost,
+            )
+        clear = self.map.line_clear(
+            start_xy,
+            end_xy,
+            max_cost=max_cost,
+            allow_goal_high_cost=allow_goal_high_cost,
+        )
+        return {
+            "clear": clear,
+            "path_length_cm": distance_xy(start_xy, end_xy),
+            "path_obstacle_cost": 0.0,
+            "maximum_obstacle_cost": 0.0,
+            "minimum_wall_clearance_cm": float("inf"),
+        }
+
+    def movement_corridor_clear(
+        self,
+        start_xy,
+        end_xy,
+        allow_goal_high_cost: bool = False,
+    ) -> bool:
+        return bool(
+            self.movement_corridor_metrics(
+                start_xy,
+                end_xy,
+                allow_goal_high_cost=allow_goal_high_cost,
+            )["clear"]
+        )
+
+    def normal_path_metrics(
+        self,
+        pose: RobotPose,
+        path: List[Tuple[float, float]],
+        *,
+        allow_goal_high_cost: bool = False,
+        translation_only: bool = False,
+    ) -> dict:
+        nav = self.config["navigation"]
+        if len(path) < 2:
+            return {"total_cost": float("inf"), "clear": False}
+        length = 0.0
+        obstacle_integral = 0.0
+        minimum_clearance = float("inf")
+        wall_penalty = 0.0
+        clear = True
+        wall_target = float(nav.get("normal_wall_clearance_target_cm", 25.0))
+        wall_scale = float(nav.get("normal_wall_clearance_penalty_scale", 4.0))
+        headings = []
+        for index, (start, end) in enumerate(zip(path, path[1:]), start=1):
+            is_goal = allow_goal_high_cost and index == len(path) - 1
+            metrics = self.movement_corridor_metrics(start, end, allow_goal_high_cost=is_goal)
+            segment_length = float(metrics["path_length_cm"])
+            length += segment_length
+            obstacle_integral += float(metrics["path_obstacle_cost"]) * segment_length / 10.0
+            clearance = float(metrics["minimum_wall_clearance_cm"])
+            minimum_clearance = min(minimum_clearance, clearance)
+            wall_penalty += max(0.0, wall_target - clearance) * wall_scale * segment_length / 10.0
+            clear = clear and bool(metrics["clear"])
+            headings.append(math.degrees(math.atan2(end[1] - start[1], end[0] - start[0])))
+        turn_cost = 0.0
+        switches = max(0, len(path) - 2)
+        if not translation_only and headings:
+            previous = pose.yaw_deg
+            for heading in headings:
+                delta = abs(angle_diff_deg(heading, previous))
+                if delta > float(nav.get("turn_tolerance_deg", 20.0)):
+                    turn_cost += float(nav.get("action_planner_turn_fixed_cost_cm", 20.0))
+                    turn_cost += delta * float(nav.get("action_planner_turn_cost_cm_per_deg", 0.8))
+                previous = heading
+        switch_penalty = switches * float(nav.get("normal_path_action_switch_penalty_cm", 10.0))
+        obstacle_component = obstacle_integral * float(nav.get("normal_path_obstacle_cost_scale", 0.35))
+        return {
+            "clear": clear,
+            "total_cost": length + obstacle_component + wall_penalty + turn_cost + switch_penalty,
+            "path_length_cm": length,
+            "path_obstacle_cost": obstacle_integral,
+            "minimum_wall_clearance_cm": minimum_clearance,
+            "wall_clearance_penalty": wall_penalty,
+            "turn_cost": turn_cost,
+            "action_switch_penalty": switch_penalty,
+        }
+
     def path_segments_clear(
         self,
         points: List[Tuple[float, float]],
@@ -1475,11 +1576,14 @@ class TaskManager:
             if is_goal:
                 if not self.map.is_free_xy(pt):
                     return False
-            elif not self.map.is_traversable_xy(pt):
+            elif not self.map.is_traversable_xy(
+                pt,
+                max_cost=float(self.config["navigation"].get("normal_navigation_max_cost", 55.0)),
+            ):
                 return False
         for index, (start, end) in enumerate(zip(points, points[1:]), start=1):
             is_goal = allow_goal_high_cost and index == len(points) - 1
-            if not self.map.line_clear(start, end, allow_goal_high_cost=is_goal):
+            if not self.movement_corridor_clear(start, end, allow_goal_high_cost=is_goal):
                 return False
         return True
 
@@ -1574,70 +1678,120 @@ class TaskManager:
                 navigation_mode="target_direct_approach",
                 current_target_screen_id=None if target_screen is None else target_screen.screen_id,
                 target_direct_corridor_clear=True,
+                target_direct_cost_exemption=True,
                 target_xy=goal_xy,
             )
             return direct
+        normal_goal = goal_xy
+        normal_allow_goal_high_cost = allow_goal_high_cost
+        direct_limit = float(
+            self.config["navigation"].get("target_direct_approach_distance_cm", 40.0)
+        )
+        goal_distance = distance_xy(pose.xy(), goal_xy)
+        if (
+            target_screen is not None
+            and self.current_target_screen_id == int(target_screen.screen_id)
+            and goal_distance > direct_limit
+        ):
+            scale = max(0.0, direct_limit - 2.0) / max(1e-6, goal_distance)
+            normal_goal = (
+                float(goal_xy[0]) + (float(pose.x_cm) - float(goal_xy[0])) * scale,
+                float(goal_xy[1]) + (float(pose.y_cm) - float(goal_xy[1])) * scale,
+            )
+            if not self.map.is_traversable_xy(
+                normal_goal,
+                max_cost=float(
+                    self.config["navigation"].get("normal_navigation_max_cost", 55.0)
+                ),
+            ):
+                normal_goal = self.map.nearest_traversable_xy(normal_goal)
+            normal_allow_goal_high_cost = False
+            self.debug.event(
+                "normal_navigation_staging_target",
+                navigation_mode="normal",
+                target_xy=goal_xy,
+                staging_xy=normal_goal,
+                target_direct_cost_exemption=False,
+            )
         translation_paths = self.body_translation_candidate_paths(
             pose,
-            goal_xy,
-            allow_goal_high_cost=allow_goal_high_cost,
+            normal_goal,
+            allow_goal_high_cost=normal_allow_goal_high_cost,
         )
-        if translation_paths:
-            direct_distance = max(1.0, distance_xy(pose.xy(), goal_xy))
-            max_ratio = float(self.config["navigation"].get("translation_path_max_detour_ratio", 1.45))
-            best_translation = min(
-                translation_paths,
-                key=lambda item: (
-                    len(item),
-                    self.path_length_cm(item, fallback_start=pose.xy(), fallback_goal=goal_xy),
-                ),
-            )
-            translation_cost = self.path_length_cm(best_translation, pose.xy(), goal_xy)
-            if translation_cost <= direct_distance * max_ratio:
-                self.debug.event(
-                    "translation_preferred",
-                    navigation_mode="body_translation",
-                    translation_candidate_cost=round(translation_cost, 2),
-                    turn_candidate_cost=None,
-                    turn_penalty=self.config["navigation"].get("action_planner_turn_fixed_cost_cm"),
-                    segments=max(1, len(best_translation) - 1),
-                )
-                return best_translation
+        candidates = []
         if bool(self.config["navigation"].get("action_planner_enabled", True)):
             action_path = self.map.plan_action_path(
                 pose,
-                goal_xy,
+                normal_goal,
                 self.config["navigation"],
                 self.config["motion"],
-                allow_goal_high_cost=allow_goal_high_cost,
+                allow_goal_high_cost=normal_allow_goal_high_cost,
             )
             if action_path:
-                return action_path
-            return self.map.plan(
-                pose.xy(),
-                goal_xy,
-                allow_goal_high_cost=allow_goal_high_cost,
+                metrics = self.normal_path_metrics(
+                    pose, action_path, allow_goal_high_cost=normal_allow_goal_high_cost
+                )
+                planner_metrics = getattr(self.map, "last_action_plan_metrics", {})
+                if planner_metrics.get("total_cost") is not None:
+                    metrics["total_cost"] = float(planner_metrics["total_cost"])
+                    metrics["turn_cost"] = float(planner_metrics.get("turn_cost", 0.0))
+                    metrics["selected_actions"] = list(
+                        planner_metrics.get("selected_actions", [])
+                    )
+                candidates.append(("action_planner", action_path, metrics))
+        for translation_path in translation_paths:
+            metrics = self.normal_path_metrics(
+                pose,
+                translation_path,
+                allow_goal_high_cost=normal_allow_goal_high_cost,
+                translation_only=True,
             )
-
+            if metrics.get("clear"):
+                candidates.append(("body_translation", translation_path, metrics))
         astar_path = self.map.plan(
             pose.xy(),
-            goal_xy,
-            allow_goal_high_cost=allow_goal_high_cost,
+            normal_goal,
+            allow_goal_high_cost=normal_allow_goal_high_cost,
         )
-        candidates = self.body_translation_candidate_paths(
-            pose,
-            goal_xy,
-            allow_goal_high_cost=allow_goal_high_cost,
-        )
+        if astar_path:
+            astar_path = self.compact_path_points([pose.xy()] + list(astar_path))
+            metrics = self.normal_path_metrics(
+                pose, astar_path, allow_goal_high_cost=normal_allow_goal_high_cost
+            )
+            if metrics.get("clear"):
+                candidates.append(("astar", astar_path, metrics))
         if not candidates:
-            return astar_path
-        fallback_len = self.path_length_cm(astar_path, fallback_start=pose.xy(), fallback_goal=goal_xy)
-        max_ratio = float(self.config["navigation"].get("translation_path_max_detour_ratio", 1.45))
-        best = min(candidates, key=lambda item: self.path_length_cm(item, fallback_start=pose.xy(), fallback_goal=goal_xy))
-        best_len = self.path_length_cm(best, fallback_start=pose.xy(), fallback_goal=goal_xy)
-        if not astar_path or best_len <= fallback_len * max_ratio:
-            return best
-        return astar_path
+            return []
+        priority = {"body_translation": 0, "action_planner": 1, "astar": 2}
+        selected_name, selected_path, selected_metrics = min(
+            candidates,
+            key=lambda item: (
+                float(item[2].get("total_cost", float("inf"))),
+                priority.get(item[0], 9),
+            ),
+        )
+        self.debug.event(
+            "navigation_path_selected",
+            navigation_mode="normal",
+            selected_path_type=selected_name,
+            path_length_cm=round(float(selected_metrics.get("path_length_cm", 0.0)), 2),
+            path_obstacle_cost=round(float(selected_metrics.get("path_obstacle_cost", 0.0)), 2),
+            minimum_wall_clearance_cm=round(
+                float(selected_metrics.get("minimum_wall_clearance_cm", 0.0)), 2
+            ),
+            turn_cost=round(float(selected_metrics.get("turn_cost", 0.0)), 2),
+            wall_clearance_penalty=round(
+                float(selected_metrics.get("wall_clearance_penalty", 0.0)), 2
+            ),
+            total_cost=round(float(selected_metrics.get("total_cost", 0.0)), 2),
+            target_direct_cost_exemption=False,
+            candidate_costs={
+                name: round(float(metrics.get("total_cost", 0.0)), 2)
+                for name, _, metrics in candidates
+            },
+            planned_actions=selected_metrics.get("selected_actions", []),
+        )
+        return selected_path
 
     def choose_target_direct_action(
         self,
@@ -1762,10 +1916,13 @@ class TaskManager:
         if pose is None or not bool(nav.get("adaptive_action_batch_enabled", True)):
             return 1 if pose is None else requested, "adaptive_disabled_or_pose_missing"
         confidence = self.effective_localization_confidence(pose)
-        prefix = "forward" if action_kind == "forward" else "strafe" if action_kind == "strafe" else "turn"
+        if action_kind in ("forward", "reverse", "strafe", "turn"):
+            prefix = action_kind
+        else:
+            prefix = "turn"
         cap = max(1, int(nav.get("max_{}_cycles_{}".format(prefix, confidence.value.lower()), 1)))
         reasons = ["confidence_{}".format(confidence.value.lower())]
-        if action_kind in ("strafe", "turn"):
+        if action_kind in ("reverse", "strafe", "turn"):
             reasons.append("higher_uncertainty_action")
         if near_wall:
             cap = min(cap, int(nav.get("near_wall_max_action_cycles", 1)))
@@ -1786,6 +1943,7 @@ class TaskManager:
             cap = min(cap, distance_cap)
             uncertainty_per_cycle = float(nav.get(
                 "forward_uncertainty_per_cycle" if action_kind == "forward" else
+                "reverse_uncertainty_per_cycle" if action_kind == "reverse" else
                 "strafe_uncertainty_per_cycle" if action_kind == "strafe" else
                 "turn_uncertainty_per_cycle",
                 1.0,
@@ -2020,12 +2178,81 @@ class TaskManager:
         min_progress = float(nav_cfg.get("translation_min_progress_cm", 2.0))
         options = []
 
+        reverse_rejected_reason = "disabled"
+        rear_angle_error = math.degrees(
+            math.atan2(abs(float(lateral)), max(1e-6, -float(forward)))
+        ) if forward < 0.0 else 180.0
+        if bool(nav_cfg.get("reverse_prefer_enabled", True)) and "back_fast" in self.config["motion"]["actions"]:
+            reverse_rejected_reason = "target_not_behind"
+            rear_distance = -float(forward)
+            if forward < 0.0:
+                reverse_rejected_reason = "rear_distance_too_small"
+                if rear_distance >= float(nav_cfg.get("reverse_prefer_min_distance_cm", 8.0)):
+                    reverse_rejected_reason = "rear_angle_exceeds_tolerance"
+                    if rear_angle_error <= float(
+                        nav_cfg.get("reverse_prefer_rear_angle_tolerance_deg", 30.0)
+                    ):
+                        reverse_rejected_reason = "lateral_error_too_large"
+                        if abs(float(lateral)) <= float(
+                            nav_cfg.get("reverse_prefer_max_lateral_cm", 8.0)
+                        ):
+                            reverse_rejected_reason = "localization_confidence_low"
+                            if self.effective_localization_confidence(pose) != Confidence.LOW:
+                                arrival_tolerance = float(
+                                    nav_cfg.get("target_arrival_radius_cm", 4.0)
+                                )
+                                safe_distance = max(0.0, rear_distance - arrival_tolerance)
+                                reverse_rejected_reason = "would_cross_target"
+                                back_step = abs(
+                                    float(
+                                        self.config["motion"]["actions"]["back_fast"].get(
+                                            "forward_cm", -2.5
+                                        )
+                                    )
+                                )
+                                if safe_distance >= back_step:
+                                    requested_cycles = self.motion.reverse_cycles_for_distance(safe_distance)
+                                    travel = min(
+                                        safe_distance,
+                                        requested_cycles * back_step,
+                                    )
+                                    planned = -travel
+                                    next_xy = self.translated_pose_xy(pose, forward_cm=planned)
+                                    metrics = self.movement_corridor_metrics(pose.xy(), next_xy)
+                                    reverse_rejected_reason = "rear_corridor_blocked"
+                                    if metrics["clear"]:
+                                        progress = current_dist - distance_xy(next_xy, waypoint)
+                                        reverse_rejected_reason = "insufficient_progress"
+                                        if progress >= min_progress:
+                                            reverse_rejected_reason = ""
+                                            options.append(
+                                                {
+                                                    "kind": "reverse",
+                                                    "distance_cm": travel,
+                                                    "planned_cm": planned,
+                                                    "progress_cm": progress,
+                                                    "forward_cm": forward,
+                                                    "lateral_cm": lateral,
+                                                    "corridor_metrics": metrics,
+                                                }
+                                            )
+        self.debug.event(
+            "reverse_preference_evaluated",
+            navigation_mode="normal",
+            selected_action="reverse" if any(item["kind"] == "reverse" for item in options) else None,
+            target_local_forward_cm=round(float(forward), 2),
+            target_local_lateral_cm=round(float(lateral), 2),
+            target_rear_angle_error_deg=round(float(rear_angle_error), 2),
+            reverse_preferred=any(item["kind"] == "reverse" for item in options),
+            reverse_rejected_reason=reverse_rejected_reason or None,
+            movement_corridor_clear=any(item["kind"] == "reverse" for item in options),
+        )
+
         min_forward = float(nav_cfg.get("translation_min_forward_cm", 6.0))
         if forward >= min_forward:
             requested = min(float(forward), current_dist)
             planned = self.planned_forward_step_cm(requested)
-            map_check_min = float(nav_cfg.get("forward_map_check_min_cm", 16.0))
-            if planned < map_check_min or self.forward_clear_for_distance(
+            if self.forward_clear_for_distance(
                 pose,
                 planned,
                 exact_goal_xy=waypoint if allow_goal_high_cost else None,
@@ -2078,15 +2305,46 @@ class TaskManager:
 
         if not options:
             return None
+        reverse_option = next((item for item in options if item["kind"] == "reverse"), None)
         forward_option = next((item for item in options if item["kind"] == "forward"), None)
-        selected = forward_option or max(options, key=lambda item: item["progress_cm"])
+        selected = reverse_option or forward_option or max(options, key=lambda item: item["progress_cm"])
+        corridor = selected.get("corridor_metrics") or self.movement_corridor_metrics(
+            pose.xy(),
+            self.translated_pose_xy(
+                pose,
+                forward_cm=float(selected["planned_cm"]) if selected["kind"] != "strafe" else 0.0,
+                lateral_cm=float(selected["planned_cm"]) if selected["kind"] == "strafe" else 0.0,
+            ),
+        )
         self.debug.event(
             "translation_preferred",
             navigation_mode="body_translation",
             action=selected["kind"],
+            selected_action=selected["kind"],
+            target_local_forward_cm=round(float(forward), 2),
+            target_local_lateral_cm=round(float(lateral), 2),
+            target_rear_angle_error_deg=round(float(rear_angle_error), 2),
+            reverse_preferred=selected["kind"] == "reverse",
+            reverse_rejected_reason=reverse_rejected_reason or None,
             translation_candidate_cost=round(float(selected["planned_cm"]), 2),
-            turn_candidate_cost=float(nav_cfg.get("action_planner_turn_fixed_cost_cm", 60.0)),
-            turn_penalty=float(nav_cfg.get("action_planner_turn_fixed_cost_cm", 60.0)),
+            turn_candidate_cost=float(nav_cfg.get("action_planner_turn_fixed_cost_cm", 20.0)),
+            turn_penalty=float(nav_cfg.get("action_planner_turn_fixed_cost_cm", 20.0)),
+            path_length_cm=round(abs(float(selected["planned_cm"])), 2),
+            path_obstacle_cost=round(float(corridor.get("path_obstacle_cost", 0.0)), 2),
+            minimum_wall_clearance_cm=round(
+                float(corridor.get("minimum_wall_clearance_cm", 0.0)), 2
+            ),
+            wall_clearance_penalty=round(
+                max(
+                    0.0,
+                    float(nav_cfg.get("normal_wall_clearance_target_cm", 25.0))
+                    - float(corridor.get("minimum_wall_clearance_cm", 0.0)),
+                )
+                * float(nav_cfg.get("normal_wall_clearance_penalty_scale", 4.0)),
+                2,
+            ),
+            target_direct_cost_exemption=False,
+            movement_corridor_clear=bool(corridor.get("clear", False)),
         )
         return selected
 
@@ -2103,14 +2361,78 @@ class TaskManager:
         detail.update(
             {
                 "action": action["kind"],
+                "selected_action": action["kind"],
                 "progress_cm": round(float(action.get("progress_cm", 0.0)), 1),
                 "planned_cm": round(float(action.get("planned_cm", 0.0)), 1),
                 "forward_component_cm": round(float(action.get("forward_cm", 0.0)), 1),
                 "lateral_component_cm": round(float(action.get("lateral_cm", 0.0)), 1),
+                "target_local_forward_cm": round(float(action.get("forward_cm", 0.0)), 1),
+                "target_local_lateral_cm": round(float(action.get("lateral_cm", 0.0)), 1),
                 "waypoint": (round(float(waypoint[0]), 1), round(float(waypoint[1]), 1)),
             }
         )
         self.debug.event("translation_step", **detail)
+        if action["kind"] == "reverse":
+            self.forward_map_block_count = 0
+            key = "back_fast"
+            step_cm = abs(float(self.config["motion"]["actions"][key].get("forward_cm", -2.5)))
+            requested = self.motion.reverse_cycles_for_distance(float(action["distance_cm"]))
+            near_wall = self.near_wall_now(pose)
+            cycles, batch_reason = self.select_adaptive_action_batch(
+                "reverse",
+                requested,
+                step_cm,
+                abs(float(action["distance_cm"])),
+                goal_dist_cm,
+                near_wall=near_wall,
+            )
+            travel = -cycles * step_cm
+            end_xy = self.translated_pose_xy(pose, forward_cm=travel)
+            corridor = self.movement_corridor_metrics(pose.xy(), end_xy)
+            if not corridor["clear"]:
+                self.debug.event(
+                    "reverse_rejected",
+                    navigation_mode="normal",
+                    selected_action=None,
+                    reverse_preferred=False,
+                    reverse_rejected_reason="rear_corridor_blocked_before_execute",
+                    movement_corridor_clear=False,
+                    target_local_forward_cm=round(float(action.get("forward_cm", 0.0)), 2),
+                    target_local_lateral_cm=round(float(action.get("lateral_cm", 0.0)), 2),
+                )
+                self.localize_scan()
+                return "recovered"
+            self.debug.event(
+                "action_batch_started",
+                action=key,
+                selected_action="reverse",
+                requested_action_cycles=requested,
+                selected_action_cycles=cycles,
+                adaptive_batch_reason=batch_reason,
+                movement_corridor_clear=True,
+                minimum_wall_clearance_cm=round(
+                    float(corridor["minimum_wall_clearance_cm"]), 2
+                ),
+                **context
+            )
+            result = self.motion.run(key, times_override=cycles)
+            self.debug.event(
+                "action_batch_completed",
+                action=key,
+                selected_action="reverse",
+                actual_action_cycles=getattr(
+                    result, "executed_times", result.times if result.ok else 0
+                ),
+                ok=result.ok,
+                **context
+            )
+            if not result.ok:
+                self.last_navigation_failure_reason = "hardware_failure"
+                return "failed"
+            self.clear_turn_progress_watchdog("successful_reverse")
+            self.post_action_relocalize("translation_reverse", pose_before_action, result, waypoint)
+            return "moved"
+
         if action["kind"] == "strafe":
             self.forward_map_block_count = 0
             key = "strafe_left_fast" if float(action["distance_cm"]) > 0.0 else "strafe_right_fast"
@@ -2121,6 +2443,18 @@ class TaskManager:
                 "strafe", requested, step_cm, abs(float(action["distance_cm"])), goal_dist_cm,
                 near_wall=near_wall,
             )
+            travel = math.copysign(cycles * step_cm, float(action["distance_cm"]))
+            end_xy = self.translated_pose_xy(pose, lateral_cm=travel)
+            corridor = self.movement_corridor_metrics(pose.xy(), end_xy)
+            if not corridor["clear"]:
+                self.debug.event(
+                    "translation_corridor_blocked",
+                    selected_action="strafe",
+                    movement_corridor_clear=False,
+                    **context
+                )
+                self.localize_scan()
+                return "recovered"
             detail.update(requested_action_cycles=requested, adaptive_batch_reason=batch_reason)
             self.debug.event("action_batch_started", action=key, requested_action_cycles=requested, selected_action_cycles=cycles, **context)
             result = self.motion.run(key, times_override=cycles)
@@ -2586,6 +2920,8 @@ class TaskManager:
 
     def wall_clearance_cm(self, pose: RobotPose, yaw_deg: Optional[float] = None) -> float:
         """Measure free map distance along a body-relative ray."""
+        if yaw_deg is None and hasattr(self.map, "robot_clearance_cm"):
+            return float(self.map.robot_clearance_cm(pose.xy()))
         yaw = float(pose.yaw_deg if yaw_deg is None else yaw_deg)
         nav = self.config["navigation"]
         max_distance = max(
@@ -2608,9 +2944,13 @@ class TaskManager:
 
     def recovery_translation_clear(self, pose: RobotPose, forward_cm: float = 0.0, lateral_cm: float = 0.0) -> bool:
         target = self.translated_pose_xy(pose, forward_cm=forward_cm, lateral_cm=lateral_cm)
-        return self.path_segments_clear([pose.xy(), target])
+        return self.movement_corridor_clear(pose.xy(), target)
 
     def near_wall_now(self, pose: RobotPose) -> bool:
+        if hasattr(self.map, "robot_clearance_cm"):
+            return self.map.robot_clearance_cm(pose.xy()) < float(
+                self.config["navigation"]["safe_wall_distance_cm"]
+            )
         return self.map.is_dangerously_close_to_wall(
             pose.xy(),
             pose.yaw_deg,
@@ -2861,7 +3201,22 @@ class TaskManager:
             right_clearance = self.wall_clearance_cm(pose, pose.yaw_deg - 90.0)
             key = "turn_left_fast" if left_clearance >= right_clearance else "turn_right_fast"
             turn_step = abs(float(nav.get("near_wall_turn_step_deg", 7.5)))
-            outcome = self.execute_near_wall_recovery_action(key, "small_turn_last_resort", 1, 1)
+            turn_safe = map_obj is None or not hasattr(map_obj, "rotation_sweep_clear") or map_obj.rotation_sweep_clear(
+                pose.xy(),
+                float(nav.get("turn_sweep_radius_cm", 10.0)),
+                float(nav.get("normal_navigation_max_cost", 55.0)),
+            )
+            if not turn_safe:
+                self.debug.event(
+                    "near_wall_recovery_action",
+                    phase="small_turn_last_resort",
+                    action=key,
+                    executed=False,
+                    reason="rotation_sweep_blocked",
+                )
+                outcome = NearWallRecoveryResult.STILL_NEAR_WALL
+            else:
+                outcome = self.execute_near_wall_recovery_action(key, "small_turn_last_resort", 1, 1)
             if outcome in (NearWallRecoveryResult.RECOVERED, NearWallRecoveryResult.HARDWARE_FAILURE, NearWallRecoveryResult.LOCALIZATION_REQUIRED):
                 return outcome
 
@@ -2973,7 +3328,7 @@ class TaskManager:
         exact_goal_xy: Optional[Tuple[float, float]] = None,
     ) -> bool:
         if exact_goal_xy is not None:
-            return self.map.line_clear(
+            return self.movement_corridor_clear(
                 pose.xy(),
                 exact_goal_xy,
                 allow_goal_high_cost=True,
@@ -2987,9 +3342,7 @@ class TaskManager:
         )
         if not (0.0 <= target_xy[0] <= self.map.width_cm and 0.0 <= target_xy[1] <= self.map.height_cm):
             return False
-        if not bool(self.config["navigation"].get("forward_map_obstacle_check_enabled", False)):
-            return True
-        return self.map.is_free_xy(target_xy) and self.map.line_clear(pose.xy(), target_xy)
+        return self.movement_corridor_clear(pose.xy(), target_xy)
 
     def planned_forward_step_cm(self, distance_cm: float) -> float:
         cycles = self.motion.forward_cycles_for_distance(distance_cm)
@@ -3259,11 +3612,7 @@ class TaskManager:
                     continue
             if (
                 not direct_mode
-                and self.map.is_dangerously_close_to_wall(
-                    pose.xy(),
-                    pose.yaw_deg,
-                    float(self.config["navigation"]["safe_wall_distance_cm"]),
-                )
+                and self.near_wall_now(pose)
             ):
                 recovery_result = self.recover_from_near_wall(reason + ":near_wall_pre_forward")
                 if recovery_result is False:  # Compatibility with injected legacy test doubles.
@@ -3333,8 +3682,12 @@ class TaskManager:
                 else self.select_navigation_waypoint(
                     pose,
                     path,
-                    target_xy,
-                    allow_goal_high_cost=allow_goal_high_cost,
+                    path[-1]
+                    if target_screen is not None and distance_xy(path[-1], target_xy) > 1.0
+                    else target_xy,
+                    allow_goal_high_cost=(
+                        allow_goal_high_cost and distance_xy(path[-1], target_xy) <= 1.0
+                    ),
                 )
             )
             desired_yaw = math.degrees(math.atan2(waypoint[1] - pose.y_cm, waypoint[0] - pose.x_cm))
@@ -3372,13 +3725,29 @@ class TaskManager:
                 self.clear_navigation_noop()
             else:
                 self.forward_map_block_count = 0
+                rotation_clear = not hasattr(self.map, "rotation_sweep_clear") or self.map.rotation_sweep_clear(
+                    pose.xy(),
+                    float(self.config["navigation"].get("turn_sweep_radius_cm", 10.0)),
+                    float(self.config["navigation"].get("normal_navigation_max_cost", 55.0)),
+                )
                 self.debug.event(
                     "turn_last_resort",
                     reason=reason,
                     desired_yaw=round(desired_yaw, 1),
                     diff_yaw=round(diff, 1),
                     waypoint=(round(float(waypoint[0]), 1), round(float(waypoint[1]), 1)),
+                    movement_corridor_clear=rotation_clear,
                 )
+                if not rotation_clear:
+                    self.debug.event(
+                        "turn_rejected",
+                        reason="rotation_sweep_blocked",
+                        navigation_mode="normal",
+                        selected_action=None,
+                        movement_corridor_clear=False,
+                    )
+                    self.recover_from_near_wall(reason + ":rotation_sweep_blocked")
+                    continue
                 if not self.turn_toward_yaw_boundary_aware(desired_yaw):
                     return False
                 if abs(diff) <= float(self.config["navigation"].get("turn_tolerance_deg", 20.0)):

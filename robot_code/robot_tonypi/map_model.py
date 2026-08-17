@@ -241,6 +241,127 @@ class MapModel:
             max_cost = float(self.cfg["map"].get("obstacle_line_clear_max_cost", 60.0))
         return self.cost[node[0], node[1]] < float(max_cost)
 
+    def robot_clearance_cm(self, xy, max_distance_cm: Optional[float] = None) -> float:
+        """Return center-to-obstacle clearance including field boundaries."""
+        if not self.in_bounds_xy(xy) or not self.is_free_xy(xy):
+            return 0.0
+        x, y = float(xy[0]), float(xy[1])
+        clearance = min(x, self.width_cm - x, y, self.height_cm - y)
+        for bounds in list(self.building_bounds.values()) + list(self.dynamic_obstacles):
+            clearance = min(clearance, self.distance_to_obstacle_rect_cm((x, y), bounds))
+        if max_distance_cm is not None:
+            clearance = min(clearance, max(0.0, float(max_distance_cm)))
+        return max(0.0, float(clearance))
+
+    def translation_corridor_metrics(
+        self,
+        start_xy,
+        goal_xy,
+        half_width_cm: float,
+        max_cost: float,
+        sample_step_cm: float = 2.0,
+        allow_goal_high_cost: bool = False,
+    ) -> dict:
+        """Evaluate the swept body corridor for a translation in any direction."""
+        dx = float(goal_xy[0]) - float(start_xy[0])
+        dy = float(goal_xy[1]) - float(start_xy[1])
+        length = math.hypot(dx, dy)
+        if length < 1e-6:
+            return {
+                "clear": self.is_traversable_xy(start_xy, max_cost=max_cost),
+                "path_length_cm": 0.0,
+                "path_obstacle_cost": 0.0,
+                "maximum_obstacle_cost": 0.0,
+                "minimum_wall_clearance_cm": self.robot_clearance_cm(start_xy),
+            }
+        if not self.in_bounds_xy(start_xy) or not self.in_bounds_xy(goal_xy):
+            return {
+                "clear": False,
+                "path_length_cm": length,
+                "path_obstacle_cost": float("inf"),
+                "maximum_obstacle_cost": float("inf"),
+                "minimum_wall_clearance_cm": 0.0,
+            }
+        step = max(0.5, float(sample_step_cm))
+        tangent = (dx / length, dy / length)
+        lateral = (-tangent[1], tangent[0])
+        along_steps = max(1, int(math.ceil(length / step)))
+        half_width = max(0.0, float(half_width_cm))
+        lateral_steps = max(1, int(math.ceil(half_width / step))) if half_width > 0.0 else 0
+        offsets = [0.0]
+        for index in range(1, lateral_steps + 1):
+            offset = min(half_width, index * step)
+            offsets.extend((-offset, offset))
+        goal_node = self.grid_pos(goal_xy)
+        total_cost = 0.0
+        maximum_cost = 0.0
+        samples = 0
+        minimum_clearance = float("inf")
+        clear = True
+        for index in range(along_steps + 1):
+            along = min(length, index * step)
+            center = (
+                float(start_xy[0]) + tangent[0] * along,
+                float(start_xy[1]) + tangent[1] * along,
+            )
+            minimum_clearance = min(minimum_clearance, self.robot_clearance_cm(center))
+            for offset in offsets:
+                sample = (
+                    center[0] + lateral[0] * offset,
+                    center[1] + lateral[1] * offset,
+                )
+                if not self.is_free_xy(sample):
+                    clear = False
+                    continue
+                node = self.grid_pos(sample)
+                cost = float(self.cost[node[0], node[1]])
+                total_cost += cost
+                maximum_cost = max(maximum_cost, cost)
+                samples += 1
+                goal_exception = allow_goal_high_cost and node == goal_node
+                if not goal_exception and cost >= float(max_cost):
+                    clear = False
+        return {
+            "clear": clear,
+            "path_length_cm": length,
+            "path_obstacle_cost": total_cost / max(1, samples),
+            "maximum_obstacle_cost": maximum_cost,
+            "minimum_wall_clearance_cm": 0.0 if minimum_clearance == float("inf") else minimum_clearance,
+        }
+
+    def translation_corridor_clear(
+        self,
+        start_xy,
+        goal_xy,
+        half_width_cm: float,
+        max_cost: float,
+        allow_goal_high_cost: bool = False,
+    ) -> bool:
+        return bool(
+            self.translation_corridor_metrics(
+                start_xy,
+                goal_xy,
+                half_width_cm,
+                max_cost,
+                allow_goal_high_cost=allow_goal_high_cost,
+            )["clear"]
+        )
+
+    def rotation_sweep_clear(self, xy, radius_cm: float, max_cost: float) -> bool:
+        """Conservatively check the footprint swept by an in-place turn."""
+        radius = max(0.0, float(radius_cm))
+        if self.robot_clearance_cm(xy) < radius:
+            return False
+        for index in range(16):
+            angle = 2.0 * math.pi * index / 16.0
+            sample = (
+                float(xy[0]) + radius * math.cos(angle),
+                float(xy[1]) + radius * math.sin(angle),
+            )
+            if not self.is_traversable_xy(sample, max_cost=max_cost):
+                return False
+        return True
+
     def non_target_obstacle_cost_xy(self, xy, target_screen_id: int) -> float:
         """Return inflation cost while excluding only the locked target building."""
         target_group = (int(target_screen_id) - 1) // 4
@@ -445,25 +566,28 @@ class MapModel:
         strafe_default = abs(float(motion_actions.get("strafe_left_fast", {}).get("lateral_cm", 4.0))) * 3.0
         forward_step = max(1.0, float(navigation_cfg.get("action_planner_forward_step_cm", forward_default)))
         strafe_step = max(1.0, float(navigation_cfg.get("action_planner_strafe_step_cm", strafe_default)))
+        reverse_default = abs(float(motion_actions.get("back_fast", {}).get("forward_cm", -2.5))) * 4.0
+        reverse_step = max(1.0, float(navigation_cfg.get("action_planner_reverse_step_cm", reverse_default)))
         forward_cost = max(0.1, float(navigation_cfg.get("action_planner_forward_cost", 1.0)))
         strafe_cost = max(0.1, float(navigation_cfg.get("action_planner_strafe_cost", 1.0)))
-        turn_cost_per_deg = max(0.0, float(navigation_cfg.get("action_planner_turn_cost_cm_per_deg", 1.1)))
-        turn_fixed = max(0.0, float(navigation_cfg.get("action_planner_turn_fixed_cost_cm", 8.0)))
-        large_extra = max(0.0, float(navigation_cfg.get("action_planner_large_turn_extra_cost_cm", 4.0)))
+        reverse_cost = max(0.1, float(navigation_cfg.get("action_planner_reverse_cost", 1.08)))
+        turn_cost_per_deg = max(0.0, float(navigation_cfg.get("action_planner_turn_cost_cm_per_deg", 0.8)))
+        turn_fixed = max(0.0, float(navigation_cfg.get("action_planner_turn_fixed_cost_cm", 20.0)))
+        large_extra = max(0.0, float(navigation_cfg.get("action_planner_large_turn_extra_cost_cm", 12.0)))
         consecutive_turn_penalty = max(
-            0.0, float(navigation_cfg.get("action_planner_consecutive_turn_penalty_cm", 12.0))
+            0.0, float(navigation_cfg.get("action_planner_consecutive_turn_penalty_cm", 20.0))
         )
         reverse_turn_penalty = max(
-            0.0, float(navigation_cfg.get("action_planner_reverse_turn_penalty_cm", 35.0))
+            0.0, float(navigation_cfg.get("action_planner_reverse_turn_penalty_cm", 45.0))
         )
         in_place_turn_penalty = max(
-            0.0, float(navigation_cfg.get("action_planner_in_place_turn_penalty_cm", 10.0))
+            0.0, float(navigation_cfg.get("action_planner_in_place_turn_penalty_cm", 18.0))
         )
         path_reversal_penalty = max(
-            0.0, float(navigation_cfg.get("action_planner_path_reversal_penalty_cm", 80.0))
+            0.0, float(navigation_cfg.get("action_planner_path_reversal_penalty_cm", 35.0))
         )
         away_from_goal_scale = max(
-            0.0, float(navigation_cfg.get("action_planner_away_from_goal_penalty_scale", 3.0))
+            0.0, float(navigation_cfg.get("action_planner_away_from_goal_penalty_scale", 2.0))
         )
 
         actions = [
@@ -498,6 +622,20 @@ class MapModel:
                 "away_from_goal_penalty_scale": away_from_goal_scale,
             },
         ]
+        if bool(navigation_cfg.get("reverse_prefer_enabled", True)) and "back_fast" in motion_actions:
+            actions.insert(
+                1,
+                {
+                    "name": "reverse",
+                    "forward_cm": -reverse_step,
+                    "lateral_cm": 0.0,
+                    "yaw_deg": 0.0,
+                    "base_cost": reverse_step * reverse_cost,
+                    "motion_code": -1,
+                    "path_reversal_penalty": path_reversal_penalty,
+                    "away_from_goal_penalty_scale": away_from_goal_scale,
+                },
+            )
         turn_specs = [
             ("turn_left_small", motion_actions.get("turn_left_fast", {}).get("yaw_deg", 7.5), 0.0),
             ("turn_right_small", motion_actions.get("turn_right_fast", {}).get("yaw_deg", -11.25), 0.0),
@@ -546,6 +684,10 @@ class MapModel:
         yaw_bins: int,
         segment_max_cost: float,
         obstacle_cost_scale: float,
+        corridor_half_width_cm: float = 0.0,
+        wall_clearance_target_cm: float = 0.0,
+        wall_clearance_penalty_scale: float = 0.0,
+        turn_sweep_radius_cm: float = 0.0,
         goal_node=None,
         allow_goal_high_cost: bool = False,
     ):
@@ -555,6 +697,8 @@ class MapModel:
         current_xy = self.xy_from_grid((gx, gy))
         yaw_delta = float(action.get("yaw_deg", 0.0))
         if abs(yaw_delta) > 1e-6:
+            if not self.rotation_sweep_clear(current_xy, turn_sweep_radius_cm, segment_max_cost):
+                return None
             bin_delta = self.yaw_delta_to_bins(yaw_delta, yaw_bin_deg)
             turn_sign = 1 if yaw_delta > 0.0 else -1
             turn_cost = float(action["base_cost"]) + float(action.get("in_place_turn_penalty", 0.0))
@@ -578,17 +722,24 @@ class MapModel:
             return None
         nx, ny = self.grid_pos(next_xy)
         is_goal = bool(allow_goal_high_cost and goal_node is not None and (nx, ny) == tuple(goal_node))
-        if not self.line_clear(
+        corridor = self.translation_corridor_metrics(
             current_xy,
             next_xy,
-            max_cost=segment_max_cost,
+            corridor_half_width_cm,
+            segment_max_cost,
             allow_goal_high_cost=is_goal,
-        ):
+        )
+        if not corridor["clear"]:
             return None
         if (nx, ny) == (gx, gy):
             return None
         move_cost = float(action["base_cost"])
-        move_cost += obstacle_cost_scale * self.segment_obstacle_cost(current_xy, next_xy)
+        move_cost += obstacle_cost_scale * float(corridor["path_obstacle_cost"])
+        clearance_deficit = max(
+            0.0,
+            float(wall_clearance_target_cm) - float(corridor["minimum_wall_clearance_cm"]),
+        )
+        move_cost += clearance_deficit * float(wall_clearance_penalty_scale)
         motion_code = int(action.get("motion_code", 0))
         if previous_motion_code and motion_code == -previous_motion_code:
             move_cost += float(action.get("path_reversal_penalty", 0.0))
@@ -620,6 +771,7 @@ class MapModel:
         motion_cfg: dict,
         allow_goal_high_cost: bool = False,
     ) -> List[Tuple[float, float]]:
+        self.last_action_plan_metrics = {}
         start_xy = start_pose.xy()
         if not self.in_bounds_xy(start_xy) or not self.is_free_xy(start_xy):
             start_xy = self.nearest_free_xy(start_xy)
@@ -642,8 +794,20 @@ class MapModel:
         goal_node = self.grid_pos(goal_xy)
         goal_tolerance = max(self.res, float(navigation_cfg.get("action_planner_goal_tolerance_cm", 8.0)))
         max_expansions = max(100, int(navigation_cfg.get("action_planner_max_expansions", 45000)))
-        segment_max_cost = float(navigation_cfg.get("action_planner_segment_max_cost", 85.0))
+        segment_max_cost = min(
+            float(navigation_cfg.get("action_planner_segment_max_cost", 55.0)),
+            float(navigation_cfg.get("normal_navigation_max_cost", 55.0)),
+            float(self.cfg["map"].get("obstacle_cost_max", 80.0)),
+        )
         obstacle_cost_scale = max(0.0, float(navigation_cfg.get("action_planner_obstacle_cost_scale", 1.0)))
+        corridor_half_width = max(0.0, float(navigation_cfg.get("translation_corridor_half_width_cm", 0.0)))
+        wall_clearance_target = max(
+            0.0, float(navigation_cfg.get("action_planner_wall_clearance_target_cm", 0.0))
+        )
+        wall_clearance_scale = max(
+            0.0, float(navigation_cfg.get("action_planner_wall_clearance_penalty_scale", 0.0))
+        )
+        turn_sweep_radius = max(0.0, float(navigation_cfg.get("turn_sweep_radius_cm", 0.0)))
         actions = self.action_planner_actions(navigation_cfg, motion_cfg)
         if not actions:
             return []
@@ -653,6 +817,8 @@ class MapModel:
         start_h = distance_xy(self.xy_from_grid(start_grid), goal_xy)
         heapq.heappush(open_heap, (start_h, counter, start_state))
         came = {}
+        came_action = {}
+        came_step_cost = {}
         g = {start_state: 0.0}
         closed = set()
         expansions = 0
@@ -669,12 +835,31 @@ class MapModel:
                 goal_reached = goal_reached or distance_xy(current_xy, goal_xy) <= goal_tolerance
             if goal_reached:
                 path = self._reconstruct_action_path(came, current, start_xy)
+                action_names = []
+                turn_cost = 0.0
+                cursor = current
+                while cursor in came:
+                    name = str(came_action.get(cursor, ""))
+                    action_names.append(name)
+                    if name.startswith("turn_"):
+                        turn_cost += float(came_step_cost.get(cursor, 0.0))
+                    cursor = came[cursor]
+                action_names.reverse()
                 if allow_goal_high_cost:
                     exact_goal = (float(goal_xy[0]), float(goal_xy[1]))
                     if self.grid_pos(path[-1]) == goal_node:
                         path[-1] = exact_goal
                     elif distance_xy(path[-1], exact_goal) > 0.1:
                         path.append(exact_goal)
+                self.last_action_plan_metrics = {
+                    "total_cost": float(current_g),
+                    "path_length_cm": sum(
+                        distance_xy(path[index - 1], path[index])
+                        for index in range(1, len(path))
+                    ),
+                    "turn_cost": turn_cost,
+                    "selected_actions": action_names,
+                }
                 return path
             expansions += 1
             for action in actions:
@@ -685,6 +870,10 @@ class MapModel:
                     yaw_bins,
                     segment_max_cost,
                     obstacle_cost_scale,
+                    corridor_half_width_cm=corridor_half_width,
+                    wall_clearance_target_cm=wall_clearance_target,
+                    wall_clearance_penalty_scale=wall_clearance_scale,
+                    turn_sweep_radius_cm=turn_sweep_radius,
                     goal_node=goal_node,
                     allow_goal_high_cost=allow_goal_high_cost,
                 )
@@ -695,6 +884,8 @@ class MapModel:
                 if tentative >= g.get(nxt, float("inf")):
                     continue
                 came[nxt] = current
+                came_action[nxt] = action.get("name", "")
+                came_step_cost[nxt] = action_cost
                 g[nxt] = tentative
                 next_xy = self.xy_from_grid((nxt[0], nxt[1]))
                 priority = tentative + distance_xy(next_xy, goal_xy)

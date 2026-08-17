@@ -145,8 +145,7 @@ class Direct19cmFlowTests(unittest.TestCase):
             load_config(None)["motion"],
             allow_goal_high_cost=True,
         )
-        self.assertTrue(action_path)
-        self.assertEqual(action_path[-1], target)
+        self.assertEqual(action_path, [])
         inside_building = (200.0, 17.5)
         self.assertEqual(model.plan((150.0, 17.5), inside_building, allow_goal_high_cost=True), [])
 
