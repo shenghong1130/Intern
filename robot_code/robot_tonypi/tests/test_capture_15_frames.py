@@ -26,20 +26,35 @@ FRAME_COUNT = 15
 
 
 def parse_args(argv=None):
-    parser = argparse.ArgumentParser(description="Capture and save 15 TonyPi camera frames")
-    parser.add_argument("--config", default=str(default_config_path()))
-    parser.add_argument(
-        "--interval-s",
-        type=float,
-        default=0.2,
-        help="minimum delay between saved frames (default: 0.2 seconds)",
+    parser = argparse.ArgumentParser(
+        description="Capture and save 15 TonyPi camera frames with confirmation between frames"
     )
+    parser.add_argument("--config", default=str(default_config_path()))
     parser.add_argument(
         "--output-dir",
         default=None,
         help="output directory; default: capture_15_frames_runs/<timestamp>",
     )
     return parser.parse_args(argv)
+
+
+def confirm_next_capture(next_index: int) -> bool:
+    """Require an explicit Enter before capturing the next frame."""
+    while True:
+        try:
+            answer = input(
+                "[confirm] 按 Enter 拍摄第 {}/{} 张，输入 q 后按 Enter 提前结束: ".format(
+                    next_index, FRAME_COUNT
+                )
+            ).strip().lower()
+        except EOFError:
+            print("\n[stop] 输入已关闭，停止拍照", flush=True)
+            return False
+        if answer == "":
+            return True
+        if answer in ("q", "quit", "exit"):
+            return False
+        print("[confirm] 无效输入；请直接按 Enter 确认，或输入 q 退出", flush=True)
 
 
 def make_output_dir(value=None) -> Path:
@@ -60,9 +75,6 @@ def save_frame(path: Path, frame) -> None:
 
 def main(argv=None) -> int:
     args = parse_args(argv)
-    if args.interval_s < 0:
-        raise SystemExit("--interval-s must be >= 0")
-
     config = load_config(args.config)
     output_dir = make_output_dir(args.output_dir)
     camera = None
@@ -70,7 +82,6 @@ def main(argv=None) -> int:
     try:
         camera = RealtimeCamera(config, dry_run=False)
         for index in range(1, FRAME_COUNT + 1):
-            started = time.monotonic()
             frame = camera.capture_settled()
             if frame is None:
                 raise RuntimeError("camera returned no frame at capture {}/{}".format(index, FRAME_COUNT))
@@ -89,15 +100,15 @@ def main(argv=None) -> int:
             )
             print("[capture] {}/{} {}".format(index, FRAME_COUNT, output_dir / filename), flush=True)
 
-            if index < FRAME_COUNT:
-                remaining = float(args.interval_s) - (time.monotonic() - started)
-                if remaining > 0:
-                    time.sleep(remaining)
+            if index < FRAME_COUNT and not confirm_next_capture(index + 1):
+                print("[stop] operator stopped after {} frame(s)".format(len(captures)), flush=True)
+                break
 
         manifest = {
             "frame_count": len(captures),
             "requested_frame_count": FRAME_COUNT,
-            "interval_s": float(args.interval_s),
+            "completed": len(captures) == FRAME_COUNT,
+            "confirmation_required_between_frames": True,
             "captures": captures,
         }
         (output_dir / "manifest.json").write_text(

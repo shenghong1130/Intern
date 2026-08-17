@@ -216,7 +216,7 @@ stand
 
 ## 8. `test_capture_15_frames.py`：连续拍照 15 张
 
-该脚本只测试真实相机，不执行机器人动作、不访问 FPGA、NFC 或 Worker。每次运行固定拍摄并保存 15 张新画面，相邻照片默认至少间隔 0.2 秒。
+该脚本只测试真实相机，不执行机器人动作、不访问 FPGA、NFC 或 Worker。第 1 张会立即拍摄；每张保存完成后，必须由操作者按 Enter 确认才会拍摄下一张。输入 `q` 后按 Enter 可以安全提前结束。完成第 15 张后自动写入清单并退出。
 
 在机器人上运行：
 
@@ -235,11 +235,10 @@ python3 -u -m robot_tonypi.tests.test_capture_15_frames
 └── manifest.json
 ```
 
-可以调整拍摄间隔，或指定一个尚不存在的输出目录：
+可以指定一个尚不存在的输出目录：
 
 ```bash
 python3 -u -m robot_tonypi.tests.test_capture_15_frames \
-  --interval-s 0.5 \
   --output-dir /home/pi/camera_check_01
 ```
 
