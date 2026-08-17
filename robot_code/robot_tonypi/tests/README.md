@@ -18,7 +18,7 @@ cd /home/robot/robot_code/Intern/robot_code
 python3 -m unittest discover -s robot_tonypi/tests -p 'test_*.py' -v
 ```
 
-这些自动化测试不会打开真实相机、执行 TonyPi 动作组、访问 FPGA 或发送 Worker 请求。`test_capture_fpga_change.py` 虽然符合 `test_*.py` 命名，但它没有 `unittest.TestCase`，因此 discover 只会导入它，不会自动启动实机流程。
+这些自动化测试不会打开真实相机、执行 TonyPi 动作组、访问 FPGA 或发送 Worker 请求。`test_capture_fpga_change.py` 和 `test_capture_15_frames.py` 虽然符合 `test_*.py` 命名，但它们没有 `unittest.TestCase`，因此 discover 只会导入，不会自动启动实机流程。
 
 ## 2. `test_calibrate_motion.py`
 
@@ -214,7 +214,38 @@ stand
 
 以下任一情况都会禁止真实交互：指定 Screen 未检测到、FPGA 失败、置信度不足、识别结果已经是目标花、未提供 `--execute` 或二次确认不匹配。
 
-## 8. 编译检查
+## 8. `test_capture_15_frames.py`：连续拍照 15 张
+
+该脚本只测试真实相机，不执行机器人动作、不访问 FPGA、NFC 或 Worker。每次运行固定拍摄并保存 15 张新画面，相邻照片默认至少间隔 0.2 秒。
+
+在机器人上运行：
+
+```bash
+cd /home/pi
+python3 -u -m robot_tonypi.tests.test_capture_15_frames
+```
+
+默认输出目录：
+
+```text
+/home/pi/capture_15_frames_runs/<timestamp>/
+├── frame_01.jpg
+├── ...
+├── frame_15.jpg
+└── manifest.json
+```
+
+可以调整拍摄间隔，或指定一个尚不存在的输出目录：
+
+```bash
+python3 -u -m robot_tonypi.tests.test_capture_15_frames \
+  --interval-s 0.5 \
+  --output-dir /home/pi/camera_check_01
+```
+
+如果中途取帧或保存失败，脚本会报错退出，并在退出前释放相机。
+
+## 9. 编译检查
 
 ```bash
 python3 -m compileall -q robot_tonypi
