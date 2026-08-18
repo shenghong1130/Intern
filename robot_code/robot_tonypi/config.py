@@ -179,6 +179,10 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "translation_max_backward_cm": 8.0,
         "translation_corridor_half_width_cm": 8.0,
         "normal_navigation_max_cost": 55.0,
+        # Hard minimum center clearance for ordinary navigation footprints,
+        # staging candidates, and path segments.  Final screen approach uses
+        # its existing target-specific high-cost exemption instead.
+        "normal_navigation_min_clearance_cm": 25.0,
         "normal_wall_clearance_target_cm": 25.0,
         "normal_wall_clearance_penalty_scale": 4.0,
         "normal_path_obstacle_cost_scale": 0.35,
@@ -238,7 +242,6 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "reachable_approach_max_standoff_cm": 40.0,
         "reachable_approach_step_cm": 5.0,
         "reachable_approach_lateral_step_cm": 6.0,
-        "reachable_approach_min_clearance_cm": 16.0,
         "identical_local_replan_failure_threshold": 3,
         "navigation_blocked_retry_interval_s": 1.0,
         "boundary_outward_look_exit_cm": 75.0,
@@ -317,6 +320,9 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "target_distance_cm": 20.0,
         "target_lateral_offset_cm": -1.0,
         "target_final_forward_cm": 10.0,
+        "post_interaction_retreat_cm": 10.0,
+        "post_interaction_retreat_action": "back_fast",
+        "post_interaction_retry_interval_s": 1.0,
         "target_confirmation_max_retries": 3,
         "target_confirmation_retry_interval_s": 0.5,
         "classifier_retry_interval_s": 1.0,

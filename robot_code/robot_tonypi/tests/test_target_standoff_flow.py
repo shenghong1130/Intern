@@ -361,6 +361,75 @@ class TargetStandoffFlowTests(unittest.TestCase):
         self.assertTrue(manager.final_forward_executed)
         self.assertEqual(target.status, ScreenStatus.CHANGED)
 
+    def test_close_interaction_retreats_10cm_then_forces_search_localization(self):
+        manager, target = self.interaction_manager()
+        manager.post_interaction_retreat_pending = True
+        manager.post_interaction_retreat_completed = False
+        manager.post_interaction_retreat_blocked = False
+        manager.post_interaction_screen_id = target.screen_id
+        calls = []
+
+        def run(key, times_override=1):
+            calls.append((key, times_override))
+            per_cycle = -2.5 if key == "back_fast" else 0.0
+            return ActionResult(
+                key=key,
+                group=key,
+                times=times_override,
+                elapsed_s=0.0,
+                model_forward_cm=per_cycle * times_override,
+                ok=True,
+                executed_times=times_override,
+            )
+
+        manager.motion = SimpleNamespace(run=run)
+        localize_calls = []
+        manager.localize_scan = lambda **kwargs: localize_calls.append(kwargs) or True
+        self.assertTrue(manager.complete_post_interaction_retreat(target))
+        self.assertEqual(calls, [("stand", 1), ("back_fast", 4)])
+        self.assertEqual(localize_calls, [{
+            "reason": "post_interaction_retreat",
+            "allow_pan_search": True,
+            "allow_failure_escalation": False,
+        }])
+        self.assertFalse(manager.post_interaction_retreat_pending)
+        self.assertFalse(manager.final_forward_executed)
+        names = [name for name, _ in manager.debug.events]
+        self.assertIn("interaction_retreat_started", names)
+        self.assertIn("interaction_retreat_completed", names)
+        self.assertIn("post_interaction_relocalize", names)
+
+    def test_failed_post_retreat_localization_does_not_repeat_reverse(self):
+        manager, target = self.interaction_manager()
+        manager.post_interaction_retreat_pending = True
+        manager.post_interaction_retreat_completed = False
+        manager.post_interaction_retreat_blocked = False
+        manager.post_interaction_screen_id = target.screen_id
+        calls = []
+
+        def run(key, times_override=1):
+            calls.append((key, times_override))
+            return ActionResult(
+                key=key, group=key, times=times_override, elapsed_s=0.0,
+                model_forward_cm=(-2.5 * times_override if key == "back_fast" else 0.0),
+                ok=True, executed_times=times_override,
+            )
+
+        manager.motion = SimpleNamespace(run=run)
+        localization_results = iter((False, True))
+        manager.localize_scan = lambda **kwargs: next(localization_results)
+        self.assertFalse(manager.complete_post_interaction_retreat(target))
+        self.assertTrue(manager.post_interaction_retreat_completed)
+        self.assertTrue(manager.complete_post_interaction_retreat(target))
+        self.assertEqual(calls.count(("back_fast", 4)), 1)
+
+    def test_no_close_pose_requires_no_retreat(self):
+        manager, target = self.interaction_manager()
+        manager.final_forward_executed = False
+        manager.post_interaction_retreat_pending = False
+        manager.motion = SimpleNamespace(run=lambda *args, **kwargs: self.fail("unexpected motion"))
+        self.assertTrue(manager.complete_post_interaction_retreat(target))
+
     def test_10cm_path_contains_no_sensing_or_extra_navigation_calls(self):
         source = (Path(__file__).resolve().parents[1] / "task_manager.py").read_text(encoding="utf-8")
         tree = ast.parse(source)
@@ -436,6 +505,7 @@ class TargetStandoffFlowTests(unittest.TestCase):
         self.assertFalse(manager.execute_final_forward(target))
         self.assertEqual(manager.sequence, [("motion", "interaction_forward_10cm", 1)])
         self.assertEqual(target.status, ScreenStatus.NEEDS_CHANGE)
+        self.assertFalse(manager.final_forward_executed)
 
     def test_final_10cm_is_executed_only_once(self):
         manager, target = self.interaction_manager()

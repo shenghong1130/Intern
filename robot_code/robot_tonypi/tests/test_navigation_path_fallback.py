@@ -62,6 +62,31 @@ class RealFailureRegressionTests(unittest.TestCase):
         self.assertIn(action["kind"], ("forward", "reverse", "strafe"))
         self.assertTrue(action["corridor_metrics"]["clear"])
 
+    def test_normal_navigation_clearance_accepts_25cm_boundary(self):
+        manager = competition_manager(
+            35, RobotPose(150.0, 150.0, 0.0, Confidence.HIGH, "TEST", now_s())
+        )
+        self.assertFalse(manager.normal_navigation_clearance_ok(20.0))
+        self.assertTrue(manager.normal_navigation_clearance_ok(25.0))
+        self.assertTrue(manager.normal_navigation_clearance_ok(30.0))
+
+    def test_footprint_traversable_uses_configured_25cm_clearance(self):
+        manager = competition_manager(
+            35, RobotPose(150.0, 150.0, 0.0, Confidence.HIGH, "TEST", now_s())
+        )
+        manager.map.grid_pos = lambda xy: (0, 0)
+        manager.map.in_bounds_xy = lambda xy: True
+        manager.map.is_free_xy = lambda xy: True
+        manager.map.cost = {(0, 0): 0.0}
+        manager.map._neighbors = lambda *args, **kwargs: []
+        manager.map.is_free_grid = lambda node: True
+        manager.map.robot_clearance_cm = lambda xy: float(xy[0])
+        self.assertFalse(manager.navigation_point_diagnostics((20.0, 0.0))["footprint_traversable"])
+        at_boundary = manager.navigation_point_diagnostics((25.0, 0.0))
+        self.assertTrue(at_boundary["clearance_traversable"])
+        self.assertTrue(at_boundary["footprint_traversable"])
+        self.assertTrue(manager.navigation_point_diagnostics((30.0, 0.0))["footprint_traversable"])
+
     def test_screen_35_high_cost_start_has_safe_escape_action(self):
         self.assert_real_case_moves(
             35, (245.43, 125.23, 99.4), (203.0, 98.5)

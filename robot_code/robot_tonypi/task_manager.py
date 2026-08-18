@@ -142,6 +142,10 @@ class TaskManager:
         self.target_tag_confirmation: Optional[TargetTagConfirmation] = None
         self.visual_authorization: Optional[VisualAuthorization] = None
         self.final_forward_executed = False
+        self.post_interaction_retreat_pending = False
+        self.post_interaction_retreat_completed = False
+        self.post_interaction_retreat_blocked = False
+        self.post_interaction_screen_id = None
         self.target_confirmation_retry_count = 0
         self.target_confirmation_recovery_cycle = 0
         self.last_target_confirmation_diagnostics = {}
@@ -396,6 +400,32 @@ class TaskManager:
             if self.time_left_s() <= 0:
                 self.debug.event("mission_stop", reason="time_limit")
                 break
+            # Never hand a close post-interaction pose to the normal planner.
+            # After the physical retreat succeeds, localization retries do not
+            # repeat that retreat.
+            if getattr(self, "post_interaction_retreat_pending", False):
+                pending_id = self.post_interaction_screen_id
+                pending_target = self.map.screens.get(pending_id)
+                if pending_target is None:
+                    self.post_interaction_retreat_blocked = True
+                    self.set_mission_state(MissionState.MISSION_BLOCKED)
+                    self.debug.event(
+                        "interaction_retreat_failed",
+                        screen_id=pending_id,
+                        reason="pending_screen_missing",
+                    )
+                elif self.complete_post_interaction_retreat(pending_target):
+                    self.set_mission_state(MissionState.MARK_TARGET_COMPLETE)
+                    self.publish_state(pending_target)
+                    self.clear_current_target_context()
+                    continue
+                self.publish_state(pending_target)
+                time.sleep(max(0.0, float(
+                    self.config["interaction"].get(
+                        "post_interaction_retry_interval_s", 1.0
+                    )
+                )))
+                continue
             if self.target_reached():
                 self.set_mission_state(MissionState.MISSION_COMPLETE)
                 self.debug.event("mission_success", completed=self.map.completed_count())
@@ -522,16 +552,28 @@ class TaskManager:
                             attempts=target.attempts,
                             max_attempts=int(self.config["mission"].get("max_target_attempts", 2)),
                         )
+            if getattr(self, "post_interaction_retreat_pending", False):
+                if not self.complete_post_interaction_retreat(target):
+                    self.publish_state(target)
+                    time.sleep(max(0.0, float(
+                        self.config["interaction"].get(
+                            "post_interaction_retry_interval_s", 1.0
+                        )
+                    )))
+                    continue
             self.set_mission_state(MissionState.MARK_TARGET_COMPLETE)
             self.publish_state(target)
-            self.current_target_screen_id = None
-            self.current_target_goal = None
-            self.arrived_at_target = False
-            self.classifier_allowed = False
-            self.target_visual_confirmation = None
-            self.visual_authorization = None
-            self.final_forward_executed = False
+            self.clear_current_target_context()
         return self.mission_state == MissionState.MISSION_COMPLETE
+
+    def clear_current_target_context(self) -> None:
+        self.current_target_screen_id = None
+        self.current_target_goal = None
+        self.arrived_at_target = False
+        self.classifier_allowed = False
+        self.target_visual_confirmation = None
+        self.visual_authorization = None
+        self.final_forward_executed = False
 
     def mark_target_terminal_failed(self, target: Screen, reason: str) -> None:
         target.status = ScreenStatus.FAILED
@@ -1983,7 +2025,12 @@ class TaskManager:
             dry_run=self.args.dry_run,
         )
         result = self.motion.run("interaction_forward_10cm", times_override=1)
-        self.final_forward_executed = True
+        self.final_forward_executed = bool(result.ok)
+        if result.ok:
+            self.post_interaction_retreat_pending = True
+            self.post_interaction_retreat_completed = False
+            self.post_interaction_retreat_blocked = False
+            self.post_interaction_screen_id = int(screen.screen_id)
         self.debug.event(
             "target_final_forward_done" if result.ok else "target_final_forward_failed",
             screen_id=screen.screen_id,
@@ -1996,6 +2043,102 @@ class TaskManager:
             error=result.error,
         )
         return bool(result.ok)
+
+    def complete_post_interaction_retreat(self, screen: Screen) -> bool:
+        """Reverse out of the close pose exactly once, then relocalize."""
+        if not getattr(self, "post_interaction_retreat_pending", False):
+            return True
+        if getattr(self, "post_interaction_retreat_blocked", False):
+            self.set_mission_state(MissionState.MISSION_BLOCKED)
+            return False
+
+        interaction = self.config["interaction"]
+        requested_cm = float(interaction.get("post_interaction_retreat_cm", 10.0))
+        action_key = str(interaction.get("post_interaction_retreat_action", "back_fast"))
+        if not getattr(self, "post_interaction_retreat_completed", False):
+            spec = self.config["motion"]["actions"].get(action_key)
+            modeled_cycle_cm = 0.0 if spec is None else abs(float(spec.get("forward_cm", 0.0)))
+            if requested_cm <= 0.0 or modeled_cycle_cm <= 0.0:
+                self.post_interaction_retreat_blocked = True
+                self.set_mission_state(MissionState.MISSION_BLOCKED)
+                self.debug.event(
+                    "interaction_retreat_failed",
+                    screen_id=screen.screen_id,
+                    requested_cm=requested_cm,
+                    action=action_key,
+                    reason="invalid_retreat_configuration",
+                )
+                return False
+            cycles = max(1, int(math.ceil(requested_cm / modeled_cycle_cm)))
+            self.set_mission_state(MissionState.POST_INTERACTION_RETREAT)
+            self.debug.event(
+                "interaction_retreat_started",
+                screen_id=screen.screen_id,
+                retreat_cm=requested_cm,
+                action=action_key,
+                modeled_cycle_cm=modeled_cycle_cm,
+                action_cycles=cycles,
+                reason="post_interaction",
+            )
+            stand_result = self.motion.run("stand", times_override=1)
+            if not stand_result.ok:
+                self.post_interaction_retreat_blocked = True
+                self.set_mission_state(MissionState.MISSION_BLOCKED)
+                self.debug.event(
+                    "interaction_retreat_failed",
+                    screen_id=screen.screen_id,
+                    requested_cm=requested_cm,
+                    action="stand",
+                    reason=stand_result.error or "stand_failed",
+                )
+                return False
+            result = self.motion.run(action_key, times_override=cycles)
+            actual_cycles_value = getattr(result, "executed_times", None)
+            if actual_cycles_value is None:
+                actual_cycles_value = result.times if result.ok else 0
+            actual_cycles = int(actual_cycles_value)
+            actual_cm = abs(float(result.model_forward_cm)) if result.ok else 0.0
+            self.debug.event(
+                "interaction_retreat_completed" if result.ok else "interaction_retreat_failed",
+                screen_id=screen.screen_id,
+                requested_cm=requested_cm,
+                actual_action_cycles=actual_cycles,
+                actual_modeled_cm=round(actual_cm, 3),
+                action=action_key,
+                ok=bool(result.ok),
+                error=result.error,
+            )
+            if not result.ok:
+                # The blocking ActionGroup API cannot report a partial prefix;
+                # do not blindly issue another retreat after an exception.
+                self.post_interaction_retreat_blocked = True
+                self.set_mission_state(MissionState.MISSION_BLOCKED)
+                return False
+            self.post_interaction_retreat_completed = True
+            self.final_forward_executed = False
+
+        self.set_mission_state(MissionState.POST_INTERACTION_RELOCALIZE)
+        localized = self.localize_scan(
+            reason="post_interaction_retreat",
+            allow_pan_search=True,
+            allow_failure_escalation=False,
+        )
+        self.debug.event(
+            "post_interaction_relocalize",
+            screen_id=screen.screen_id,
+            success=bool(localized),
+            center_first=True,
+            pan_search_on_center_failure=True,
+            pose=None if self.state.pose is None else self.state.pose.as_dict(),
+        )
+        if not localized:
+            self.set_mission_state(MissionState.MISSION_BLOCKED)
+            return False
+        self.post_interaction_retreat_pending = False
+        self.post_interaction_retreat_completed = False
+        self.post_interaction_retreat_blocked = False
+        self.post_interaction_screen_id = None
+        return True
 
     def process_screen_interaction(self, screen: Screen) -> bool:
         worker_id = self.worker_id_for_screen(screen)
@@ -2047,6 +2190,17 @@ class TaskManager:
             "target_confirmation_recovery_cycle": getattr(self, "target_confirmation_recovery_cycle", 0),
             "target_confirmation_diagnostics": getattr(self, "last_target_confirmation_diagnostics", {}),
             "final_forward_executed": self.final_forward_executed,
+            "post_interaction_retreat": {
+                "pending": bool(getattr(self, "post_interaction_retreat_pending", False)),
+                "physical_retreat_completed": bool(getattr(
+                    self, "post_interaction_retreat_completed", False
+                )),
+                "blocked": bool(getattr(self, "post_interaction_retreat_blocked", False)),
+                "screen_id": getattr(self, "post_interaction_screen_id", None),
+                "requested_cm": float(
+                    self.config["interaction"].get("post_interaction_retreat_cm", 10.0)
+                ),
+            },
             "interaction_check": authorization_check.as_dict(),
         }
         self.write_interaction_audit(record)
@@ -2123,6 +2277,12 @@ class TaskManager:
             )["clear"]
         )
 
+    def normal_navigation_clearance_ok(self, clearance_cm: float) -> bool:
+        minimum = float(
+            self.config["navigation"].get("normal_navigation_min_clearance_cm", 25.0)
+        )
+        return float(clearance_cm) >= minimum
+
     def normal_path_metrics(
         self,
         pose: RobotPose,
@@ -2140,6 +2300,7 @@ class TaskManager:
         wall_penalty = 0.0
         clear = True
         wall_target = float(nav.get("normal_wall_clearance_target_cm", 25.0))
+        minimum_required = float(nav.get("normal_navigation_min_clearance_cm", 25.0))
         wall_scale = float(nav.get("normal_wall_clearance_penalty_scale", 4.0))
         headings = []
         for index, (start, end) in enumerate(zip(path, path[1:]), start=1):
@@ -2151,7 +2312,8 @@ class TaskManager:
             clearance = float(metrics["minimum_wall_clearance_cm"])
             minimum_clearance = min(minimum_clearance, clearance)
             wall_penalty += max(0.0, wall_target - clearance) * wall_scale * segment_length / 10.0
-            clear = clear and bool(metrics["clear"])
+            clearance_ok = is_goal or self.normal_navigation_clearance_ok(clearance)
+            clear = clear and bool(metrics["clear"]) and clearance_ok
             headings.append(math.degrees(math.atan2(end[1] - start[1], end[0] - start[0])))
         turn_cost = 0.0
         switches = max(0, len(path) - 2)
@@ -2171,6 +2333,8 @@ class TaskManager:
             "path_length_cm": length,
             "path_obstacle_cost": obstacle_integral,
             "minimum_wall_clearance_cm": minimum_clearance,
+            "minimum_required_clearance_cm": minimum_required,
+            "clearance_traversable": minimum_clearance >= minimum_required,
             "wall_clearance_penalty": wall_penalty,
             "turn_cost": turn_cost,
             "action_switch_penalty": switch_penalty,
@@ -2188,14 +2352,21 @@ class TaskManager:
             if is_goal:
                 if not self.map.is_free_xy(pt):
                     return False
-            elif not self.map.is_traversable_xy(
-                pt,
-                max_cost=float(self.config["navigation"].get("normal_navigation_max_cost", 55.0)),
-            ):
+            elif not self.navigation_point_diagnostics(pt)["footprint_traversable"]:
                 return False
         for index, (start, end) in enumerate(zip(points, points[1:]), start=1):
             is_goal = allow_goal_high_cost and index == len(points) - 1
-            if not self.movement_corridor_clear(start, end, allow_goal_high_cost=is_goal):
+            metrics = self.movement_corridor_metrics(
+                start, end, allow_goal_high_cost=is_goal
+            )
+            if not metrics.get("clear"):
+                return False
+            if (
+                not is_goal
+                and not self.normal_navigation_clearance_ok(
+                    float(metrics.get("minimum_wall_clearance_cm", 0.0))
+                )
+            ):
                 return False
         return True
 
@@ -2300,6 +2471,8 @@ class TaskManager:
             footprint_max_cost = max(
                 footprint_max_cost, float(self.map.cost[node[0], node[1]])
             )
+        clearance_cm = round(float(self.map.robot_clearance_cm(xy)), 3)
+        clearance_traversable = self.normal_navigation_clearance_ok(clearance_cm)
         return {
             "xy": (float(xy[0]), float(xy[1])),
             "grid": grid,
@@ -2307,10 +2480,18 @@ class TaskManager:
             "blocked": not free,
             "traversable": bool(free and float(self.map.cost[grid]) < max_cost),
             "cost": None if not in_bounds else round(float(self.map.cost[grid]), 3),
-            "clearance_cm": round(float(self.map.robot_clearance_cm(xy)), 3),
+            "clearance_cm": clearance_cm,
+            "minimum_clearance_cm": float(
+                nav.get("normal_navigation_min_clearance_cm", 25.0)
+            ),
+            "clearance_traversable": clearance_traversable,
             "footprint_free": footprint_free,
             "footprint_max_cost": footprint_max_cost,
-            "footprint_traversable": footprint_free and footprint_max_cost < max_cost,
+            "footprint_traversable": (
+                footprint_free
+                and footprint_max_cost < max_cost
+                and clearance_traversable
+            ),
             "free_neighbor_count": sum(
                 1 for node in self.map._neighbors(grid, include_diagonal=True)
                 if self.map.is_free_grid(node)
@@ -2578,7 +2759,7 @@ class TaskManager:
 
         viable = []
         minimum_clearance = float(
-            self.config["navigation"].get("reachable_approach_min_clearance_cm", 16.0)
+            self.config["navigation"].get("normal_navigation_min_clearance_cm", 25.0)
         )
         for candidate in self.reachable_navigation_goal_candidates(
             pose, target_screen, goal_xy, allow_goal_high_cost
