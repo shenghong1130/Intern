@@ -452,7 +452,9 @@ class PlannerPreferenceTests(unittest.TestCase):
 
     def test_safe_lateral_target_selects_strafe(self):
         manager = self.translation_manager()
-        action = manager.choose_translation_action(manager.state.pose, (150.0, 180.0))
+        # Stay on the open side of the nearby building so the complete strafe
+        # corridor remains above the configured 25 cm navigation clearance.
+        action = manager.choose_translation_action(manager.state.pose, (150.0, 138.0))
         self.assertEqual(action["kind"], "strafe")
 
     def test_side_wall_blocks_lateral_corridor(self):
@@ -470,7 +472,9 @@ class PlannerPreferenceTests(unittest.TestCase):
             "x_min": 170.0,
             "x_max": 190.0,
             "y_min": 130.0,
-            "y_max": 136.0,
+            # The direct route has only 15 cm clearance; its endpoints and the
+            # detour remain just above the new 25 cm hard boundary.
+            "y_max": 135.0,
         }}
         short = [(150.0, 150.0), (210.0, 150.0)]
         safe = [(150.0, 150.0), (150.0, 180.0), (210.0, 180.0), (210.0, 150.0)]

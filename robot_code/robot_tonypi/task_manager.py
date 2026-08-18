@@ -2344,15 +2344,35 @@ class TaskManager:
         self,
         points: List[Tuple[float, float]],
         allow_goal_high_cost: bool = False,
+        minimum_clearance_cm: Optional[float] = None,
     ) -> bool:
         if len(points) < 2:
             return False
+        required_clearance = float(
+            self.config["navigation"].get("normal_navigation_min_clearance_cm", 25.0)
+            if minimum_clearance_cm is None else minimum_clearance_cm
+        )
         for index, pt in enumerate(points[1:], start=1):
             is_goal = allow_goal_high_cost and index == len(points) - 1
             if is_goal:
                 if not self.map.is_free_xy(pt):
                     return False
-            elif not self.navigation_point_diagnostics(pt)["footprint_traversable"]:
+            elif required_clearance > 0.0:
+                detail = self.navigation_point_diagnostics(pt)
+                if (
+                    not detail["footprint_free"]
+                    or detail["footprint_max_cost"] >= float(
+                        self.config["navigation"].get("normal_navigation_max_cost", 55.0)
+                    )
+                    or float(detail["clearance_cm"]) < required_clearance
+                ):
+                    return False
+            elif not self.map.is_traversable_xy(
+                pt,
+                max_cost=float(
+                    self.config["navigation"].get("normal_navigation_max_cost", 55.0)
+                ),
+            ):
                 return False
         for index, (start, end) in enumerate(zip(points, points[1:]), start=1):
             is_goal = allow_goal_high_cost and index == len(points) - 1
@@ -2361,12 +2381,9 @@ class TaskManager:
             )
             if not metrics.get("clear"):
                 return False
-            if (
-                not is_goal
-                and not self.normal_navigation_clearance_ok(
-                    float(metrics.get("minimum_wall_clearance_cm", 0.0))
-                )
-            ):
+            if not is_goal and float(
+                metrics.get("minimum_wall_clearance_cm", 0.0)
+            ) < required_clearance:
                 return False
         return True
 
@@ -2758,6 +2775,7 @@ class TaskManager:
             return [pose.xy(), projected]
 
         viable = []
+        action_fallback_candidates = []
         minimum_clearance = float(
             self.config["navigation"].get("normal_navigation_min_clearance_cm", 25.0)
         )
@@ -2775,6 +2793,7 @@ class TaskManager:
             )
             path = []
             metrics = {}
+            path_source = "astar"
             if valid:
                 raw_path = self.map.plan(
                     pose.xy(), plan_goal, allow_goal_high_cost=candidate_allow_high
@@ -2787,10 +2806,14 @@ class TaskManager:
                     if not metrics.get("clear"):
                         path = []
             astar = dict(getattr(self.map, "last_astar_metrics", {}))
+            if valid and not path:
+                action_fallback_candidates.append((candidate, detail, astar))
             cost = float(metrics.get("total_cost", float("inf")))
             if path:
                 cost += 0.25 * distance_xy(plan_goal, goal_xy)
-                viable.append((cost, candidate, path, metrics, detail, astar))
+                viable.append((
+                    cost, candidate, path, metrics, detail, astar, path_source
+                ))
             self.debug.event(
                 "staging_candidate_generated",
                 screen_id=screen_id,
@@ -2805,6 +2828,47 @@ class TaskManager:
                 astar_reason=astar.get("reason"),
                 astar_expanded_nodes=astar.get("expanded_nodes"),
             )
+        # Prefer the established A* approach/staging ordering.  Only when all
+        # center-cell A* routes fail footprint clearance do we invoke the
+        # action-space planner as a second way to reach those same candidates.
+        if (
+            not viable
+            and action_fallback_candidates
+            and bool(self.config["navigation"].get("action_planner_enabled", True))
+        ):
+            for candidate, detail, astar in action_fallback_candidates:
+                plan_goal = candidate["xy"]
+                candidate_allow_high = bool(candidate.get("allow_goal_high_cost", False))
+                alternate = self.map.plan_action_path(
+                    pose,
+                    plan_goal,
+                    self.config["navigation"],
+                    self.config["motion"],
+                    allow_goal_high_cost=candidate_allow_high,
+                )
+                if not alternate:
+                    continue
+                metrics = self.normal_path_metrics(
+                    pose,
+                    alternate,
+                    allow_goal_high_cost=candidate_allow_high,
+                )
+                if not metrics.get("clear"):
+                    continue
+                planner_metrics = getattr(self.map, "last_action_plan_metrics", {})
+                if planner_metrics.get("total_cost") is not None:
+                    metrics["total_cost"] = float(planner_metrics["total_cost"])
+                cost = float(metrics.get("total_cost", float("inf")))
+                cost += 0.25 * distance_xy(plan_goal, goal_xy)
+                viable.append((
+                    cost,
+                    candidate,
+                    alternate,
+                    metrics,
+                    detail,
+                    astar,
+                    "action_planner",
+                ))
         if not viable:
             self.active_navigation_plan = {
                 "goal_type": "none",
@@ -2818,7 +2882,10 @@ class TaskManager:
             )
             return []
 
-        _, selected, astar_path, astar_metrics, selected_detail, astar_debug = min(
+        (
+            _, selected, astar_path, astar_metrics, selected_detail,
+            astar_debug, initial_path_source,
+        ) = min(
             viable, key=lambda item: item[0]
         )
         normal_goal = selected["xy"]
@@ -2856,7 +2923,7 @@ class TaskManager:
             target_generation=None if target_goal is None else target_goal.generation_id,
         )
 
-        candidates = [("astar", astar_path, astar_metrics)]
+        candidates = [(initial_path_source, astar_path, astar_metrics)]
         for translation_path in self.body_translation_candidate_paths(
             pose, normal_goal, allow_goal_high_cost=normal_allow_goal_high_cost
         ):
@@ -4243,8 +4310,14 @@ class TaskManager:
             forward, lateral = self.local_vector_to(pose, xy)
             lateral_mid = self.translated_pose_xy(pose, lateral_cm=lateral)
             forward_mid = self.translated_pose_xy(pose, forward_cm=forward)
-            lateral_first = self.path_segments_clear([pose.xy(), lateral_mid, xy])
-            forward_first = self.path_segments_clear([pose.xy(), forward_mid, xy])
+            # Recovery is specifically allowed to escape a low-clearance start;
+            # its destination still has the dedicated recovery clearance gate.
+            lateral_first = self.path_segments_clear(
+                [pose.xy(), lateral_mid, xy], minimum_clearance_cm=0.0
+            )
+            forward_first = self.path_segments_clear(
+                [pose.xy(), forward_mid, xy], minimum_clearance_cm=0.0
+            )
             if not lateral_first and not forward_first:
                 continue
             order = "lateral_then_longitudinal" if lateral_first else "longitudinal_then_lateral"
