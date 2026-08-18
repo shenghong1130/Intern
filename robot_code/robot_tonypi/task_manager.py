@@ -165,6 +165,9 @@ class TaskManager:
         self.consecutive_no_tag_scans = 0
         self.consecutive_localize_failures = 0
         self.last_no_tag_recovery_s = 0.0
+        self.no_tag_recovery_active = False
+        self.no_tag_recovery_exhausted = False
+        self.last_localization_attempt_result = "never_attempted"
         self.recovery_count = 0
         self.last_recovery = {}
         self.pending_progress_check = None
@@ -479,7 +482,9 @@ class TaskManager:
                 failure_reason = self.last_navigation_failure_reason or "navigation_failed"
                 if self.is_retryable_target_failure(failure_reason):
                     self.preserve_current_target(target, failure_reason)
-                    if failure_reason == "navigation_blocked":
+                    if failure_reason in (
+                        "navigation_blocked", "no_tag_recovery_exhausted"
+                    ):
                         self.set_mission_state(MissionState.NAVIGATION_BLOCKED)
                         self.publish_state(target)
                         time.sleep(max(0.0, float(
@@ -619,6 +624,7 @@ class TaskManager:
             "target_direct_action_failed",
             "localization_required",
             "localization_failed",
+            "no_tag_recovery_exhausted",
             "visual_progress_temporarily_failed",
         }
         return str(reason) in transient
@@ -723,17 +729,227 @@ class TaskManager:
             self.state.set_manual_pose(150.0, 150.0, 0.0, source="DRY_RUN_DEFAULT")
             return True
         attempts = int(self.config["localization"]["startup_attempts"])
-        search_actions = list(self.config["localization"]["startup_search_actions"])
-        for attempt in range(1, attempts + 1):
-            self.debug.event("initial_localize_attempt", attempt=attempt, max_attempts=attempts)
-            if self.localize_scan(reason="initial_localize", allow_pan_search=True):
+        return self.run_localization_search_sequence(
+            reason="initial_localize",
+            max_search_actions=attempts,
+            runtime_safety=False,
+            no_tag_recovery=False,
+        )
+
+    def accept_visual_localization(self, pose: RobotPose, reason: str) -> None:
+        """Install an accepted visual pose and consume accumulated dead reckoning."""
+        actions_before = int(getattr(self.state, "actions_since_localize", 0))
+        uncertainty_before = float(getattr(self.state, "motion_uncertainty", 0.0))
+        self.state.set_pose(pose)
+        self.last_localize_success_s = now_s()
+        self.no_tag_recovery_exhausted = False
+        self.last_localization_attempt_result = "accepted_visual_pose"
+        self.debug.event(
+            "localization_state_reset",
+            reason="accepted_visual_pose",
+            localization_reason=reason,
+            actions_before_reset=actions_before,
+            uncertainty_before_reset=round(uncertainty_before, 3),
+        )
+
+    def execute_localization_search_action(
+        self,
+        requested_action: str,
+        *,
+        runtime_safety: bool,
+    ) -> dict:
+        """Execute one configured search action through the normal motion layer."""
+        action = str(requested_action)
+        pose = self.state.pose
+        safety_result = "startup_pose_unknown"
+        if runtime_safety and pose is None:
+            return {
+                "executed": False,
+                "requested_action": requested_action,
+                "action": None,
+                "safety_result": "pose_missing_no_safe_action",
+                "ok": False,
+            }
+        if runtime_safety and pose is not None:
+            nav = self.config["navigation"]
+            actions = self.config["motion"]["actions"]
+            if action.startswith("turn_"):
+                rotation_clear = not hasattr(self.map, "rotation_sweep_clear") or self.map.rotation_sweep_clear(
+                    pose.xy(),
+                    float(nav.get("turn_sweep_radius_cm", 10.0)),
+                    float(nav.get("normal_navigation_max_cost", 55.0)),
+                )
+                if rotation_clear:
+                    safety_result = "rotation_sweep_clear"
+                    if self.is_near_boundary(pose):
+                        target_yaw = self.yaw_toward_field_center(pose)
+                        action = self.choose_boundary_safe_turn_key(pose, target_yaw)
+                        safety_result = "boundary_safe_turn_selected"
+                else:
+                    fallback = "back_fast"
+                    model = actions.get(fallback, {})
+                    travel = float(model.get("forward_cm", -2.5)) * max(
+                        1, int(model.get("times", 1))
+                    )
+                    yaw = math.radians(pose.yaw_deg)
+                    fallback_xy = (
+                        pose.x_cm + travel * math.cos(yaw),
+                        pose.y_cm + travel * math.sin(yaw),
+                    )
+                    if self.escape_corridor_metrics(pose.xy(), fallback_xy).get("clear"):
+                        action = fallback
+                        safety_result = "rotation_blocked_safe_back_substitute"
+                    else:
+                        return {
+                            "executed": False,
+                            "requested_action": requested_action,
+                            "action": None,
+                            "safety_result": "rotation_and_back_substitute_blocked",
+                            "ok": False,
+                        }
+            elif action == "back_fast":
+                model = actions.get(action, {})
+                travel = float(model.get("forward_cm", -2.5)) * max(
+                    1, int(model.get("times", 1))
+                )
+                yaw = math.radians(pose.yaw_deg)
+                end_xy = (
+                    pose.x_cm + travel * math.cos(yaw),
+                    pose.y_cm + travel * math.sin(yaw),
+                )
+                if self.escape_corridor_metrics(pose.xy(), end_xy).get("clear"):
+                    safety_result = "rear_escape_corridor_clear"
+                else:
+                    fallback = self.choose_boundary_safe_turn_key(
+                        pose, self.yaw_toward_field_center(pose)
+                    )
+                    rotation_clear = not hasattr(self.map, "rotation_sweep_clear") or self.map.rotation_sweep_clear(
+                        pose.xy(),
+                        float(nav.get("turn_sweep_radius_cm", 10.0)),
+                        float(nav.get("normal_navigation_max_cost", 55.0)),
+                    )
+                    if not rotation_clear:
+                        return {
+                            "executed": False,
+                            "requested_action": requested_action,
+                            "action": None,
+                            "safety_result": "rear_and_rotation_substitute_blocked",
+                            "ok": False,
+                        }
+                    action = fallback
+                    safety_result = "rear_blocked_safe_turn_substitute"
+            else:
+                safety_result = "configured_non_translation_action"
+        result = self.motion.run(action)
+        return {
+            "executed": bool(getattr(result, "ok", False)),
+            "requested_action": requested_action,
+            "action": action,
+            "safety_result": safety_result,
+            "ok": bool(getattr(result, "ok", False)),
+            "result": result,
+        }
+
+    def run_localization_search_sequence(
+        self,
+        reason: str,
+        *,
+        max_search_actions: int,
+        runtime_safety: bool,
+        no_tag_recovery: bool,
+    ) -> bool:
+        """Shared full-pan plus configured-action strategy for startup and recovery."""
+        pans = list(self.config["localization"].get("scan_pan_angles", []))
+        actions = list(self.config["localization"].get("startup_search_actions", []))
+        target_id = getattr(self, "current_target_screen_id", None)
+        target_goal = getattr(self, "current_target_goal", None)
+        target_generation = None if target_goal is None else target_goal.generation_id
+
+        def full_pan(stage: str) -> bool:
+            if no_tag_recovery:
+                self.debug.event(
+                    "no_tag_full_pan_start",
+                    reason=reason,
+                    stage=stage,
+                    pan_angles=pans,
+                )
+            success = bool(self.localize_scan(
+                reason=reason + ":" + stage,
+                allow_pan_search=True,
+                pan_angles=pans,
+                allow_failure_escalation=False,
+            ))
+            if no_tag_recovery:
+                self.debug.event(
+                    "no_tag_full_pan_result",
+                    reason=reason,
+                    stage=stage,
+                    success=success,
+                    saw_any_tag=(
+                        self.last_localization_attempt_result
+                        not in ("no_tag", "capture_failed")
+                    ),
+                    accepted_visual_pose=success,
+                )
+            return success
+
+        if full_pan("initial_full_pan"):
+            return True
+        if not actions:
+            return False
+        for index in range(max(0, int(max_search_actions))):
+            if self.time_left_s() <= 0:
+                break
+            if not no_tag_recovery:
+                self.debug.event(
+                    "initial_localize_attempt",
+                    attempt=index + 1,
+                    max_attempts=max_search_actions,
+                )
+            requested = actions[index % len(actions)]
+            action_detail = self.execute_localization_search_action(
+                requested,
+                runtime_safety=runtime_safety,
+            )
+            if no_tag_recovery:
+                self.debug.event(
+                    "no_tag_recovery_action",
+                    index=index,
+                    requested_action=requested,
+                    action=action_detail.get("action"),
+                    executed=action_detail.get("executed", False),
+                    safety_result=action_detail.get("safety_result"),
+                    target_preserved=(
+                        getattr(self, "current_target_screen_id", None) == target_id
+                        and (
+                            getattr(self, "current_target_goal", None) is target_goal
+                            or (
+                                target_goal is not None
+                                and getattr(self.current_target_goal, "generation_id", None)
+                                == target_generation
+                            )
+                        )
+                    ),
+                )
+            if not action_detail.get("executed", False):
+                continue
+            success = full_pan("after_action_{}".format(index))
+            if no_tag_recovery:
+                self.debug.event(
+                    "no_tag_recovery_localize_result",
+                    index=index,
+                    action=action_detail.get("action"),
+                    success=success,
+                    accepted_visual_pose=(
+                        self.last_localization_attempt_result == "accepted_visual_pose"
+                    ),
+                    pose_confidence=(
+                        None if self.state.pose is None
+                        else self.state.pose.confidence.value
+                    ),
+                )
+            if success:
                 return True
-            action = search_actions[(attempt - 1) % len(search_actions)]
-            result = self.motion.run(action)
-            if str(action).startswith("turn_"):
-                self.scan_after_turn("initial_localize_search", str(action), result)
-                if self.state.pose is not None:
-                    return True
         return False
 
     def assess_visual_localization(self, pose: RobotPose, tags, prior_pose: Optional[RobotPose]) -> dict:
@@ -794,6 +1010,8 @@ class TaskManager:
     ) -> bool:
         """Localize center-first; routine calls never sweep the head eagerly."""
         saw_any_tag = False
+        rejected_visual_pose = False
+        captured_frame = False
         last_scan_pan = None
         center = float(self.config["camera"].get("head_center_angle", 100.0))
         failure_threshold = max(
@@ -843,6 +1061,7 @@ class TaskManager:
                 frame, tags = self.capture_with_tags(pan)
                 if frame is None:
                     continue
+                captured_frame = True
                 if tags:
                     saw_any_tag = True
                     self.update_dynamic_obstacles(tags, pan=pan)
@@ -850,11 +1069,37 @@ class TaskManager:
                 if pose is not None:
                     prior_pose = None if self.state.pose is None else self.copy_pose(self.state.pose)
                     localization_detail = self.assess_visual_localization(pose, tags, prior_pose)
-                    self.state.set_pose(pose)
+                    if localization_detail.get("visual_odometry_conflict"):
+                        rejected_visual_pose = True
+                        self.last_localization_attempt_result = "visual_pose_rejected_conflict"
+                        self.debug.event(
+                            "visual_localization_rejected",
+                            reason=reason,
+                            rejection_reason="visual_dead_reckoning_conflict",
+                            kept_pose=(
+                                None if self.state.pose is None
+                                else self.state.pose.as_dict()
+                            ),
+                            visual_pose=pose.as_dict(),
+                            actions_since_localize=int(getattr(
+                                self.state, "actions_since_localize", 0
+                            )),
+                            motion_uncertainty=round(float(getattr(
+                                self.state, "motion_uncertainty", 0.0
+                            )), 3),
+                            **localization_detail
+                        )
+                        annotated = self.observe_transit_bindings(
+                            frame, tags, annotated, pan, reason
+                        )
+                        self.debug.save_image(
+                            "latest_annotated.jpg", annotated, force=True
+                        )
+                        continue
+                    self.accept_visual_localization(pose, reason)
                     annotated = self.observe_transit_bindings(frame, tags, annotated, pan, reason)
                     if reset_turn_watchdog:
                         self.clear_turn_progress_watchdog("normal_relocalize")
-                    self.last_localize_success_s = now_s()
                     self.consecutive_localize_failures = 0
                     self.consecutive_no_tag_scans = 0
                     self.evaluate_pending_progress(pose)
@@ -879,11 +1124,30 @@ class TaskManager:
                 self.consecutive_no_tag_scans = 0
             else:
                 self.consecutive_no_tag_scans += 1
+            if rejected_visual_pose:
+                attempt_result = "visual_pose_rejected_conflict"
+            elif saw_any_tag:
+                attempt_result = "pose_unavailable_with_tags"
+            elif captured_frame:
+                attempt_result = "no_tag"
+            else:
+                attempt_result = "capture_failed"
+            self.last_localization_attempt_result = attempt_result
             self.debug.event(
                 "localize_failed",
                 saw_any_tag=saw_any_tag,
                 no_tag_scans=self.consecutive_no_tag_scans,
                 failures=self.consecutive_localize_failures,
+                localization_attempt_result=attempt_result,
+                actions_since_localize=int(getattr(
+                    self.state, "actions_since_localize", 0
+                )),
+                motion_uncertainty=round(float(getattr(
+                    self.state, "motion_uncertainty", 0.0
+                )), 3),
+                last_successful_localization_s=float(getattr(
+                    self, "last_localize_success_s", 0.0
+                )),
             )
             return False
         finally:
@@ -1880,6 +2144,7 @@ class TaskManager:
                 # instead of replacing it with a stale/contradictory frame.
                 if self.state.pose is not None:
                     self.state.pose.confidence = Confidence.LOW
+                self.last_localization_attempt_result = "scan_after_turn_pose_rejected"
                 self.debug.event(
                     "scan_after_turn_pose_rejected",
                     reason=reason,
@@ -1890,9 +2155,8 @@ class TaskManager:
                 )
             else:
                 localization_detail = self.assess_visual_localization(pose, tags, None)
-                self.state.set_pose(pose)
+                self.accept_visual_localization(pose, "scan_after_turn:" + reason)
                 outcome["accepted"] = True
-                self.last_localize_success_s = now_s()
                 self.consecutive_localize_failures = 0
                 self.consecutive_no_tag_scans = 0
                 self.evaluate_pending_progress(pose)
@@ -1903,6 +2167,10 @@ class TaskManager:
                     reason="scan_after_turn",
                     **localization_detail
                 )
+        else:
+            self.last_localization_attempt_result = (
+                "pose_unavailable_with_tags" if tags else "no_tag"
+            )
         annotated = self.observe_transit_bindings(frame, tags, annotated, center, "scan_after_turn:" + reason)
         self.debug.save_image("latest_annotated.jpg", annotated, force=True)
         self.debug.event(
@@ -3412,7 +3680,14 @@ class TaskManager:
 
         detail = {
             "actions_since_localize": actions,
+            "actions_since_last_successful_localization": actions,
             "motion_uncertainty": round(uncertainty, 3),
+            "last_successful_localization_s": float(getattr(
+                self, "last_localize_success_s", 0.0
+            )),
+            "localization_attempt_result": str(getattr(
+                self, "last_localization_attempt_result", "unknown"
+            )),
             "pose_confidence": None if pose is None else pose.confidence.value,
             "effective_pose_confidence": confidence.value,
             "navigation_mode": phase,
@@ -5209,6 +5484,8 @@ class TaskManager:
     def no_tag_recovery_needed(self) -> bool:
         if not bool(self.config["navigation"].get("no_tag_recovery_enabled", True)):
             return False
+        if bool(getattr(self, "no_tag_recovery_active", False)):
+            return False
         limit = int(self.config["navigation"].get("no_tag_recovery_failures", 2))
         if self.consecutive_no_tag_scans < limit:
             return False
@@ -5221,8 +5498,12 @@ class TaskManager:
         if not self.no_tag_recovery_needed():
             return False
         self.last_no_tag_recovery_s = now_s()
+        self.no_tag_recovery_active = True
+        self.no_tag_recovery_exhausted = False
         pose = self.state.pose
-        backoff = True
+        target_id = getattr(self, "current_target_screen_id", None)
+        target_goal = getattr(self, "current_target_goal", None)
+        target_generation = None if target_goal is None else target_goal.generation_id
         self.debug.event(
             "no_tag_recovery_triggered",
             reason=reason,
@@ -5230,7 +5511,69 @@ class TaskManager:
             seconds_since_tag=round(now_s() - self.last_any_tag_seen_s, 2),
             outward_facing=False if pose is None else self.is_facing_outside(pose),
         )
-        return self.recover_toward_field_center("no_tag:" + reason, backoff=backoff)
+        self.debug.event(
+            "no_tag_recovery_enter",
+            reason=reason,
+            failures=int(getattr(self, "consecutive_localize_failures", 0)),
+            no_tag_scans=self.consecutive_no_tag_scans,
+            target_screen_id=target_id,
+            target_generation=target_generation,
+            strategy="startup_equivalent",
+        )
+        try:
+            search_actions = list(
+                self.config["localization"].get("startup_search_actions", [])
+            )
+            localized = self.run_localization_search_sequence(
+                reason="no_tag_recovery:" + reason,
+                max_search_actions=len(search_actions),
+                runtime_safety=True,
+                no_tag_recovery=True,
+            )
+            exit_reason = "accepted_visual_pose"
+            if not localized:
+                self.debug.event(
+                    "no_tag_recovery_escalated",
+                    reason=reason,
+                    next_strategy="existing_interior_recovery",
+                    target_preserved=True,
+                )
+                localized = bool(self.recover_toward_field_center(
+                    "no_tag_search_exhausted:" + reason,
+                    backoff=True,
+                ))
+                exit_reason = (
+                    "higher_level_recovery_success"
+                    if localized else "search_sequence_exhausted"
+                )
+            target_preserved = bool(
+                getattr(self, "current_target_screen_id", None) == target_id
+                and (
+                    getattr(self, "current_target_goal", None) is target_goal
+                    or (
+                        target_goal is not None
+                        and getattr(self.current_target_goal, "generation_id", None)
+                        == target_generation
+                    )
+                )
+            )
+            if localized:
+                self.consecutive_no_tag_scans = 0
+                self.consecutive_localize_failures = 0
+            else:
+                self.no_tag_recovery_exhausted = True
+                self.last_navigation_failure_reason = "no_tag_recovery_exhausted"
+            self.debug.event(
+                "no_tag_recovery_exit",
+                success=localized,
+                reason=exit_reason,
+                target_screen_id=target_id,
+                target_generation=target_generation,
+                target_preserved=target_preserved,
+            )
+            return localized
+        finally:
+            self.no_tag_recovery_active = False
 
     def forward_clear_for_distance(
         self,
@@ -5458,6 +5801,8 @@ class TaskManager:
             if self.state.pose is None:
                 if not self.localize_scan():
                     self.recover_from_no_tag_if_needed(reason + ":pose_missing")
+                    if getattr(self, "no_tag_recovery_exhausted", False):
+                        return False
                 if self.state.pose is None:
                     self.last_navigation_failure_reason = "localization_required"
                     continue
@@ -5484,6 +5829,8 @@ class TaskManager:
                     allow_failure_escalation=False,
                 ):
                     self.recover_from_no_tag_if_needed(reason + ":adaptive_relocalization")
+                    if getattr(self, "no_tag_recovery_exhausted", False):
+                        return False
                 continue
             localization_stop_threshold = max(
                 2, int(self.config["navigation"].get("no_tag_recovery_failures", 2))
@@ -5499,6 +5846,8 @@ class TaskManager:
                 )
                 if not self.localize_scan():
                     self.recover_from_no_tag_if_needed(reason + ":consecutive_localization_failures")
+                    if getattr(self, "no_tag_recovery_exhausted", False):
+                        return False
                 continue
             dist = distance_xy(pose.xy(), target_xy)
             if dist <= radius:
@@ -5894,6 +6243,8 @@ class TaskManager:
                 )
                 if not self.localize_scan():
                     self.recover_from_no_tag_if_needed(reason + ":scheduled_relocalize")
+                    if getattr(self, "no_tag_recovery_exhausted", False):
+                        return False
                 if self.collision_recovery_pending:
                     self.recover_toward_field_center(reason + ":forward_no_progress_after_localize", backoff=True)
         self.last_navigation_failure_reason = "navigation_step_limit"
