@@ -180,12 +180,41 @@ class ClassificationResult:
 
 
 @dataclass
+class RecentBoundFlowerObservation:
+    """Latest valid classifier result from a geometrically bound Tag/screen."""
+    screen_id: int
+    tag_id: int
+    binding_ok: bool
+    flower: str
+    confidence: float
+    captured_s: float
+    pan: float
+    reason: str
+
+    def as_dict(self) -> Dict[str, Any]:
+        return {
+            "screen_id": self.screen_id,
+            "tag_id": self.tag_id,
+            "binding_ok": self.binding_ok,
+            "flower": self.flower,
+            "confidence": self.confidence,
+            "captured_s": self.captured_s,
+            "pan": self.pan,
+            "reason": self.reason,
+        }
+
+
+@dataclass
 class TargetVisualConfirmation:
-    """One live 19 cm observation binding the locked Tag to its screen."""
+    """Live target identity plus bound classification evidence."""
     screen_id: int
     tag_id: int
     binding_ok: bool
     captured_s: float
+    source: str = "fresh_bound_frame"
+    classification_captured_s: float = 0.0
+    current_tag_seen_s: float = 0.0
+    cache_age_s: float = 0.0
 
     def as_dict(self) -> Dict[str, Any]:
         return {
@@ -193,6 +222,10 @@ class TargetVisualConfirmation:
             "tag_id": self.tag_id,
             "binding_ok": self.binding_ok,
             "captured_s": self.captured_s,
+            "source": self.source,
+            "classification_captured_s": self.classification_captured_s,
+            "current_tag_seen_s": self.current_tag_seen_s,
+            "cache_age_s": self.cache_age_s,
         }
 
 
@@ -205,6 +238,9 @@ class VisualAuthorization:
     flower: str
     confidence: float
     captured_s: float
+    source: str = "fresh_bound_frame"
+    cache_age_s: float = 0.0
+    current_tag_seen_s: float = 0.0
 
     def as_dict(self) -> Dict[str, Any]:
         return {
@@ -214,6 +250,9 @@ class VisualAuthorization:
             "flower": self.flower,
             "confidence": self.confidence,
             "captured_s": self.captured_s,
+            "source": self.source,
+            "cache_age_s": self.cache_age_s,
+            "current_tag_seen_s": self.current_tag_seen_s,
         }
 
 

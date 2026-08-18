@@ -28,7 +28,7 @@ from robot_tonypi.models import (
 from robot_tonypi.task_manager import TaskManager
 
 
-def make_screen(screen_id=1, xy=(19.0, -1.5)):
+def make_screen(screen_id=1, xy=(20.0, -1.0)):
     return Screen(
         screen_id=screen_id,
         tag_corners_3d=None,
@@ -80,8 +80,10 @@ def classification_manager(tag_ids, candidates, classification):
     manager.target_confirmation_recovery_cycle = 0
     manager.last_target_confirmation_diagnostics = {}
     manager.last_vote_summary = {}
+    manager.recent_bound_flower_observations = {}
+    manager.bound_classification_last_attempt_s = {}
     manager.state = SimpleNamespace(
-        pose=RobotPose(19.0, -1.5, 180.0, Confidence.HIGH, "TEST", 1.0)
+        pose=RobotPose(20.0, -1.0, 180.0, Confidence.HIGH, "TEST", 1.0)
     )
     manager.debug = DebugStub()
     tags = [SimpleNamespace(tag_id=value) for value in tag_ids]
@@ -106,8 +108,8 @@ def candidate(screen_id=1, tag_id=1):
     )
 
 
-class Direct19cmFlowTests(unittest.TestCase):
-    def test_map_screens_have_one_19cm_target_with_lateral_offset(self):
+class TargetStandoffFlowTests(unittest.TestCase):
+    def test_map_screens_have_one_configured_target_with_lateral_offset(self):
         config = load_config(None)
         model = MapModel(load_tag_pos(), config)
         desired_lateral = config["interaction"]["target_lateral_offset_cm"]
@@ -118,14 +120,14 @@ class Direct19cmFlowTests(unittest.TestCase):
             )
             normal_distance = rel[0] * item.cardinal_normal_xy[0] + rel[1] * item.cardinal_normal_xy[1]
             lateral_distance = rel[0] * item.screen_left_tangent_xy[0] + rel[1] * item.screen_left_tangent_xy[1]
-            self.assertAlmostEqual(normal_distance, 19.0)
+            self.assertAlmostEqual(normal_distance, 20.0)
             self.assertAlmostEqual(lateral_distance, desired_lateral)
             self.assertEqual(item.target_xy, item.task_target_xy)
             self.assertEqual(item.interaction_xy, item.task_target_xy)
         west = model.screens[1]
         self.assertEqual(west.face_center_xy, (196.0, 17.5))
-        self.assertEqual(west.tag_front_xy, (177.0, 17.5))
-        self.assertEqual(west.task_target_xy, (177.0, 16.0))
+        self.assertEqual(west.tag_front_xy, (176.0, 17.5))
+        self.assertEqual(west.task_target_xy, (176.0, 16.5))
         self.assertEqual(west.target_xy, west.task_target_xy)
         self.assertEqual(west.interaction_xy, west.task_target_xy)
 
@@ -162,8 +164,6 @@ class Direct19cmFlowTests(unittest.TestCase):
         )
         target = make_screen()
         self.assertTrue(manager.confirm_target_tag_and_screen(target))
-        manager.final_forward_executed = True
-        self.assertEqual(manager.classify_after_final_forward(target), 1)
         self.assertEqual(target.status, ScreenStatus.NEEDS_CHANGE)
         self.assertEqual(manager.visual_authorization.screen_id, 1)
         self.assertEqual(manager.visual_authorization.tag_id, 1)
@@ -187,36 +187,30 @@ class Direct19cmFlowTests(unittest.TestCase):
         self.assertFalse(manager.confirm_target_tag_and_screen(make_screen()))
         self.assertIsNone(manager.visual_authorization)
 
-    def test_confirmation_retries_use_fresh_frames_and_configured_interval(self):
+    def test_fresh_fallback_retries_use_configured_interval(self):
         manager = classification_manager([1], [candidate()], ClassificationResult(True, "chuju", confidence=0.95))
         manager.config["interaction"]["target_confirmation_retry_interval_s"] = 0.125
         calls = []
-        outcomes = [None, None, candidate()]
-
-        def capture(*args, **kwargs):
-            calls.append(len(calls) + 1)
-            manager.last_target_confirmation_diagnostics = {
-                "target_tag_detected": True,
-                "detected_tag_ids": [1],
-                "screen_candidate_count": 0,
-                "matched_screen_count": 0,
-                "failure_reason": "target_screen_binding_missing",
-            }
-            return outcomes.pop(0)
-
-        manager.capture_locked_target_candidate = capture
+        outcomes = [[], [], [candidate()]]
+        manager._last_target_live_frame = None
+        manager.screen_detector.detect = lambda *args, **kwargs: outcomes.pop(0)
+        manager.capture_with_tags = lambda pan: (
+            calls.append(len(calls) + 1) or np.zeros((20, 20, 3), dtype=np.uint8),
+            [SimpleNamespace(tag_id=1)],
+        )
         with mock.patch("robot_tonypi.task_manager.time.sleep") as sleep:
-            self.assertTrue(manager.confirm_target_tag_and_screen(make_screen()))
+            self.assertIsNotNone(manager.bounded_fresh_target_observation(make_screen()))
         self.assertEqual(calls, [1, 2, 3])
         self.assertEqual(sleep.call_count, 2)
         sleep.assert_called_with(0.125)
         self.assertEqual(manager.target_confirmation_retry_count, 0)
 
-    def test_confirmation_round_exhaustion_counts_failures_without_selecting_target(self):
+    def test_confirmation_round_exhaustion_stays_bounded_without_selecting_target(self):
         manager = classification_manager([1], [], ClassificationResult(True, "chuju", confidence=0.95))
         manager.config["interaction"]["target_confirmation_retry_interval_s"] = 0.0
         self.assertFalse(manager.confirm_target_tag_and_screen(make_screen()))
-        self.assertEqual(manager.target_confirmation_retry_count, 3)
+        classifier_failures = [name for name, _ in manager.debug.events if name == "target_fresh_fallback_failed"]
+        self.assertEqual(len(classifier_failures), 1)
         states = [data.get("state") for name, data in manager.debug.events if name == "mission_state"]
         self.assertNotIn(MissionState.SELECT_NEAREST_TARGET.value, states)
 
@@ -250,20 +244,16 @@ class Direct19cmFlowTests(unittest.TestCase):
     def test_fpga_failure_blocks_authorization(self):
         manager = classification_manager([1], [candidate()], ClassificationResult(False, error="fpga_down"))
         target = make_screen()
-        self.assertTrue(manager.confirm_target_tag_and_screen(target))
-        manager.final_forward_executed = True
-        self.assertEqual(manager.classify_after_final_forward(target), 0)
+        self.assertFalse(manager.confirm_target_tag_and_screen(target))
         self.assertIsNone(manager.visual_authorization)
 
     def test_low_confidence_blocks_authorization(self):
         manager = classification_manager([1], [candidate()], ClassificationResult(True, "chuju", confidence=0.10))
         target = make_screen()
-        self.assertTrue(manager.confirm_target_tag_and_screen(target))
-        manager.final_forward_executed = True
-        self.assertEqual(manager.classify_after_final_forward(target), 0)
+        self.assertFalse(manager.confirm_target_tag_and_screen(target))
         self.assertIsNone(manager.visual_authorization)
 
-    def test_already_target_is_known_only_after_single_forward_and_does_not_change(self):
+    def test_already_target_is_known_at_standoff_and_skips_forward(self):
         manager = classification_manager([1], [candidate()], ClassificationResult(True, "hehua", confidence=0.96))
         target = make_screen()
         manager.motion = SimpleNamespace(
@@ -273,10 +263,8 @@ class Direct19cmFlowTests(unittest.TestCase):
             )
         )
         self.assertTrue(manager.confirm_target_tag_and_screen(target))
-        self.assertTrue(manager.execute_final_forward(target))
-        self.assertEqual(manager.classify_after_final_forward(target), 1)
         self.assertEqual(target.status, ScreenStatus.ALREADY_TARGET)
-        self.assertTrue(manager.final_forward_executed)
+        self.assertFalse(manager.final_forward_executed)
 
     def interaction_manager(self, *, motion_ok=True, skip_change=False):
         target = make_screen()
@@ -344,8 +332,10 @@ class Direct19cmFlowTests(unittest.TestCase):
 
     def test_configuration_has_no_old_two_stage_distance(self):
         config = load_config(None)
-        self.assertEqual(config["interaction"]["target_distance_cm"], 19.0)
-        self.assertEqual(config["interaction"]["target_lateral_offset_cm"], -1.5)
+        self.assertEqual(config["interaction"]["target_distance_cm"], 20.0)
+        self.assertEqual(config["interaction"]["target_lateral_offset_cm"], -1.0)
+        self.assertEqual(config["vision"]["bound_classification_cache_ttl_s"], 15.0)
+        self.assertEqual(config["vision"]["bound_classification_min_interval_s"], 1.0)
         self.assertEqual(config["interaction"]["target_final_forward_cm"], 10.0)
         self.assertEqual(config["navigation"]["target_arrival_radius_cm"], 4.0)
         self.assertNotIn("target_arrival_distance_cm", config["map"])
@@ -373,7 +363,7 @@ class Direct19cmFlowTests(unittest.TestCase):
         self.assertEqual(result.model_forward_cm, 10.0)
         self.assertEqual(result.group, "go_forward_one_step")
 
-    def test_flow_order_is_confirm_then_forward_then_classify_then_change(self):
+    def test_flow_order_is_confirm_then_optional_forward_then_change(self):
         source = (Path(__file__).resolve().parents[1] / "task_manager.py").read_text(encoding="utf-8")
         tree = ast.parse(source)
         fn = next(
@@ -391,8 +381,7 @@ class Direct19cmFlowTests(unittest.TestCase):
             }:
                 line.setdefault(name, call.lineno)
         self.assertLess(line["confirm_target_with_visibility_recovery"], line["execute_final_forward"])
-        self.assertLess(line["execute_final_forward"], line["classify_after_final_forward"])
-        self.assertLess(line["classify_after_final_forward"], line["process_screen_interaction"])
+        self.assertLess(line["execute_final_forward"], line["process_screen_interaction"])
 
     def test_10cm_failure_blocks_change(self):
         manager, target = self.interaction_manager(motion_ok=False)

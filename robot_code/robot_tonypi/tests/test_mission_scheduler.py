@@ -57,6 +57,7 @@ def near_wall_manager(localized_poses, near_predicate):
     manager.state = SimpleNamespace(pose=RobotPose(5.0, 0.0, 0.0, Confidence.HIGH, "START", 1.0))
     manager.recovery_count = 0
     manager.near_wall_recovery_no_progress_count = 0
+    manager.near_wall_recovery_actions = 0
     manager.last_navigation_failure_reason = ""
     manager.turn_no_progress_count = 0
     manager.turn_progress_failure_start_diff = None
@@ -230,7 +231,7 @@ class MissionSchedulerTests(unittest.TestCase):
         self.assertTrue(manager.turn_navigation_abort)
         self.assertEqual(manager.turn_no_progress_count, 2)
 
-    def test_nearest_target_uses_current_pose_to_19cm_task_target(self):
+    def test_nearest_target_uses_current_pose_to_configured_task_target(self):
         old_near_new_far = screen(3, (30.0, 0.0))
         old_near_new_far.target_xy = (2.0, 0.0)
         old_near_new_far.task_target_xy = (30.0, 0.0)
@@ -241,7 +242,7 @@ class MissionSchedulerTests(unittest.TestCase):
         self.assertEqual(manager.choose_nearest_screen().screen_id, 2)
         self.assertEqual(
             manager.last_target_plan["selection_rule"],
-            "euclidean_current_pose_to_19cm_task_target_then_tag_id",
+            "euclidean_current_pose_to_task_target_then_tag_id",
         )
 
     def test_reselects_from_latest_pose_after_completion(self):
@@ -315,7 +316,7 @@ class MissionSchedulerTests(unittest.TestCase):
         manager.arrived_at_target = False
         self.assertIn("target_not_arrived", manager.visual_authorization_check(target, "mudan").reasons)
 
-    def test_navigation_goes_directly_to_single_19cm_target(self):
+    def test_navigation_goes_directly_to_single_configured_target(self):
         target = screen(2, (25.0, -2.0))
         manager = TaskManager.__new__(TaskManager)
         manager.config = load_config(None)
@@ -328,7 +329,7 @@ class MissionSchedulerTests(unittest.TestCase):
         self.assertEqual(calls[0][1]["target_yaw_deg"], 180.0)
         self.assertTrue(calls[0][1]["allow_goal_high_cost"])
 
-    def test_only_arrived_target_function_calls_classifier(self):
+    def test_only_bound_evidence_paths_call_classifier(self):
         source = (Path(__file__).resolve().parents[1] / "task_manager.py").read_text(encoding="utf-8")
         tree = ast.parse(source)
         callers = []
@@ -338,7 +339,7 @@ class MissionSchedulerTests(unittest.TestCase):
                 for call in ast.walk(fn)
             ):
                 callers.append(fn.name)
-        self.assertEqual(callers, ["classify_after_final_forward"])
+        self.assertEqual(callers, ["process_bound_screen_candidate", "classify_after_final_forward"])
 
     def test_navigation_has_no_task_level_observation_or_passby_branch(self):
         source = (Path(__file__).resolve().parents[1] / "task_manager.py").read_text(encoding="utf-8")
@@ -454,9 +455,26 @@ class MissionSchedulerTests(unittest.TestCase):
             manager.recover_from_near_wall("test"),
             (NearWallRecoveryResult.STILL_NEAR_WALL, NearWallRecoveryResult.LOCALIZATION_REQUIRED),
         )
-        self.assertEqual(manager.last_navigation_failure_reason, "")
+        self.assertEqual(manager.last_navigation_failure_reason, "near_wall_recovery_exhausted")
         self.assertGreaterEqual(len(manager.actions), 1)
         self.assertTrue(any(name == "near_wall_recovery_no_progress" for name, _ in manager.events))
+
+    def test_rejected_near_wall_actions_increment_and_abort_second_episode(self):
+        manager = near_wall_manager([], lambda pose: True)
+        manager.map = SimpleNamespace(
+            screens={},
+            rotation_sweep_clear=lambda *args, **kwargs: False,
+        )
+        manager.recovery_translation_clear = lambda *args, **kwargs: False
+        manager.choose_near_wall_lateral_direction = lambda *args, **kwargs: None
+        first = manager.recover_from_near_wall("same")
+        self.assertEqual(first, NearWallRecoveryResult.STILL_NEAR_WALL)
+        self.assertEqual(manager.near_wall_recovery_no_progress_count, 1)
+        second = manager.recover_from_near_wall("same")
+        self.assertEqual(second, NearWallRecoveryResult.STILL_NEAR_WALL)
+        self.assertGreaterEqual(manager.near_wall_recovery_no_progress_count, 2)
+        self.assertEqual(manager.last_navigation_failure_reason, "near_wall_recovery_exhausted")
+        self.assertTrue(any(name == "near_wall_recovery_aborted" for name, _ in manager.events))
 
     def test_navigate_retries_failed_recovery_without_abandoning_target(self):
         manager = TaskManager.__new__(TaskManager)

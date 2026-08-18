@@ -28,7 +28,7 @@ main.py
 
 ### `robot_decision_tree.html`
 
-面向调试和评审的可视化决策树。它描述程序从定位、19 cm 直接导航、目标视觉授权、一次 10 cm 前进到举手、Worker 响应和重试的真实分支。
+面向调试和评审的可视化决策树。它描述程序从定位、配置任务点直接导航、目标视觉授权、一次 10 cm 前进到举手、Worker 响应和重试的真实分支。
 
 ### `FILES.md`
 
@@ -70,7 +70,7 @@ python3 -m robot_tonypi.main ...
 - 相机和头部舵机参数；
 - 地图、导航和动作模型参数；
 - AprilTag 定位和屏幕视觉阈值；
-- 19 cm 目标、专用 10 cm 动作、左手横向补偿和 Worker 参数；
+- 配置任务目标、专用 10 cm 动作、左手横向补偿和 Worker 参数；
 - 任务时限、障碍检测和 Debug 设置。
 
 `default_config_path()` 返回 `config/competition_config.json`。
@@ -84,7 +84,7 @@ python3 -m robot_tonypi.main ...
 所有模块共享的数据模型：
 
 - `Confidence`：定位置信度；
-- `MissionState`：定位、最近目标选择、四向 19 cm 目标构造、直接导航、视觉确认、分类、10 cm 前进、交互和完成等任务状态；
+- `MissionState`：定位、最近目标选择、四向配置目标构造、直接导航、视觉确认、分类、10 cm 前进、交互和完成等任务状态；
 - `ScreenStatus`：`UNKNOWN`、`NEEDS_CHANGE`、`INTERACTING`、`CHANGED` 等目标处理状态；
 - `RobotPose`：机器人世界坐标、yaw、来源和时间；
 - `Screen`：屏幕中心、normal、唯一 17 cm 任务目标、reader 点和 worker_id；
@@ -239,7 +239,7 @@ FPGA 分类服务客户端。它把 28×28 屏幕裁剪编码为 JPEG，通过 H
 - 保存 `latest_state.json`；
 - 绘制机器人、实际路线、唯一 17 cm task target 和 reader 的场地图；
 - 启动内置 HTTP Server，默认端口 8090；
-- 在网页显示 pose、目标面/外法向、19 cm 目标位姿、Tag/屏幕视觉授权、10 cm 动作、投票、Screen 状态和 Worker 响应。
+- 在网页显示 pose、目标面/外法向、配置目标位姿、Tag/屏幕视觉授权、10 cm 动作、投票、Screen 状态和 Worker 响应。
 
 Debug 目录默认在 `/home/pi/TonyPi/debug_runs/<timestamp>/`。
 
@@ -272,9 +272,9 @@ Debug 目录默认在 `/home/pi/TonyPi/debug_runs/<timestamp>/`。
 
 验证任务调度和导航保护的局部逻辑：地图/Tag 参考值、17 cm 最近目标选择、旧两阶段函数已删除、直接导航参数、视觉授权锁、分类调用边界、初始定位配置、CLI 安全语义、转向 watchdog、近墙“后退→侧移→小转”恢复、恢复无进展终止、目标重试及 `MISSION_FAILED` 判定。它使用假地图、假 pose 和轻量 `TaskManager` 对象，不初始化真实硬件。
 
-### `tests/test_direct_17cm_flow.py`
+### `tests/test_target_standoff_flow.py`
 
-验证新流程核心边界：单一 19 cm 目标和横向补偿、目标 Tag 与绑定屏幕确认、确认后单次 10 cm、前进后 FPGA 分类、分类失败/已是目标花分支、动作失败阻止 Worker，以及授权不能跨目标复用。全部硬件、FPGA 和 Worker 调用均为假对象。
+验证新流程核心边界：单一配置目标和横向补偿、当前目标 Tag 与 15 秒绑定分类证据、需要换花时单次 10 cm、分类失败/已是目标花分支、动作失败阻止 Worker，以及授权不能跨目标复用。全部硬件、FPGA 和 Worker 调用均为假对象。
 
 ### `tests/test_target_direct_approach.py`
 

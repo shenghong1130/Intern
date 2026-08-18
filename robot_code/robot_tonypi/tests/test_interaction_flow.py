@@ -118,15 +118,15 @@ class InteractionFlowTests(unittest.TestCase):
         self.assertTrue(result.simulated)
         self.assertEqual(actions, [])
 
-    def test_four_tag_planes_quantize_to_cardinal_faces_and_19cm_targets(self):
+    def test_four_tag_planes_quantize_to_cardinal_faces_and_configured_targets(self):
         tag_poses = load_tag_pos()
         centers = building_centers_from_tags(tag_poses)
         bounds = building_bounds_from_tags(tag_poses)
         expected = {
-            1: ("WEST", (-1.0, 0.0), (196.0, 17.5), (177.0, 17.5), (177.0, 16.0), 0.0),
-            2: ("SOUTH", (0.0, -1.0), (208.5, 5.0), (208.5, -14.0), (210.0, -14.0), 90.0),
-            3: ("EAST", (1.0, 0.0), (221.0, 17.5), (240.0, 17.5), (240.0, 19.0), -180.0),
-            4: ("NORTH", (0.0, 1.0), (208.5, 30.0), (208.5, 49.0), (207.0, 49.0), -90.0),
+            1: ("WEST", (-1.0, 0.0), (196.0, 17.5), (176.0, 17.5), (176.0, 16.5), 0.0),
+            2: ("SOUTH", (0.0, -1.0), (208.5, 5.0), (208.5, -15.0), (209.5, -15.0), 90.0),
+            3: ("EAST", (1.0, 0.0), (221.0, 17.5), (241.0, 17.5), (241.0, 18.5), -180.0),
+            4: ("NORTH", (0.0, 1.0), (208.5, 30.0), (208.5, 50.0), (207.5, 50.0), -90.0),
         }
         cfg = load_config(None)["interaction"]
         for tag_id, (face, normal, face_center, tag_front, body_target, yaw) in expected.items():
@@ -158,8 +158,8 @@ class InteractionFlowTests(unittest.TestCase):
 
         self.assertEqual(geometry["screen_left_tangent_xy"], (0.0, -1.0))
         self.assertEqual(geometry["reader_xy"], (0.0, -5.0))
-        self.assertAlmostEqual(geometry["target_xy"][0], 19.0)
-        self.assertAlmostEqual(geometry["target_xy"][1], 1.5)
+        self.assertAlmostEqual(geometry["target_xy"][0], 20.0)
+        self.assertAlmostEqual(geometry["target_xy"][1], 1.0)
         self.assertEqual(geometry["interaction_xy"], geometry["target_xy"])
         self.assertEqual(abs(geometry["interaction_yaw_deg"]), 180.0)
 
@@ -235,12 +235,12 @@ class InteractionFlowTests(unittest.TestCase):
         self.assertNotIn("harvest_opportunistic", functions)
         self.assertNotIn("harvest_visible", functions)
 
-    def test_localize_geometry_path_has_no_classifier_or_interaction(self):
+    def test_localize_binding_path_can_classify_but_never_interacts(self):
         source = (Path(__file__).resolve().parents[1] / "task_manager.py").read_text(encoding="utf-8")
         tree = ast.parse(source)
         fn = next(node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef) and node.name == "observe_transit_bindings")
         calls = {getattr(node.func, "attr", "") for node in ast.walk(fn) if isinstance(node, ast.Call)}
-        self.assertNotIn("classify_crop", calls)
+        self.assertIn("process_bound_screen_candidate", calls)
         self.assertNotIn("change_flower", calls)
         self.assertNotIn("send_request", calls)
         self.assertIn("detect", calls)

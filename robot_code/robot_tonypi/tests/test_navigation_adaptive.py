@@ -158,7 +158,7 @@ class AdaptiveBatchTests(unittest.TestCase):
         manager.args = SimpleNamespace(dry_run=False)
         manager.hardware = SimpleNamespace(center_head=lambda: centered.append(True))
 
-        def localize():
+        def localize(*args, **kwargs):
             manager.state.set_pose(RobotPose(160.0, 150.0, 0.0, Confidence.HIGH, "VISION", now_s()))
             return True
 
@@ -188,6 +188,57 @@ class AdaptiveBatchTests(unittest.TestCase):
         self.assertTrue(detail["visual_odometry_conflict"])
         self.assertEqual(pose.confidence, Confidence.LOW)
         self.assertEqual(manager.last_localization_tag_count, 1)
+
+
+class LocalizationScanBudgetTests(unittest.TestCase):
+    def manager(self, outcomes):
+        manager = adaptive_manager()
+        manager.args = SimpleNamespace(dry_run=False)
+        manager.hardware = SimpleNamespace(center_head=lambda: None)
+        manager.publish_state = lambda *args, **kwargs: None
+        manager.clear_turn_progress_watchdog = lambda *args, **kwargs: None
+        manager.evaluate_pending_progress = lambda pose: None
+        manager.consecutive_no_tag_scans = 0
+        manager.localization_failures = 0
+        manager.observe_transit_bindings = lambda frame, tags, annotated, pan, reason: annotated
+        manager.debug.save_image = lambda *args, **kwargs: None
+        pans = []
+        manager.capture_with_tags = lambda pan: (pans.append(pan) or object(), [])
+        queue = list(outcomes)
+        manager.localizer = SimpleNamespace(
+            estimate_from_frame=lambda *args, **kwargs: (queue.pop(0), object()),
+            tag_area=lambda tag: 0.0,
+        )
+        return manager, pans
+
+    def test_routine_localization_center_only(self):
+        pose = RobotPose(10, 10, 0, Confidence.HIGH, "VISION", now_s())
+        manager, pans = self.manager([pose])
+        self.assertTrue(manager.localize_scan(reason="post_action", allow_failure_escalation=False))
+        self.assertEqual(pans, [100.0])
+
+    def test_pan_search_only_after_explicit_escalation(self):
+        manager, pans = self.manager([None])
+        self.assertFalse(manager.localize_scan(allow_failure_escalation=False))
+        self.assertEqual(pans, [100.0])
+        pose = RobotPose(10, 10, 0, Confidence.HIGH, "VISION", now_s())
+        manager, pans = self.manager([None, pose])
+        self.assertTrue(manager.localize_scan(allow_pan_search=True))
+        self.assertEqual(pans, [100.0, 135.0])
+
+    def test_pan_scan_stops_immediately_when_localized(self):
+        pose = RobotPose(10, 10, 0, Confidence.HIGH, "VISION", now_s())
+        manager, pans = self.manager([None, pose])
+        self.assertTrue(manager.localize_scan(allow_pan_search=True))
+        self.assertEqual(pans, [100.0, 135.0])
+
+    def test_visibility_recovery_never_calls_full_navigate(self):
+        source = (Path(__file__).resolve().parents[1] / "task_manager.py").read_text(encoding="utf-8")
+        import ast
+        tree = ast.parse(source)
+        fn = next(node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef) and node.name == "recover_target_visibility")
+        calls = {getattr(node.func, "attr", "") for node in ast.walk(fn) if isinstance(node, ast.Call)}
+        self.assertNotIn("navigate_to_screen", calls)
 
 
 class PlannerPreferenceTests(unittest.TestCase):
@@ -301,8 +352,25 @@ class PlannerPreferenceTests(unittest.TestCase):
         manager = self.translation_manager()
         action = manager.choose_translation_action(manager.state.pose, (140.0, 150.0))
         self.assertEqual(action["kind"], "reverse")
-        self.assertLessEqual(abs(action["planned_cm"]), 6.0)
         self.assertGreater(manager.state.pose.x_cm + action["planned_cm"], 140.0)
+        self.assertLessEqual(action["next_distance_cm"], manager.config["navigation"]["target_arrival_radius_cm"])
+
+    def test_short_target_directly_behind_prefers_one_reverse_step(self):
+        manager = self.translation_manager()
+        pose = RobotPose(248.67, 233.79, 101.98, Confidence.HIGH, "VISION", now_s())
+        manager.state.set_pose(pose)
+        manager.last_localize_success_s = now_s()
+        manager.movement_corridor_metrics = lambda *args, **kwargs: {
+            "clear": True,
+            "path_obstacle_cost": 0.0,
+            "minimum_wall_clearance_cm": 20.0,
+        }
+        goal = (249.0, 227.5)
+        action = manager.choose_translation_action(pose, goal)
+        self.assertIsNotNone(action)
+        self.assertEqual(action["kind"], "reverse")
+        self.assertEqual(action["planned_cm"], -2.5)
+        self.assertLessEqual(action["next_distance_cm"], manager.config["navigation"]["target_arrival_radius_cm"])
 
     def test_safe_lateral_target_selects_strafe(self):
         manager = self.translation_manager()

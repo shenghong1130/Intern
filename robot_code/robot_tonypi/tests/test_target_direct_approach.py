@@ -28,6 +28,7 @@ class TargetDirectApproachTests(unittest.TestCase):
         manager.map = self.model
         manager.current_target_screen_id = self.screen.screen_id
         manager.max_forward_cycles_for_pose = lambda pose: 20
+        manager.debug = SimpleNamespace(event=lambda *args, **kwargs: None)
         return manager
 
     def test_target_inflation_is_ignored_only_in_clear_final_corridor(self):
@@ -93,6 +94,15 @@ class TargetDirectApproachTests(unittest.TestCase):
         action = manager.choose_target_direct_action(pose, self.goal, self.screen)
         self.assertIsNotNone(action)
         self.assertEqual(action["kind"], "forward")
+
+    def test_short_rear_target_uses_reverse_not_turn(self):
+        manager = self.manager()
+        pose = RobotPose(self.goal[0] + 6.22, self.goal[1] - 0.98, 0.0, Confidence.HIGH, "TEST", 1.0)
+        action = manager.choose_target_direct_action(pose, self.goal, self.screen)
+        self.assertIsNotNone(action)
+        self.assertEqual(action["kind"], "reverse")
+        self.assertEqual(action["key"], "back_fast")
+        self.assertEqual(action["times"], 1)
 
     def test_turn_costs_penalize_consecutive_and_reverse_turns(self):
         actions = self.model.action_planner_actions(

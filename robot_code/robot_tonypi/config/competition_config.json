@@ -44,7 +44,9 @@
     "detector_upscale": 1.5,
     "min_tag_area_px": 350.0,
     "edge_margin_px": 35.0,
-    "high_confidence_tag_area_scale": 2.0
+    "high_confidence_tag_area_scale": 2.0,
+    "routine_center_only": true,
+    "center_failures_before_pan_search": 2
   },
   "motion": {
     "enable_imu": false,
@@ -218,7 +220,7 @@
     "turn_sweep_radius_cm": 10.0,
     "reverse_prefer_enabled": true,
     "reverse_prefer_rear_angle_tolerance_deg": 30.0,
-    "reverse_prefer_min_distance_cm": 8.0,
+    "reverse_prefer_min_distance_cm": 2.0,
     "reverse_prefer_max_lateral_cm": 8.0,
     "action_planner_reverse_cost": 1.08,
     "action_planner_reverse_step_cm": 10.0,
@@ -283,6 +285,8 @@
   "vision": {
     "scan_after_turn_enabled": true,
     "scan_after_turn_min_interval_s": 1.0,
+    "bound_classification_cache_ttl_s": 15.0,
+    "bound_classification_min_interval_s": 1.0,
     "vote_frames": 1,
     "min_votes": 1,
     "min_screen_area_px": 120.0,
@@ -299,8 +303,8 @@
     "enabled": false
   },
   "interaction": {
-    "target_distance_cm": 19.0,
-    "target_lateral_offset_cm": -1.5,
+    "target_distance_cm": 20.0,
+    "target_lateral_offset_cm": -1.0,
     "target_final_forward_cm": 10.0,
     "target_confirmation_max_retries": 3,
     "target_confirmation_retry_interval_s": 0.5,

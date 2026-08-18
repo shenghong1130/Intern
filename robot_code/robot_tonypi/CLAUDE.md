@@ -4,25 +4,24 @@ TonyPi competition controller for a 300 × 300 cm field. Read `robot_decision_tr
 
 ## Non-negotiable task boundary
 
-Transit vision is geometry-only: `observe_transit_bindings()` may detect a screen quad and bind its left-upper Tag with `extract_crops=False`, but it cannot classify, vote, update flower state, move the final 10 cm, lift the hand, or call a Worker.
+Transit vision may classify a valid Tag==Screen crop from an already-captured navigation frame and cache only the latest valid evidence. It must not update flower state, move the final 10 cm, lift the hand, or call a Worker.
 
-After initial localization, the task locks the nearest unfinished screen by distance to its single 19 cm body target. The target is built from the complete building face center, its quantized outward normal, and the configured robot-frame lateral offset. `target_xy`, `interaction_xy`, and `task_target_xy` must refer to that same coordinate. Do not restore a separate alignment stage.
+After initial localization, the task locks the nearest unfinished screen by distance to its single configured body target (20 cm stand-off by default). The target is built from the complete building face center, its quantized outward normal, and the configured robot-frame lateral offset. `target_xy`, `interaction_xy`, and `task_target_xy` must refer to that same coordinate. Do not restore a separate alignment stage.
 
-After direct navigation reaches the locked 19 cm coordinate and its cardinal yaw, a fresh live frame must contain the same 1–36 Tag and a screen quad bound to that Tag. Confirmation uses finite fresh-frame retries and finite visibility recovery while preserving the target. This geometry confirmation authorizes exactly one `interaction_forward_10cm`. Classification happens from a fresh bound crop immediately after that motion; a valid non-target FPGA result creates a target-specific `VisualAuthorization`.
+After direct navigation reaches the locked task coordinate and cardinal yaw, a fresh live frame must contain the same 1–36 Tag. A valid bound classification from the previous 15 seconds can then create target-specific authorization; otherwise finite fresh-frame retries must bind and classify the same Tag/Screen. Only a non-target result authorizes exactly one `interaction_forward_10cm`.
 
 Physical change is exclusively:
 
 ```text
-locked 19 cm Tag/screen confirmation
-→ interaction_forward_10cm exactly once
-→ capture and FPGA classify
+locked task-point live Tag + bound classification evidence
+→ interaction_forward_10cm exactly once when change is needed
 → NEEDS_CHANGE + locked visual authorization
 → stand → lift_left_hand(stand=False)
 → recheck the same locked authorization
 → robotall.send_request → finally stand
 ```
 
-There is no localization, body alignment, turning, strafing, backing, or second forward action after the 10 cm motion. The single post-motion capture is only for the required screen crop and FPGA classification. Selecting another target clears both geometry confirmation and authorization. Competition numbering is identical: AprilTag ID == `screen_id` == NFC `worker_id`.
+There is no localization, body alignment, turning, strafing, backing, post-motion classification, or second forward action after the 10 cm motion. Selecting another target clears both geometry confirmation and authorization. Competition numbering is identical: AprilTag ID == `screen_id` == NFC `worker_id`.
 
 ## Planning rules
 

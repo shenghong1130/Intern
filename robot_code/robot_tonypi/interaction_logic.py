@@ -123,7 +123,7 @@ def build_interaction_geometry(center_xy: Tuple[float, float], normal_xy: Tuple[
     robot_left = (math.cos(left_rad), math.sin(left_rad))
     screen_left = (normal[1], -normal[0])
     sensor_left = float(cfg["sensor_left_offset_cm"])
-    target_lateral = float(cfg.get("target_lateral_offset_cm", -1.5))
+    target_lateral = float(cfg.get("target_lateral_offset_cm", -1.0))
     target_distance = float(cfg["target_distance_cm"])
     reader = (
         float(center_xy[0]) + screen_left[0] * sensor_left,
