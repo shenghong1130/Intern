@@ -253,6 +253,7 @@ setInterval(refresh,800);
         scan_stops=None,
         target_goal=None,
         recovery_waypoint=None,
+        navigation_plan=None,
     ):
         if not self.enabled:
             return
@@ -295,6 +296,21 @@ setInterval(refresh,800);
                 point = self._map_pt(xy, scale, img.shape[0])
                 cv2.drawMarker(img, point, (200, 0, 200), cv2.MARKER_DIAMOND, 16, 2)
                 cv2.putText(img, "RECOVERY", (point[0] + 7, point[1] - 7), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (160, 0, 160), 1)
+        if navigation_plan is not None:
+            xy = navigation_plan.get("goal_xy")
+            goal_type = str(navigation_plan.get("goal_type", "navigation"))
+            if xy:
+                point = self._map_pt(xy, scale, img.shape[0])
+                cv2.drawMarker(img, point, (0, 140, 255), cv2.MARKER_TILTED_CROSS, 18, 2)
+                cv2.putText(
+                    img,
+                    "NAV {}".format(goal_type.upper()),
+                    (point[0] + 7, point[1] + 14),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.4,
+                    (0, 100, 210),
+                    1,
+                )
         if path:
             pts = [self._map_pt(pt, scale, img.shape[0]) for pt in path]
             for p0, p1 in zip(pts, pts[1:]):

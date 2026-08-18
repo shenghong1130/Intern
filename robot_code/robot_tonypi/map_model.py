@@ -61,6 +61,7 @@ class MapModel:
         self._static_grid = self.grid.copy()
         self._static_cost = self.cost.copy()
         self.dynamic_obstacles: List[dict] = []
+        self.last_astar_metrics: dict = {}
 
     def _build_screens(self) -> None:
         building_centers = building_centers_from_tags(self.tag_poses)
@@ -512,22 +513,54 @@ class MapModel:
         return False
 
     def plan(self, start_xy, goal_xy, allow_goal_high_cost: bool = False) -> List[Tuple[float, float]]:
+        raw_start_xy = (float(start_xy[0]), float(start_xy[1]))
+        raw_goal_xy = (float(goal_xy[0]), float(goal_xy[1]))
+        self.last_astar_metrics = {
+            "reason": "started",
+            "expanded_nodes": 0,
+            "raw_start_xy": raw_start_xy,
+            "raw_goal_xy": raw_goal_xy,
+            "start_projected": False,
+            "goal_projected": False,
+        }
         start = self.grid_pos(start_xy)
         goal = self.grid_pos(goal_xy)
         if not self.in_bounds_xy(start_xy) or not self.is_free_grid(start):
-            start = self.grid_pos(self.nearest_free_xy(start_xy))
+            projected_start = self.nearest_free_xy(start_xy)
+            projection_distance = distance_xy(raw_start_xy, projected_start)
+            maximum = float(
+                self.cfg.get("navigation", {}).get("planner_start_projection_max_cm", 22.0)
+            )
+            self.last_astar_metrics.update({
+                "start_projected": True,
+                "projected_start_xy": projected_start,
+                "start_projection_distance_cm": projection_distance,
+            })
+            if projection_distance > maximum:
+                self.last_astar_metrics["reason"] = "start_projection_too_far"
+                return []
+            start = self.grid_pos(projected_start)
         if allow_goal_high_cost and (not self.in_bounds_xy(goal_xy) or not self.is_free_xy(goal_xy)):
+            self.last_astar_metrics["reason"] = "exact_goal_not_physically_free"
             return []
         if not allow_goal_high_cost and (not self.in_bounds_xy(goal_xy) or not self.is_traversable_xy(goal_xy)):
-            goal = self.grid_pos(self.nearest_traversable_xy(goal_xy))
+            projected_goal = self.nearest_traversable_xy(goal_xy)
+            self.last_astar_metrics.update({
+                "goal_projected": True,
+                "projected_goal_xy": projected_goal,
+                "goal_projection_distance_cm": distance_xy(raw_goal_xy, projected_goal),
+            })
+            goal = self.grid_pos(projected_goal)
 
         open_heap = []
         heapq.heappush(open_heap, (0.0, start))
         came = {}
         g = {start: 0.0}
+        expanded_nodes = 0
 
         while open_heap:
             _, current = heapq.heappop(open_heap)
+            expanded_nodes += 1
             if current == goal:
                 path = self._reconstruct_path(came, current)
                 if allow_goal_high_cost:
@@ -536,6 +569,11 @@ class MapModel:
                         path[-1] = exact_goal
                     elif distance_xy(path[-1], exact_goal) > 0.1:
                         path.append(exact_goal)
+                self.last_astar_metrics.update({
+                    "reason": "success",
+                    "expanded_nodes": expanded_nodes,
+                    "path_nodes": len(path),
+                })
                 return path
             for nxt in self._neighbors(current, include_diagonal=True):
                 if not self.is_free_grid(nxt):
@@ -547,6 +585,10 @@ class MapModel:
                     g[nxt] = tentative
                     priority = tentative + math.hypot(goal[0] - nxt[0], goal[1] - nxt[1])
                     heapq.heappush(open_heap, (priority, nxt))
+        self.last_astar_metrics.update({
+            "reason": "open_set_exhausted",
+            "expanded_nodes": expanded_nodes,
+        })
         return []
 
     def yaw_to_action_bin(self, yaw_deg: float, yaw_bin_deg: float, yaw_bins: int) -> int:

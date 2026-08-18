@@ -85,6 +85,17 @@ class InteriorRecoveryTests(unittest.TestCase):
         manager.time_left_s = lambda: 100.0
         manager.recovery_translation_clear = lambda *args, **kwargs: True
         manager.publish_state = lambda *args, **kwargs: None
+        manager.hardware = SimpleNamespace(center_head=lambda: None)
+        manager.last_localize_success_s = 1.0
+        manager.last_localization_pose_conflict = False
+        localized = []
+
+        def localize(*args, **kwargs):
+            localized.append(True)
+            manager.state.set_pose(TaskManager.copy_pose(manager.state.pose))
+            return True
+
+        manager.localize_scan = localize
         actions = []
 
         def run(key, times_override=1):
@@ -110,6 +121,7 @@ class InteriorRecoveryTests(unittest.TestCase):
         self.assertIn("back_fast", actions)
         self.assertFalse(any(key.startswith("turn_") for key in actions))
         self.assertEqual(manager.state.pose.yaw_deg, 90.0)
+        self.assertEqual(len(localized), 1)
 
 
 if __name__ == "__main__":

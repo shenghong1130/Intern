@@ -74,6 +74,15 @@ class MotionAccountingTests(unittest.TestCase):
         self.assertGreater(strafe.motion_uncertainty, forward.motion_uncertainty)
         self.assertGreater(turn.motion_uncertainty, strafe.motion_uncertainty)
 
+    def test_large_turn_uncertainty_exceeds_regular_turn(self):
+        regular = RobotState(self.config)
+        large = RobotState(self.config)
+        for state in (regular, large):
+            state.set_pose(RobotPose(0, 0, 0, Confidence.HIGH, "VISION", now_s()))
+        regular.apply_action_result(ActionResult("t", "t", 1, 0, model_yaw_deg=7.5, executed_times=1))
+        large.apply_action_result(ActionResult("lt", "lt", 1, 0, model_yaw_deg=45.0, executed_times=1))
+        self.assertGreater(large.motion_uncertainty, regular.motion_uncertainty)
+
     def test_visual_pose_resets_cycles_and_uncertainty(self):
         self.state.apply_action_result(ActionResult("f", "f", 3, 0, model_forward_cm=10.5, executed_times=3))
         self.state.set_pose(RobotPose(9.8, 0, 0, Confidence.HIGH, "VISION", now_s()))
@@ -108,10 +117,10 @@ class MotionAccountingTests(unittest.TestCase):
 
 
 class AdaptiveBatchTests(unittest.TestCase):
-    def test_high_confidence_open_space_allows_eight_forward_cycles(self):
+    def test_high_confidence_open_space_uses_normal_six_action_budget(self):
         manager = adaptive_manager(Confidence.HIGH)
         cycles, _ = manager.select_adaptive_action_batch("forward", 8, 3.5, 100, 100)
-        self.assertEqual(cycles, 8)
+        self.assertEqual(cycles, 6)
 
     def test_medium_and_low_confidence_shorten_batch(self):
         medium = adaptive_manager(Confidence.MEDIUM)
@@ -124,7 +133,7 @@ class AdaptiveBatchTests(unittest.TestCase):
         forward = manager.select_adaptive_action_batch("forward", 8, 3.5, 100, 100)[0]
         strafe = manager.select_adaptive_action_batch("strafe", 8, 3.0, 100, 100)[0]
         turn = manager.select_adaptive_action_batch("turn", 8, 7.5, 100, 100)[0]
-        self.assertEqual((forward, strafe, turn), (8, 4, 2))
+        self.assertEqual((forward, strafe, turn), (6, 4, 2))
 
     def test_reverse_batch_cap_and_uncertainty_are_configured(self):
         manager = adaptive_manager()
@@ -164,13 +173,81 @@ class AdaptiveBatchTests(unittest.TestCase):
 
         manager.localize_scan = localize
         before = TaskManager.copy_pose(manager.state.pose)
-        result = ActionResult("forward_fast", "forward", 3, 0.0, model_forward_cm=10.5, executed_times=3)
+        result = ActionResult("forward_fast", "forward", 6, 0.0, model_forward_cm=21.0, executed_times=6)
+        manager.state.apply_action_result(result)
         self.assertTrue(manager.post_action_relocalize("test", before, result, (200.0, 150.0)))
         self.assertEqual(len(centered), 1)
         self.assertTrue(manager.pending_post_action_replan)
         names = [name for name, _ in manager.debug.events]
         self.assertIn("post_action_relocalize", names)
         self.assertIn("post_action_replan", names)
+
+    def test_small_normal_batch_skips_localization_but_still_replans(self):
+        manager = adaptive_manager()
+        centered = []
+        localized = []
+        manager.args = SimpleNamespace(dry_run=False)
+        manager.hardware = SimpleNamespace(center_head=lambda: centered.append(True))
+        manager.localize_scan = lambda *args, **kwargs: localized.append(True) or True
+        before = TaskManager.copy_pose(manager.state.pose)
+        result = ActionResult("forward_fast", "forward", 2, 0.0, model_forward_cm=7.0, executed_times=2)
+        manager.state.apply_action_result(result)
+        self.assertTrue(manager.post_action_relocalize("test", before, result, (200.0, 150.0)))
+        self.assertEqual(centered, [])
+        self.assertEqual(localized, [])
+        self.assertEqual(manager.state.actions_since_localize, 2)
+        decision = [data for name, data in manager.debug.events if name == "relocalization_decision"][-1]
+        self.assertEqual(decision["decision"], "continue_dead_reckoning")
+        self.assertTrue(manager.pending_post_action_replan)
+
+    def test_phase_specific_action_budgets(self):
+        manager = adaptive_manager()
+        manager.state.actions_since_localize = 3
+        manager.state.motion_uncertainty = 1.0
+        direct = manager.adaptive_relocalization_decision("target_direct_approach", emit=False)
+        staging = manager.adaptive_relocalization_decision("staging", emit=False)
+        recovery = manager.adaptive_relocalization_decision("recovery", recovery=True, emit=False)
+        self.assertEqual(direct["action_budget"], 3)
+        self.assertEqual(direct["decision"], "relocalize_now")
+        self.assertEqual(staging["action_budget"], 5)
+        self.assertEqual(staging["decision"], "continue_dead_reckoning")
+        self.assertEqual(recovery["action_budget"], 4)
+
+    def test_uncertainty_limit_forces_early_localization(self):
+        manager = adaptive_manager()
+        manager.state.actions_since_localize = 1
+        manager.state.motion_uncertainty = 6.0
+        decision = manager.adaptive_relocalization_decision("normal", emit=False)
+        self.assertEqual(decision["decision"], "relocalize_now")
+        self.assertEqual(decision["reason"], "motion_uncertainty_limit")
+
+    def test_low_confidence_and_obstacle_tight_force_localization(self):
+        manager = adaptive_manager()
+        manager.state.pose.confidence = Confidence.LOW
+        low = manager.adaptive_relocalization_decision("normal", emit=False)
+        manager.state.pose.confidence = Confidence.HIGH
+        tight = manager.adaptive_relocalization_decision(
+            "normal", obstacle_tight=True, emit=False
+        )
+        self.assertEqual(low["reason"], "pose_confidence_low")
+        self.assertEqual(tight["reason"], "obstacle_tight_navigation")
+
+    def test_pose_conflict_and_large_turn_force_localization(self):
+        manager = adaptive_manager()
+        manager.last_localization_pose_conflict = True
+        conflict = manager.adaptive_relocalization_decision("normal", emit=False)
+        manager.last_localization_pose_conflict = False
+        large = manager.adaptive_relocalization_decision(
+            "normal",
+            last_action="turn_left_large",
+            action_result=ActionResult(
+                "turn_left_large", "turn", 1, 0.0,
+                model_yaw_deg=45.0, executed_times=1,
+            ),
+            emit=False,
+        )
+        self.assertEqual(conflict["reason"], "visual_dead_reckoning_conflict")
+        self.assertEqual(large["reason"], "large_turn")
 
     def test_tag_quality_and_visual_odometry_conflict_affect_confidence(self):
         manager = adaptive_manager()
@@ -299,7 +376,8 @@ class PlannerPreferenceTests(unittest.TestCase):
         manager.clear_turn_progress_watchdog = lambda reason: None
         relocalized = []
         manager.post_action_relocalize = (
-            lambda reason, pose, result, waypoint: relocalized.append((reason, waypoint)) or True
+            lambda reason, pose, result, waypoint, **kwargs:
+            relocalized.append((reason, waypoint)) or True
         )
         status = manager.execute_translation_action(
             action,

@@ -177,6 +177,11 @@ class TaskManager:
         self.navigation_stall_signature = None
         self.navigation_stall_count = 0
         self.local_replan_failures = 0
+        self.plan_failure_signature = None
+        self.identical_plan_failure_count = 0
+        self.active_navigation_plan = None
+        self.last_navigation_mode = ""
+        self.last_motion_action = ""
         self.localization_failures = 0
         self.fatal_target_failures = 0
         self.pending_post_action_replan = False
@@ -443,6 +448,15 @@ class TaskManager:
                 failure_reason = self.last_navigation_failure_reason or "navigation_failed"
                 if self.is_retryable_target_failure(failure_reason):
                     self.preserve_current_target(target, failure_reason)
+                    if failure_reason == "navigation_blocked":
+                        self.set_mission_state(MissionState.NAVIGATION_BLOCKED)
+                        self.publish_state(target)
+                        time.sleep(max(0.0, float(
+                            self.config["navigation"].get(
+                                "navigation_blocked_retry_interval_s", 1.0
+                            )
+                        )))
+                        continue
                     self.localize_scan()
                     continue
                 self.register_target_failure(target, failure_reason, relocalize=True)
@@ -555,6 +569,8 @@ class TaskManager:
             "near_wall_recovery_exhausted",
             "RECOVERY_NO_PROGRESS",
             "no_safe_path_to_exact_target",
+            "no_reachable_approach_or_staging",
+            "navigation_blocked",
             "navigation_step_limit",
             "target_tag_screen_confirmation_failed",
             "target_direct_action_failed",
@@ -2260,6 +2276,238 @@ class TaskManager:
                 return self.compact_path_points(path)
         return []
 
+    def navigation_point_diagnostics(self, xy: Tuple[float, float]) -> dict:
+        """Describe physical occupancy and inflated footprint cost at one world point."""
+        nav = self.config["navigation"]
+        in_bounds = bool(self.map.in_bounds_xy(xy))
+        grid = self.map.grid_pos(xy)
+        free = bool(in_bounds and self.map.is_free_xy(xy))
+        max_cost = float(nav.get("normal_navigation_max_cost", 55.0))
+        half_width = float(nav.get("translation_corridor_half_width_cm", 8.0))
+        offsets = [(0.0, 0.0)]
+        for angle in range(0, 360, 45):
+            radians = math.radians(angle)
+            offsets.append((half_width * math.cos(radians), half_width * math.sin(radians)))
+        footprint_free = True
+        footprint_max_cost = 0.0
+        for dx, dy in offsets:
+            sample = (float(xy[0]) + dx, float(xy[1]) + dy)
+            if not self.map.is_free_xy(sample):
+                footprint_free = False
+                footprint_max_cost = float("inf")
+                break
+            node = self.map.grid_pos(sample)
+            footprint_max_cost = max(
+                footprint_max_cost, float(self.map.cost[node[0], node[1]])
+            )
+        return {
+            "xy": (float(xy[0]), float(xy[1])),
+            "grid": grid,
+            "in_bounds": in_bounds,
+            "blocked": not free,
+            "traversable": bool(free and float(self.map.cost[grid]) < max_cost),
+            "cost": None if not in_bounds else round(float(self.map.cost[grid]), 3),
+            "clearance_cm": round(float(self.map.robot_clearance_cm(xy)), 3),
+            "footprint_free": footprint_free,
+            "footprint_max_cost": footprint_max_cost,
+            "footprint_traversable": footprint_free and footprint_max_cost < max_cost,
+            "free_neighbor_count": sum(
+                1 for node in self.map._neighbors(grid, include_diagonal=True)
+                if self.map.is_free_grid(node)
+            ),
+        }
+
+    def escape_corridor_metrics(self, start_xy, end_xy) -> dict:
+        """Allow only a physically clear, non-worsening move out of soft inflation."""
+        nav = self.config["navigation"]
+        physical = self.map.translation_corridor_metrics(
+            start_xy,
+            end_xy,
+            float(nav.get("translation_corridor_half_width_cm", 8.0)),
+            float("inf"),
+        )
+        start = self.navigation_point_diagnostics(start_xy)
+        end = self.navigation_point_diagnostics(end_xy)
+        improvement = float(start["footprint_max_cost"]) - float(end["footprint_max_cost"])
+        clearance_improvement = float(end["clearance_cm"]) - float(start["clearance_cm"])
+        minimum = float(nav.get("planner_start_escape_min_cost_improvement", 2.0))
+        physical["clear"] = bool(
+            physical.get("clear")
+            and end["footprint_free"]
+            and (
+                improvement >= minimum
+                or clearance_improvement >= 1.0
+                or end["footprint_traversable"]
+            )
+            and float(end["footprint_max_cost"]) <= float(start["footprint_max_cost"])
+        )
+        physical.update({
+            "start_footprint_max_cost": start["footprint_max_cost"],
+            "end_footprint_max_cost": end["footprint_max_cost"],
+            "cost_improvement": improvement,
+            "clearance_improvement_cm": clearance_improvement,
+        })
+        return physical
+
+    def safe_start_projection(self, pose: RobotPose) -> Optional[Tuple[float, float]]:
+        start = self.navigation_point_diagnostics(pose.xy())
+        if start["footprint_traversable"]:
+            return None
+        maximum = float(self.config["navigation"].get("planner_start_projection_max_cm", 22.0))
+        radius = int(math.ceil(maximum / self.map.res))
+        start_grid = self.map.grid_pos(pose.xy())
+        candidates = []
+        for dx in range(-radius, radius + 1):
+            for dy in range(-radius, radius + 1):
+                node = (start_grid[0] + dx, start_grid[1] + dy)
+                if not (0 <= node[0] < self.map.rows and 0 <= node[1] < self.map.cols):
+                    continue
+                xy = self.map.xy_from_grid(node)
+                travel = distance_xy(pose.xy(), xy)
+                if travel < 1.0 or travel > maximum:
+                    continue
+                detail = self.navigation_point_diagnostics(xy)
+                if not detail["footprint_traversable"]:
+                    continue
+                escape = self.escape_corridor_metrics(pose.xy(), xy)
+                if not escape.get("clear"):
+                    continue
+                score = travel - 0.15 * max(0.0, escape["cost_improvement"])
+                candidates.append((score, travel, xy, detail, escape))
+        if not candidates:
+            return None
+        _, travel, xy, detail, escape = min(candidates, key=lambda item: item[:2])
+        self.debug.event(
+            "start_grid_projected",
+            raw_start_xy=pose.xy(),
+            raw_start_grid=start["grid"],
+            raw_start_footprint_max_cost=start["footprint_max_cost"],
+            projected_start_xy=xy,
+            projected_start_grid=detail["grid"],
+            projected_footprint_max_cost=detail["footprint_max_cost"],
+            distance_cm=round(travel, 3),
+            clearance_cm=detail["clearance_cm"],
+            cost_improvement=round(float(escape["cost_improvement"]), 3),
+        )
+        return xy
+
+    def reachable_navigation_goal_candidates(
+        self,
+        pose: RobotPose,
+        target_screen: Optional[Screen],
+        final_goal_xy: Tuple[float, float],
+        allow_goal_high_cost: bool,
+    ) -> List[dict]:
+        candidates = []
+        direct_limit = float(self.config["navigation"].get("target_direct_approach_distance_cm", 40.0))
+        goal_distance = distance_xy(pose.xy(), final_goal_xy)
+        if target_screen is not None and goal_distance > 1.0:
+            radius = min(max(0.0, direct_limit - 2.0), goal_distance)
+            scale = radius / max(1e-6, goal_distance)
+            line_stage = (
+                float(final_goal_xy[0]) + (float(pose.x_cm) - float(final_goal_xy[0])) * scale,
+                float(final_goal_xy[1]) + (float(pose.y_cm) - float(final_goal_xy[1])) * scale,
+            )
+            if distance_xy(pose.xy(), line_stage) >= 3.0:
+                candidates.append({"goal_type": "staging", "xy": line_stage, "source": "line_to_target"})
+        if target_screen is not None and target_screen.face_center_xy is not None:
+            nav = self.config["navigation"]
+            base = float(self.config["interaction"]["target_distance_cm"])
+            maximum = max(base, float(nav.get("reachable_approach_max_standoff_cm", 40.0)))
+            step = max(2.0, float(nav.get("reachable_approach_step_cm", 5.0)))
+            lateral_step = max(0.0, float(nav.get("reachable_approach_lateral_step_cm", 6.0)))
+            configured_lateral = float(self.config["interaction"].get("target_lateral_offset_cm", -1.0))
+            lateral_values = [configured_lateral]
+            if lateral_step > 0.0:
+                lateral_values.extend((configured_lateral - lateral_step, configured_lateral + lateral_step))
+            standoff = base + step
+            while standoff <= maximum + 1e-6:
+                for lateral in lateral_values:
+                    xy = (
+                        float(target_screen.face_center_xy[0]) + target_screen.normal_xy[0] * standoff + target_screen.screen_left_tangent_xy[0] * lateral,
+                        float(target_screen.face_center_xy[1]) + target_screen.normal_xy[1] * standoff + target_screen.screen_left_tangent_xy[1] * lateral,
+                    )
+                    candidates.append({
+                        "goal_type": "approach",
+                        "xy": xy,
+                        "source": "face_standoff",
+                        "standoff_cm": standoff,
+                        "lateral_offset_cm": lateral,
+                    })
+                standoff += step
+        candidates.append({
+            "goal_type": "exact",
+            "xy": (float(final_goal_xy[0]), float(final_goal_xy[1])),
+            "source": "canonical_target_goal",
+            "allow_goal_high_cost": bool(allow_goal_high_cost),
+        })
+        unique = []
+        seen = set()
+        for item in candidates:
+            key = (round(item["xy"][0], 2), round(item["xy"][1], 2), item["goal_type"])
+            if key not in seen:
+                seen.add(key)
+                unique.append(item)
+        return unique
+
+    def emit_navigation_plan_diagnostic(
+        self,
+        pose: RobotPose,
+        target_screen: Optional[Screen],
+        final_goal_xy: Tuple[float, float],
+        selected_goal_type: str,
+        selected_goal_xy: Optional[Tuple[float, float]],
+        path_found: bool,
+    ) -> None:
+        """Emit one self-contained robot/anchor/approach/staging grid diagnosis."""
+        start = self.navigation_point_diagnostics(pose.xy())
+        anchor_xy = None if target_screen is None else target_screen.center_xy
+        anchor = None if anchor_xy is None else self.navigation_point_diagnostics(anchor_xy)
+        approach = self.navigation_point_diagnostics(final_goal_xy)
+        selected = (
+            None if selected_goal_xy is None
+            else self.navigation_point_diagnostics(selected_goal_xy)
+        )
+        self.debug.event(
+            "navigation_plan_diagnostic",
+            screen_id=None if target_screen is None else int(target_screen.screen_id),
+            robot_xy=pose.xy(),
+            robot_yaw=pose.yaw_deg,
+            start_grid=start["grid"],
+            start_blocked=start["blocked"],
+            start_footprint_blocked=not start["footprint_free"],
+            start_footprint_max_cost=start["footprint_max_cost"],
+            target_anchor_xy=anchor_xy,
+            anchor_grid=None if anchor is None else anchor["grid"],
+            anchor_blocked=None if anchor is None else anchor["blocked"],
+            resolved_approach_xy=final_goal_xy,
+            approach_grid=approach["grid"],
+            approach_blocked=approach["blocked"],
+            approach_footprint_max_cost=approach["footprint_max_cost"],
+            staging_xy=(
+                selected_goal_xy
+                if selected_goal_type in ("start_projection", "staging", "approach")
+                else None
+            ),
+            staging_grid=(
+                None
+                if selected is None
+                or selected_goal_type not in ("start_projection", "staging", "approach")
+                else selected["grid"]
+            ),
+            staging_blocked=(
+                None
+                if selected is None
+                or selected_goal_type not in ("start_projection", "staging", "approach")
+                else selected["blocked"]
+            ),
+            selected_goal_type=selected_goal_type,
+            selected_goal_xy=selected_goal_xy,
+            selected_goal_grid=None if selected is None else selected["grid"],
+            selected_goal_blocked=None if selected is None else selected["blocked"],
+            path_found=bool(path_found),
+        )
+
     def plan_navigation_path(
         self,
         pose: RobotPose,
@@ -2268,124 +2516,219 @@ class TaskManager:
         target_screen: Optional[Screen] = None,
     ) -> List[Tuple[float, float]]:
         direct = self.target_direct_approach_path(pose, target_screen, goal_xy)
+        screen_id = None if target_screen is None else int(target_screen.screen_id)
+        target_goal = getattr(self, "current_target_goal", None)
+        anchor_xy = target_screen.center_xy if target_screen is not None else None
         if direct:
+            self.active_navigation_plan = {
+                "goal_type": "exact",
+                "goal_xy": list(goal_xy),
+                "final_target_xy": list(goal_xy),
+                "staging_xy": None,
+                "direct_corridor_clear": True,
+            }
             self.debug.event(
                 "target_direct_approach",
                 navigation_mode="target_direct_approach",
-                current_target_screen_id=None if target_screen is None else target_screen.screen_id,
+                current_target_screen_id=screen_id,
                 target_direct_corridor_clear=True,
                 target_direct_cost_exemption=True,
                 target_xy=goal_xy,
             )
+            self.emit_navigation_plan_diagnostic(
+                pose, target_screen, goal_xy, "exact", goal_xy, True
+            )
             return direct
-        normal_goal = goal_xy
-        normal_allow_goal_high_cost = allow_goal_high_cost
-        direct_limit = float(
-            self.config["navigation"].get("target_direct_approach_distance_cm", 40.0)
-        )
-        goal_distance = distance_xy(pose.xy(), goal_xy)
-        if (
-            target_screen is not None
-            and self.current_target_screen_id == int(target_screen.screen_id)
-            and goal_distance > direct_limit
-        ):
-            scale = max(0.0, direct_limit - 2.0) / max(1e-6, goal_distance)
-            normal_goal = (
-                float(goal_xy[0]) + (float(pose.x_cm) - float(goal_xy[0])) * scale,
-                float(goal_xy[1]) + (float(pose.y_cm) - float(goal_xy[1])) * scale,
-            )
-            if not self.map.is_traversable_xy(
-                normal_goal,
-                max_cost=float(
-                    self.config["navigation"].get("normal_navigation_max_cost", 55.0)
-                ),
-            ):
-                normal_goal = self.map.nearest_traversable_xy(normal_goal)
-            normal_allow_goal_high_cost = False
+
+        projected = self.safe_start_projection(pose)
+        if projected is not None:
+            self.active_navigation_plan = {
+                "goal_type": "start_projection",
+                "goal_xy": list(projected),
+                "final_target_xy": list(goal_xy),
+                "staging_xy": list(projected),
+                "direct_corridor_clear": False,
+            }
             self.debug.event(
-                "normal_navigation_staging_target",
-                navigation_mode="normal",
-                target_xy=goal_xy,
-                staging_xy=normal_goal,
-                target_direct_cost_exemption=False,
+                "path_plan_requested",
+                screen_id=screen_id,
+                robot_xy=pose.xy(),
+                robot_grid=self.map.grid_pos(pose.xy()),
+                target_anchor_xy=anchor_xy,
+                target_goal_xy=goal_xy,
+                target_grid=self.map.grid_pos(goal_xy),
+                goal_type="start_projection",
+                plan_goal_xy=projected,
+                staging_xy=projected,
+                staging_grid=self.map.grid_pos(projected),
+                direct_corridor_clear=False,
             )
-        translation_paths = self.body_translation_candidate_paths(
-            pose,
-            normal_goal,
-            allow_goal_high_cost=normal_allow_goal_high_cost,
+            self.debug.event(
+                "path_plan_success",
+                screen_id=screen_id,
+                goal_type="start_projection",
+                goal_xy=projected,
+                path_length_cm=round(distance_xy(pose.xy(), projected), 3),
+                path_nodes=2,
+            )
+            self.emit_navigation_plan_diagnostic(
+                pose, target_screen, goal_xy, "start_projection", projected, True
+            )
+            return [pose.xy(), projected]
+
+        viable = []
+        minimum_clearance = float(
+            self.config["navigation"].get("reachable_approach_min_clearance_cm", 16.0)
         )
-        candidates = []
+        for candidate in self.reachable_navigation_goal_candidates(
+            pose, target_screen, goal_xy, allow_goal_high_cost
+        ):
+            plan_goal = candidate["xy"]
+            detail = self.navigation_point_diagnostics(plan_goal)
+            candidate_allow_high = bool(candidate.get("allow_goal_high_cost", False))
+            valid = bool(
+                detail["in_bounds"]
+                and not detail["blocked"]
+                and (candidate_allow_high or detail["footprint_traversable"])
+                and (candidate_allow_high or detail["clearance_cm"] >= minimum_clearance)
+            )
+            path = []
+            metrics = {}
+            if valid:
+                raw_path = self.map.plan(
+                    pose.xy(), plan_goal, allow_goal_high_cost=candidate_allow_high
+                )
+                if raw_path:
+                    path = self.compact_path_points([pose.xy()] + list(raw_path))
+                    metrics = self.normal_path_metrics(
+                        pose, path, allow_goal_high_cost=candidate_allow_high
+                    )
+                    if not metrics.get("clear"):
+                        path = []
+            astar = dict(getattr(self.map, "last_astar_metrics", {}))
+            cost = float(metrics.get("total_cost", float("inf")))
+            if path:
+                cost += 0.25 * distance_xy(plan_goal, goal_xy)
+                viable.append((cost, candidate, path, metrics, detail, astar))
+            self.debug.event(
+                "staging_candidate_generated",
+                screen_id=screen_id,
+                goal_type=candidate["goal_type"],
+                candidate_xy=plan_goal,
+                candidate_grid=detail["grid"],
+                blocked=detail["blocked"],
+                footprint_traversable=detail["footprint_traversable"],
+                clearance_cm=detail["clearance_cm"],
+                reachable=bool(path),
+                cost=None if not path else round(cost, 3),
+                astar_reason=astar.get("reason"),
+                astar_expanded_nodes=astar.get("expanded_nodes"),
+            )
+        if not viable:
+            self.active_navigation_plan = {
+                "goal_type": "none",
+                "goal_xy": None,
+                "final_target_xy": list(goal_xy),
+                "staging_xy": None,
+                "direct_corridor_clear": False,
+            }
+            self.emit_navigation_plan_diagnostic(
+                pose, target_screen, goal_xy, "none", None, False
+            )
+            return []
+
+        _, selected, astar_path, astar_metrics, selected_detail, astar_debug = min(
+            viable, key=lambda item: item[0]
+        )
+        normal_goal = selected["xy"]
+        normal_allow_goal_high_cost = bool(selected.get("allow_goal_high_cost", False))
+        goal_type = selected["goal_type"]
+        self.active_navigation_plan = {
+            "goal_type": goal_type,
+            "goal_xy": list(normal_goal),
+            "final_target_xy": list(goal_xy),
+            "staging_xy": list(normal_goal) if goal_type in ("staging", "approach") else None,
+            "direct_corridor_clear": False,
+            "source": selected.get("source"),
+        }
+        self.debug.event(
+            "normal_navigation_staging_target",
+            navigation_mode="normal",
+            target_xy=goal_xy,
+            staging_xy=normal_goal,
+            staging_goal_type=goal_type,
+            target_direct_cost_exemption=False,
+        )
+        self.debug.event(
+            "path_plan_requested",
+            screen_id=screen_id,
+            robot_xy=pose.xy(),
+            robot_grid=self.map.grid_pos(pose.xy()),
+            target_anchor_xy=anchor_xy,
+            target_goal_xy=goal_xy,
+            target_grid=self.map.grid_pos(goal_xy),
+            goal_type=goal_type,
+            plan_goal_xy=normal_goal,
+            staging_xy=normal_goal if goal_type in ("staging", "approach") else None,
+            staging_grid=self.map.grid_pos(normal_goal),
+            direct_corridor_clear=False,
+            target_generation=None if target_goal is None else target_goal.generation_id,
+        )
+
+        candidates = [("astar", astar_path, astar_metrics)]
+        for translation_path in self.body_translation_candidate_paths(
+            pose, normal_goal, allow_goal_high_cost=normal_allow_goal_high_cost
+        ):
+            metrics = self.normal_path_metrics(
+                pose, translation_path,
+                allow_goal_high_cost=normal_allow_goal_high_cost,
+                translation_only=True,
+            )
+            if metrics.get("clear"):
+                candidates.append(("body_translation", translation_path, metrics))
         if bool(self.config["navigation"].get("action_planner_enabled", True)):
             action_path = self.map.plan_action_path(
-                pose,
-                normal_goal,
-                self.config["navigation"],
-                self.config["motion"],
+                pose, normal_goal, self.config["navigation"], self.config["motion"],
                 allow_goal_high_cost=normal_allow_goal_high_cost,
             )
             if action_path:
                 metrics = self.normal_path_metrics(
                     pose, action_path, allow_goal_high_cost=normal_allow_goal_high_cost
                 )
-                planner_metrics = getattr(self.map, "last_action_plan_metrics", {})
-                if planner_metrics.get("total_cost") is not None:
-                    metrics["total_cost"] = float(planner_metrics["total_cost"])
-                    metrics["turn_cost"] = float(planner_metrics.get("turn_cost", 0.0))
-                    metrics["selected_actions"] = list(
-                        planner_metrics.get("selected_actions", [])
-                    )
-                candidates.append(("action_planner", action_path, metrics))
-        for translation_path in translation_paths:
-            metrics = self.normal_path_metrics(
-                pose,
-                translation_path,
-                allow_goal_high_cost=normal_allow_goal_high_cost,
-                translation_only=True,
-            )
-            if metrics.get("clear"):
-                candidates.append(("body_translation", translation_path, metrics))
-        astar_path = self.map.plan(
-            pose.xy(),
-            normal_goal,
-            allow_goal_high_cost=normal_allow_goal_high_cost,
-        )
-        if astar_path:
-            astar_path = self.compact_path_points([pose.xy()] + list(astar_path))
-            metrics = self.normal_path_metrics(
-                pose, astar_path, allow_goal_high_cost=normal_allow_goal_high_cost
-            )
-            if metrics.get("clear"):
-                candidates.append(("astar", astar_path, metrics))
-        if not candidates:
-            return []
+                if metrics.get("clear"):
+                    planner_metrics = getattr(self.map, "last_action_plan_metrics", {})
+                    if planner_metrics.get("total_cost") is not None:
+                        metrics["total_cost"] = float(planner_metrics["total_cost"])
+                        metrics["turn_cost"] = float(planner_metrics.get("turn_cost", 0.0))
+                        metrics["selected_actions"] = list(planner_metrics.get("selected_actions", []))
+                    candidates.append(("action_planner", action_path, metrics))
         priority = {"body_translation": 0, "action_planner": 1, "astar": 2}
         selected_name, selected_path, selected_metrics = min(
             candidates,
-            key=lambda item: (
-                float(item[2].get("total_cost", float("inf"))),
-                priority.get(item[0], 9),
-            ),
+            key=lambda item: (float(item[2].get("total_cost", float("inf"))), priority.get(item[0], 9)),
         )
         self.debug.event(
-            "navigation_path_selected",
-            navigation_mode="normal",
+            "staging_path_selected" if goal_type in ("staging", "approach") else "navigation_path_selected",
+            screen_id=screen_id,
+            goal_type=goal_type,
+            staging_xy=normal_goal if goal_type in ("staging", "approach") else None,
+            target_xy=goal_xy,
             selected_path_type=selected_name,
             path_length_cm=round(float(selected_metrics.get("path_length_cm", 0.0)), 2),
-            path_obstacle_cost=round(float(selected_metrics.get("path_obstacle_cost", 0.0)), 2),
-            minimum_wall_clearance_cm=round(
-                float(selected_metrics.get("minimum_wall_clearance_cm", 0.0)), 2
-            ),
-            turn_cost=round(float(selected_metrics.get("turn_cost", 0.0)), 2),
-            wall_clearance_penalty=round(
-                float(selected_metrics.get("wall_clearance_penalty", 0.0)), 2
-            ),
+            path_nodes=len(selected_path),
             total_cost=round(float(selected_metrics.get("total_cost", 0.0)), 2),
-            target_direct_cost_exemption=False,
-            candidate_costs={
-                name: round(float(metrics.get("total_cost", 0.0)), 2)
-                for name, _, metrics in candidates
-            },
-            planned_actions=selected_metrics.get("selected_actions", []),
+        )
+        self.debug.event(
+            "path_plan_success",
+            screen_id=screen_id,
+            goal_type=goal_type,
+            goal_xy=normal_goal,
+            path_length_cm=round(float(selected_metrics.get("path_length_cm", 0.0)), 2),
+            path_nodes=len(selected_path),
+            astar_expanded_nodes=astar_debug.get("expanded_nodes"),
+        )
+        self.emit_navigation_plan_diagnostic(
+            pose, target_screen, goal_xy, goal_type, normal_goal, True
         )
         return selected_path
 
@@ -2480,7 +2823,13 @@ class TaskManager:
         result = self.motion.run(action["key"], times_override=int(action["times"]))
         if result.ok:
             self.clear_turn_progress_watchdog("target_direct_translation")
-            self.post_action_relocalize("target_direct_approach", pose_before, result, target_xy)
+            self.post_action_relocalize(
+                "target_direct_approach",
+                pose_before,
+                result,
+                target_xy,
+                navigation_mode="target_direct_approach",
+            )
         return bool(result.ok)
 
     def waypoint_has_navigation_action(self, pose: RobotPose, waypoint: Tuple[float, float]) -> bool:
@@ -2519,6 +2868,130 @@ class TaskManager:
         if age > float(nav.get("localization_fresh_medium_s", 10.0)):
             confidence = Confidence.LOW
         return confidence
+
+    def navigation_relocalization_mode(
+        self,
+        navigation_mode: Optional[str] = None,
+        *,
+        recovery: bool = False,
+    ) -> str:
+        """Normalize navigation state into one configured localization phase."""
+        value = str(navigation_mode or "").strip().lower()
+        if recovery or value in ("recovery", "navigation_recovery"):
+            return "recovery"
+        if value in ("target_direct", "target_direct_approach", "final_approach"):
+            return "target_direct"
+        plan = getattr(self, "active_navigation_plan", None) or {}
+        if value == "staging" or plan.get("goal_type") in (
+            "start_projection", "staging", "approach"
+        ):
+            return "staging"
+        return "normal"
+
+    def relocalization_action_budget(self, phase: str, confidence: Confidence) -> int:
+        nav = self.config["navigation"]
+        suffix = str(getattr(confidence, "value", confidence)).lower()
+        fallback = int(nav.get(
+            "relocalize_after_actions_{}".format(suffix),
+            nav.get("relocalize_after_actions", 1),
+        ))
+        return max(1, int(nav.get(
+            "relocalize_action_budget_{}_{}".format(phase, suffix), fallback
+        )))
+
+    def visual_pose_age_s(self) -> float:
+        pose = self.state.pose
+        if pose is None:
+            return float("inf")
+        last_success = float(getattr(self, "last_localize_success_s", 0.0))
+        if last_success <= 0.0 and pose.source not in ("DEAD_RECKONING", "UNKNOWN"):
+            last_success = float(pose.last_update_s)
+        return float("inf") if last_success <= 0.0 else max(0.0, now_s() - last_success)
+
+    def visual_pose_is_fresh(self, max_age_s: float) -> bool:
+        pose = self.state.pose
+        return bool(
+            pose is not None
+            and pose.confidence != Confidence.LOW
+            and pose.source not in ("DEAD_RECKONING", "UNKNOWN")
+            and int(getattr(self.state, "actions_since_localize", 0)) == 0
+            and not bool(getattr(self, "last_localization_pose_conflict", False))
+            and self.visual_pose_age_s() <= float(max_age_s)
+        )
+
+    def adaptive_relocalization_decision(
+        self,
+        navigation_mode: Optional[str] = None,
+        *,
+        last_action: str = "",
+        action_result=None,
+        obstacle_tight: bool = False,
+        recovery: bool = False,
+        force_reason: str = "",
+        emit: bool = True,
+    ) -> dict:
+        """Decide whether dead reckoning remains safe for the current phase."""
+        nav = self.config["navigation"]
+        phase = self.navigation_relocalization_mode(navigation_mode, recovery=recovery)
+        pose = self.state.pose
+        confidence = Confidence.LOW if pose is None else pose.confidence
+        actions = int(getattr(self.state, "actions_since_localize", 0))
+        uncertainty = float(getattr(self.state, "motion_uncertainty", 0.0))
+        action_budget = self.relocalization_action_budget(phase, confidence)
+        uncertainty_limit = float(nav.get(
+            "relocalize_uncertainty_limit_{}".format(phase),
+            nav.get("relocalize_uncertainty_threshold", 7.0),
+        ))
+        action_key = str(last_action or getattr(self, "last_motion_action", "") or "")
+        yaw_per_cycle = 0.0
+        if action_result is not None:
+            actual = max(1, int(
+                getattr(action_result, "executed_times", 0)
+                or getattr(action_result, "times", 1)
+                or 1
+            ))
+            yaw_per_cycle = abs(float(getattr(action_result, "model_yaw_deg", 0.0))) / actual
+        large_turn = bool(
+            "large" in action_key.lower()
+            or yaw_per_cycle >= float(nav.get("large_turn_threshold_deg", 35.0))
+        )
+
+        decision = "continue_dead_reckoning"
+        reason = "within_action_and_uncertainty_budget"
+        if force_reason:
+            decision, reason = "relocalize_now", str(force_reason)
+        elif pose is None:
+            decision, reason = "relocalize_now", "pose_missing"
+        elif confidence == Confidence.LOW:
+            decision, reason = "relocalize_now", "pose_confidence_low"
+        elif bool(getattr(self, "last_localization_pose_conflict", False)):
+            decision, reason = "relocalize_now", "visual_dead_reckoning_conflict"
+        elif large_turn:
+            decision, reason = "relocalize_now", "large_turn"
+        elif obstacle_tight:
+            decision, reason = "relocalize_now", "obstacle_tight_navigation"
+        elif uncertainty >= uncertainty_limit:
+            decision, reason = "relocalize_now", "motion_uncertainty_limit"
+        elif actions >= action_budget:
+            decision, reason = "relocalize_now", "action_budget_exhausted"
+        elif not bool(nav.get("adaptive_relocalization_enabled", True)) and actions > 0:
+            decision, reason = "relocalize_now", "adaptive_policy_disabled"
+
+        detail = {
+            "actions_since_localize": actions,
+            "motion_uncertainty": round(uncertainty, 3),
+            "pose_confidence": None if pose is None else pose.confidence.value,
+            "effective_pose_confidence": confidence.value,
+            "navigation_mode": phase,
+            "last_action": action_key or None,
+            "action_budget": action_budget,
+            "uncertainty_limit": uncertainty_limit,
+            "decision": decision,
+            "reason": reason,
+        }
+        if emit:
+            self.debug.event("relocalization_decision", **detail)
+        return detail
 
     def select_adaptive_action_batch(
         self,
@@ -2559,6 +3032,17 @@ class TaskManager:
         if navigation_mode == "target_direct_approach":
             cap = min(cap, int(nav.get("near_target_max_action_cycles", 1)))
             reasons.append("target_direct_approach")
+        phase = self.navigation_relocalization_mode(
+            navigation_mode,
+            recovery=recovery or near_wall,
+        )
+        action_budget = self.relocalization_action_budget(phase, confidence)
+        remaining_actions = max(
+            1,
+            action_budget - int(getattr(self.state, "actions_since_localize", 0)),
+        )
+        cap = min(cap, remaining_actions)
+        reasons.append("{}_budget".format(phase))
         # Never cross the active waypoint/goal, and reserve uncertainty budget.
         if step_cm > 0.0:
             distance_cap = max(1, int(math.floor(max(0.0, min(remaining_cm, goal_distance_cm)) / step_cm)))
@@ -2570,7 +3054,11 @@ class TaskManager:
                 "turn_uncertainty_per_cycle",
                 1.0,
             ))
-            budget = max(0.0, float(nav.get("relocalize_uncertainty_threshold", 6.0)) - float(getattr(self.state, "motion_uncertainty", 0.0)))
+            uncertainty_limit = float(nav.get(
+                "relocalize_uncertainty_limit_{}".format(phase),
+                nav.get("relocalize_uncertainty_threshold", 6.0),
+            ))
+            budget = max(0.0, uncertainty_limit - float(getattr(self.state, "motion_uncertainty", 0.0)))
             cap = min(cap, max(1, int(math.floor(budget / max(0.1, uncertainty_per_cycle)))))
         selected = max(1, min(requested, cap))
         reason = ",".join(reasons)
@@ -2589,24 +3077,45 @@ class TaskManager:
         )
         return selected, reason
 
-    def post_action_relocalize(self, reason: str, pose_before: RobotPose, result, target_xy) -> bool:
-        """End a motion batch with one fresh pose; the caller replans next loop."""
+    def post_action_relocalize(
+        self,
+        reason: str,
+        pose_before: RobotPose,
+        result,
+        target_xy,
+        *,
+        navigation_mode: Optional[str] = None,
+        obstacle_tight: bool = False,
+        force_reason: str = "",
+    ) -> bool:
+        """Adaptively localize after motion while always requesting a local replan."""
         actual = getattr(result, "executed_times", None)
         if actual is None:
             actual = int(getattr(result, "times", 0)) if bool(getattr(result, "ok", False)) else 0
-        self.hardware.center_head()
-        dry_run = bool(getattr(getattr(self, "args", None), "dry_run", False))
-        if dry_run:
-            localized = True
-            if self.state.pose is not None and hasattr(self.state, "set_pose"):
-                self.state.set_pose(self.copy_pose(self.state.pose))
-        else:
-            localized = bool(self.localize_scan(
-                reason=reason,
-                allow_failure_escalation=False,
-            ))
-        if not localized and self.state.pose is not None:
-            self.state.pose.confidence = Confidence.LOW
+        self.last_motion_action = str(getattr(result, "key", "") or reason)
+        relocalization = self.adaptive_relocalization_decision(
+            navigation_mode,
+            last_action=self.last_motion_action,
+            action_result=result,
+            obstacle_tight=obstacle_tight,
+            force_reason=force_reason,
+        )
+        should_localize = relocalization["decision"] == "relocalize_now"
+        localized = False
+        if should_localize:
+            self.hardware.center_head()
+            dry_run = bool(getattr(getattr(self, "args", None), "dry_run", False))
+            if dry_run:
+                localized = True
+                if self.state.pose is not None and hasattr(self.state, "set_pose"):
+                    self.state.set_pose(self.copy_pose(self.state.pose))
+            else:
+                localized = bool(self.localize_scan(
+                    reason=reason,
+                    allow_failure_escalation=False,
+                ))
+            if not localized and self.state.pose is not None:
+                self.state.pose.confidence = Confidence.LOW
         self.debug.event(
             "post_action_relocalize",
             reason=reason,
@@ -2620,6 +3129,9 @@ class TaskManager:
             actions_since_localize=int(getattr(self.state, "actions_since_localize", 0)),
             motion_uncertainty=round(float(getattr(self.state, "motion_uncertainty", 0.0)), 3),
             post_action_relocalized=localized,
+            relocalization_skipped=not should_localize,
+            relocalization_decision=relocalization["decision"],
+            relocalization_reason=relocalization["reason"],
         )
         self.debug.event(
             "post_action_replan",
@@ -2629,7 +3141,7 @@ class TaskManager:
             current_target_screen_id=getattr(self, "current_target_screen_id", None),
         )
         self.pending_post_action_replan = True
-        return localized
+        return bool(localized or not should_localize)
 
     def navigation_waypoint_max_lookahead_cm(self, pose: RobotPose, lookahead_cm: float) -> float:
         nav_cfg = self.config["navigation"]
@@ -2802,6 +3314,15 @@ class TaskManager:
             return None
         min_progress = float(nav_cfg.get("translation_min_progress_cm", 2.0))
         options = []
+        escape_mode = bool(
+            getattr(self, "active_navigation_plan", None)
+            and self.active_navigation_plan.get("goal_type") == "start_projection"
+        )
+
+        def corridor_metrics_to(next_xy):
+            if escape_mode:
+                return self.escape_corridor_metrics(pose.xy(), next_xy)
+            return self.movement_corridor_metrics(pose.xy(), next_xy)
 
         reverse_rejected_reason = "disabled"
         rear_angle_error = math.degrees(
@@ -2849,7 +3370,7 @@ class TaskManager:
                                 travel = selected_cycles * back_step
                                 planned = -travel
                                 next_xy = self.translated_pose_xy(pose, forward_cm=planned)
-                                metrics = self.movement_corridor_metrics(pose.xy(), next_xy)
+                                metrics = corridor_metrics_to(next_xy)
                                 reverse_rejected_reason = "rear_corridor_blocked"
                                 if metrics["clear"]:
                                     progress = current_dist - float(selected_next_dist)
@@ -2890,11 +3411,12 @@ class TaskManager:
         if forward >= min_forward:
             requested = min(float(forward), current_dist)
             planned = self.planned_forward_step_cm(requested)
-            if self.forward_clear_for_distance(
-                pose,
-                planned,
-                exact_goal_xy=waypoint if allow_goal_high_cost else None,
-            ):
+            planned_xy = self.translated_pose_xy(pose, forward_cm=planned)
+            forward_metrics = corridor_metrics_to(planned_xy)
+            forward_clear = bool(forward_metrics.get("clear")) if escape_mode else self.forward_clear_for_distance(
+                pose, planned, exact_goal_xy=waypoint if allow_goal_high_cost else None
+            )
+            if forward_clear:
                 travel = min(float(forward), planned)
                 next_xy = self.translated_pose_xy(pose, forward_cm=travel)
                 progress = current_dist - distance_xy(next_xy, waypoint)
@@ -2907,6 +3429,7 @@ class TaskManager:
                             "progress_cm": progress,
                             "forward_cm": forward,
                             "lateral_cm": lateral,
+                            "corridor_metrics": forward_metrics,
                         }
                     )
 
@@ -2923,10 +3446,11 @@ class TaskManager:
                 and distance_xy(lateral_target, waypoint)
                 <= float(self.config["navigation"].get("target_arrival_radius_cm", 4.0))
             )
-            if abs(planned) > 0.0 and self.path_segments_clear(
-                [pose.xy(), lateral_target],
-                allow_goal_high_cost=lateral_reaches_goal,
-            ):
+            lateral_metrics = corridor_metrics_to(lateral_target)
+            lateral_clear = bool(lateral_metrics.get("clear")) if escape_mode else self.path_segments_clear(
+                [pose.xy(), lateral_target], allow_goal_high_cost=lateral_reaches_goal
+            )
+            if abs(planned) > 0.0 and lateral_clear:
                 next_xy = self.translated_pose_xy(pose, lateral_cm=planned)
                 progress = current_dist - distance_xy(next_xy, waypoint)
                 if progress >= min_progress:
@@ -2938,6 +3462,7 @@ class TaskManager:
                             "progress_cm": progress,
                             "forward_cm": forward,
                             "lateral_cm": lateral,
+                            "corridor_metrics": lateral_metrics,
                         }
                     )
 
@@ -2946,13 +3471,12 @@ class TaskManager:
         reverse_option = next((item for item in options if item["kind"] == "reverse"), None)
         forward_option = next((item for item in options if item["kind"] == "forward"), None)
         selected = reverse_option or forward_option or max(options, key=lambda item: item["progress_cm"])
-        corridor = selected.get("corridor_metrics") or self.movement_corridor_metrics(
-            pose.xy(),
+        corridor = selected.get("corridor_metrics") or corridor_metrics_to(
             self.translated_pose_xy(
                 pose,
                 forward_cm=float(selected["planned_cm"]) if selected["kind"] != "strafe" else 0.0,
                 lateral_cm=float(selected["planned_cm"]) if selected["kind"] == "strafe" else 0.0,
-            ),
+            )
         )
         self.debug.event(
             "translation_preferred",
@@ -2983,6 +3507,7 @@ class TaskManager:
             ),
             target_direct_cost_exemption=False,
             movement_corridor_clear=bool(corridor.get("clear", False)),
+            start_escape_mode=escape_mode,
         )
         return selected
 
@@ -3068,7 +3593,21 @@ class TaskManager:
                 self.last_navigation_failure_reason = "hardware_failure"
                 return "failed"
             self.clear_turn_progress_watchdog("successful_reverse")
-            self.post_action_relocalize("translation_reverse", pose_before_action, result, waypoint)
+            tight_limit = float(self.config["navigation"].get(
+                "relocalize_obstacle_tight_clearance_cm", 20.0
+            ))
+            self.post_action_relocalize(
+                "translation_reverse",
+                pose_before_action,
+                result,
+                waypoint,
+                navigation_mode=self.navigation_relocalization_mode(),
+                obstacle_tight=bool(
+                    near_wall
+                    or float(corridor.get("minimum_wall_clearance_cm", float("inf")))
+                    <= tight_limit
+                ),
+            )
             return "moved"
 
         if action["kind"] == "strafe":
@@ -3101,7 +3640,21 @@ class TaskManager:
                 self.last_navigation_failure_reason = "hardware_failure"
                 return "failed"
             self.clear_turn_progress_watchdog("successful_translation")
-            self.post_action_relocalize("translation_strafe", pose_before_action, result, waypoint)
+            tight_limit = float(self.config["navigation"].get(
+                "relocalize_obstacle_tight_clearance_cm", 20.0
+            ))
+            self.post_action_relocalize(
+                "translation_strafe",
+                pose_before_action,
+                result,
+                waypoint,
+                navigation_mode=self.navigation_relocalization_mode(),
+                obstacle_tight=bool(
+                    near_wall
+                    or float(corridor.get("minimum_wall_clearance_cm", float("inf")))
+                    <= tight_limit
+                ),
+            )
             return "moved"
 
         if self.front_obstacle_visible():
@@ -3167,7 +3720,24 @@ class TaskManager:
             reason = str(context.get("reason", "visual_forward_no_progress"))
             self.recover_toward_field_center(reason + ":visual_forward_no_progress", backoff=True)
             return "recovered"
-        self.post_action_relocalize("translation_forward", pose_before_forward, result, waypoint)
+        action_corridor = action.get("corridor_metrics") or self.movement_corridor_metrics(
+            pose_before_forward.xy(), self.state.pose.xy() if self.state.pose is not None else waypoint
+        )
+        tight_limit = float(self.config["navigation"].get(
+            "relocalize_obstacle_tight_clearance_cm", 20.0
+        ))
+        self.post_action_relocalize(
+            "translation_forward",
+            pose_before_forward,
+            result,
+            waypoint,
+            navigation_mode=self.navigation_relocalization_mode(),
+            obstacle_tight=bool(
+                near_wall
+                or float(action_corridor.get("minimum_wall_clearance_cm", float("inf")))
+                <= tight_limit
+            ),
+        )
         return "moved"
 
     def clear_navigation_noop(self) -> None:
@@ -3209,6 +3779,18 @@ class TaskManager:
                 error=getattr(action_result, "error", "turn_failed"),
             )
             return False
+        self.last_motion_action = str(getattr(action_result, "key", "turn"))
+        if hasattr(self, "config") and hasattr(self.state, "actions_since_localize"):
+            self.adaptive_relocalization_decision(
+                self.navigation_relocalization_mode(),
+                last_action=self.last_motion_action,
+                action_result=action_result,
+                force_reason=(
+                    "large_turn"
+                    if "large" in self.last_motion_action.lower()
+                    else "turn_progress_validation"
+                ),
+            )
         outcome = self.scan_after_turn(
             reason,
             action_result.key,
@@ -3569,6 +4151,20 @@ class TaskManager:
             )
             if not result.ok:
                 return False
+            self.last_motion_action = action
+            recovery_relocalization = self.adaptive_relocalization_decision(
+                "recovery",
+                last_action=action,
+                action_result=result,
+                recovery=True,
+            )
+            if recovery_relocalization["decision"] == "relocalize_now":
+                self.hardware.center_head()
+                if not self.localize_scan(
+                    reason="interior_recovery_adaptive",
+                    allow_failure_escalation=False,
+                ):
+                    return False
             self.publish_state(path=[pose.xy(), target_xy])
         self.debug.event("boundary_blind_nav_failed", target_xy=target_xy, max_steps=max_steps)
         return False
@@ -3897,6 +4493,73 @@ class TaskManager:
             target_xy=target_xy,
         )
         return True
+
+    def map_planning_signature(self):
+        dynamic = []
+        for item in getattr(self.map, "dynamic_obstacles", []):
+            dynamic.append(tuple(
+                round(float(item.get(key, 0.0)), 1)
+                for key in ("x_min", "x_max", "y_min", "y_max")
+            ))
+        return tuple(sorted(dynamic))
+
+    def register_plan_failure(
+        self,
+        pose: RobotPose,
+        final_goal_xy: Tuple[float, float],
+        reason: str,
+    ) -> Tuple[int, tuple]:
+        plan = getattr(self, "active_navigation_plan", None) or {}
+        plan_goal = plan.get("goal_xy") or final_goal_xy
+        staging = plan.get("staging_xy")
+        target_goal = getattr(self, "current_target_goal", None)
+        signature = (
+            getattr(self, "current_target_screen_id", None),
+            None if target_goal is None else target_goal.generation_id,
+            self.map.grid_pos(pose.xy()),
+            self.map.grid_pos(plan_goal),
+            None if staging is None else self.map.grid_pos(staging),
+            reason,
+            self.map_planning_signature(),
+        )
+        if signature == getattr(self, "plan_failure_signature", None):
+            self.identical_plan_failure_count = int(
+                getattr(self, "identical_plan_failure_count", 0)
+            ) + 1
+        else:
+            self.plan_failure_signature = signature
+            self.identical_plan_failure_count = 1
+        threshold = max(1, int(
+            self.config["navigation"].get("identical_local_replan_failure_threshold", 3)
+        ))
+        self.local_replan_failures = min(self.identical_plan_failure_count, threshold)
+        self.debug.event(
+            "repeated_plan_failure_detected",
+            count=self.identical_plan_failure_count,
+            threshold=threshold,
+            screen_id=getattr(self, "current_target_screen_id", None),
+            target_generation=None if target_goal is None else target_goal.generation_id,
+            start_xy=pose.xy(),
+            start_grid=self.map.grid_pos(pose.xy()),
+            goal_xy=plan_goal,
+            goal_grid=self.map.grid_pos(plan_goal),
+            staging_xy=staging,
+            map_signature=self.map_planning_signature(),
+            failure_reason=reason,
+            failure_signature=repr(signature),
+        )
+        return self.identical_plan_failure_count, signature
+
+    def clear_plan_failure_watchdog(self, reason: str) -> None:
+        if getattr(self, "identical_plan_failure_count", 0):
+            self.debug.event(
+                "plan_failure_watchdog_reset",
+                reason=reason,
+                previous_count=self.identical_plan_failure_count,
+            )
+        self.plan_failure_signature = None
+        self.identical_plan_failure_count = 0
+        self.local_replan_failures = 0
 
     def recover_from_near_wall(self, reason: str) -> NearWallRecoveryResult:
         """Recover in a fixed backoff -> lateral -> small-turn order."""
@@ -4299,6 +4962,15 @@ class TaskManager:
         self.near_wall_recovery_actions = 0
         self.navigation_stall_signature = None
         self.navigation_stall_count = 0
+        episode = (
+            None if target_goal is None else target_goal.screen_id,
+            None if target_goal is None else target_goal.generation_id,
+            round(float(target_xy[0]), 1),
+            round(float(target_xy[1]), 1),
+        )
+        if episode != getattr(self, "navigation_plan_episode", None):
+            self.navigation_plan_episode = episode
+            self.clear_plan_failure_watchdog("new_navigation_target")
         self.clear_turn_progress_watchdog("navigate_xy_start")
         target_xy = (float(target_xy[0]), float(target_xy[1]))
         if target_goal is not None and not self.validate_target_goal(
@@ -4341,6 +5013,22 @@ class TaskManager:
             ):
                 self.last_navigation_failure_reason = "target_pose_mismatch"
                 return False
+            pre_action_relocalization = self.adaptive_relocalization_decision(
+                self.navigation_relocalization_mode(),
+                last_action=getattr(self, "last_motion_action", ""),
+                emit=False,
+            )
+            if pre_action_relocalization["decision"] == "relocalize_now":
+                self.adaptive_relocalization_decision(
+                    self.navigation_relocalization_mode(),
+                    last_action=getattr(self, "last_motion_action", ""),
+                )
+                if not self.localize_scan(
+                    reason="adaptive_navigation_budget",
+                    allow_failure_escalation=False,
+                ):
+                    self.recover_from_no_tag_if_needed(reason + ":adaptive_relocalization")
+                continue
             localization_stop_threshold = max(
                 2, int(self.config["navigation"].get("no_tag_recovery_failures", 2))
             )
@@ -4358,6 +5046,21 @@ class TaskManager:
                 continue
             dist = distance_xy(pose.xy(), target_xy)
             if dist <= radius:
+                arrival_max_age = float(self.config["navigation"].get(
+                    "arrival_visual_pose_max_age_s", 3.0
+                ))
+                if not self.visual_pose_is_fresh(arrival_max_age):
+                    self.adaptive_relocalization_decision(
+                        "target_direct_approach",
+                        last_action=getattr(self, "last_motion_action", ""),
+                        force_reason="before_arrived_at_target",
+                    )
+                    if not self.localize_scan(
+                        reason="before_arrived_at_target",
+                        allow_failure_escalation=False,
+                    ):
+                        self.last_navigation_failure_reason = "arrival_visual_localization_required"
+                    continue
                 # Check facing direction if target_yaw_deg is specified
                 if target_yaw_deg is not None:
                     yaw_diff = abs(angle_diff_deg(float(target_yaw_deg), pose.yaw_deg))
@@ -4414,6 +5117,11 @@ class TaskManager:
                 return True
             direct_path = self.target_direct_approach_path(pose, target_screen, target_xy)
             direct_mode = bool(direct_path)
+            current_navigation_mode = (
+                "target_direct"
+                if direct_mode
+                else self.navigation_relocalization_mode()
+            )
             self.debug.event(
                 "navigation_mode",
                 navigation_mode="target_direct_approach" if direct_mode else "normal",
@@ -4426,6 +5134,26 @@ class TaskManager:
                     "fixed": self.config["navigation"].get("action_planner_turn_fixed_cost_cm"),
                 },
             )
+            if (
+                direct_mode
+                and getattr(self, "last_navigation_mode", "") != "target_direct"
+            ):
+                direct_max_age = float(self.config["navigation"].get(
+                    "target_direct_entry_visual_pose_max_age_s", 4.0
+                ))
+                if not self.visual_pose_is_fresh(direct_max_age):
+                    self.adaptive_relocalization_decision(
+                        "target_direct_approach",
+                        last_action=getattr(self, "last_motion_action", ""),
+                        force_reason="before_target_final_approach",
+                    )
+                    if not self.localize_scan(
+                        reason="before_target_final_approach",
+                        allow_failure_escalation=False,
+                    ):
+                        self.last_navigation_failure_reason = "target_direct_visual_localization_required"
+                    continue
+            self.last_navigation_mode = current_navigation_mode
             if self.collision_recovery_pending:
                 if direct_mode:
                     self.collision_recovery_pending = False
@@ -4474,8 +5202,41 @@ class TaskManager:
                     target_screen=target_screen,
                 )
             if not path:
-                self.last_navigation_failure_reason = "no_safe_path_to_exact_target"
-                self.local_replan_failures = getattr(self, "local_replan_failures", 0) + 1
+                self.last_navigation_failure_reason = "no_reachable_approach_or_staging"
+                count, signature = self.register_plan_failure(
+                    pose, target_xy, self.last_navigation_failure_reason
+                )
+                plan = getattr(self, "active_navigation_plan", None) or {}
+                plan_goal = tuple(plan.get("goal_xy") or target_xy)
+                staging_xy = plan.get("staging_xy")
+                start_detail = self.navigation_point_diagnostics(pose.xy())
+                goal_detail = self.navigation_point_diagnostics(plan_goal)
+                staging_detail = None if staging_xy is None else self.navigation_point_diagnostics(tuple(staging_xy))
+                astar = dict(getattr(self.map, "last_astar_metrics", {}))
+                anchor_xy = None if target_screen is None else target_screen.center_xy
+                self.debug.event(
+                    "path_plan_failed",
+                    screen_id=None if target_screen is None else target_screen.screen_id,
+                    start_xy=pose.xy(),
+                    start_grid=start_detail["grid"],
+                    start_blocked=start_detail["blocked"],
+                    start_footprint_max_cost=start_detail["footprint_max_cost"],
+                    target_anchor_xy=anchor_xy,
+                    goal_xy=plan_goal,
+                    goal_grid=goal_detail["grid"],
+                    goal_type=plan.get("goal_type", "none"),
+                    goal_in_bounds=goal_detail["in_bounds"],
+                    goal_blocked=goal_detail["blocked"],
+                    goal_clearance_cm=goal_detail["clearance_cm"],
+                    staging_xy=staging_xy,
+                    staging_grid=None if staging_detail is None else staging_detail["grid"],
+                    staging_blocked=None if staging_detail is None else staging_detail["blocked"],
+                    free_neighbor_count=start_detail["free_neighbor_count"],
+                    astar_expanded_nodes=astar.get("expanded_nodes"),
+                    astar_reason=astar.get("reason"),
+                    local_replan_failures=self.local_replan_failures,
+                    failure_signature=repr(signature),
+                )
                 self.debug.event(
                     "post_action_replan",
                     reason=reason,
@@ -4487,12 +5248,48 @@ class TaskManager:
                     current_target_screen_id=getattr(self, "current_target_screen_id", None),
                     target_preserved=getattr(self, "current_target_screen_id", None) is not None,
                 )
+                threshold = max(1, int(
+                    self.config["navigation"].get("identical_local_replan_failure_threshold", 3)
+                ))
+                if count >= threshold:
+                    self.set_mission_state(MissionState.NAVIGATION_RECOVERY)
+                    self.debug.event(
+                        "local_replan_escalated",
+                        failure_count=count,
+                        reason=self.last_navigation_failure_reason,
+                        next_strategy="interior_recovery_waypoint",
+                        screen_id=getattr(self, "current_target_screen_id", None),
+                    )
+                    recovered = self.recover_via_indoor_waypoint(
+                        reason + ":repeated_plan_failure"
+                    )
+                    if recovered:
+                        self.clear_plan_failure_watchdog("interior_recovery_success")
+                        self.debug.event(
+                            "interior_recovery_waypoint_selected",
+                            screen_id=getattr(self, "current_target_screen_id", None),
+                            target_preserved=True,
+                            recovery=getattr(self, "last_recovery", {}),
+                        )
+                        continue
+                    self.last_navigation_failure_reason = "navigation_blocked"
+                    self.set_mission_state(MissionState.NAVIGATION_BLOCKED)
+                    self.debug.event(
+                        "local_replan_escalated",
+                        failure_count=count,
+                        reason="all_safe_planning_fallbacks_exhausted",
+                        next_strategy="navigation_blocked",
+                        screen_id=getattr(self, "current_target_screen_id", None),
+                        target_preserved=True,
+                    )
+                    return False
                 localized = self.localize_scan()
                 if localized and self.state.pose is not None and self.near_wall_now(self.state.pose):
                     recovery_result = self.recover_from_near_wall(reason + ":local_replan_failed")
                     if recovery_result == NearWallRecoveryResult.HARDWARE_FAILURE:
                         return False
                 continue
+            self.clear_plan_failure_watchdog("path_plan_success")
             if bool(getattr(self, "pending_post_action_replan", False)):
                 self.debug.event(
                     "post_action_replan",
@@ -4527,6 +5324,7 @@ class TaskManager:
                 target_screen=target_screen,
                 target_goal=getattr(self, "current_target_goal", None),
                 recovery_waypoint=getattr(self, "active_recovery_waypoint", None),
+                navigation_plan=getattr(self, "active_navigation_plan", None),
             )
             self.publish_state(path=path)
             waypoint_is_exact_goal = allow_goal_high_cost and distance_xy(waypoint, target_xy) <= 0.1
@@ -4599,7 +5397,20 @@ class TaskManager:
                     )
                 else:
                     self.clear_navigation_noop()
-            if not direct_mode and self.turn_no_progress_count == 0 and self.state.needs_relocalize():
+            scheduled_relocalization = self.adaptive_relocalization_decision(
+                self.navigation_relocalization_mode(),
+                last_action=getattr(self, "last_motion_action", ""),
+                emit=False,
+            )
+            if (
+                not direct_mode
+                and self.turn_no_progress_count == 0
+                and scheduled_relocalization["decision"] == "relocalize_now"
+            ):
+                self.adaptive_relocalization_decision(
+                    self.navigation_relocalization_mode(),
+                    last_action=getattr(self, "last_motion_action", ""),
+                )
                 if not self.localize_scan():
                     self.recover_from_no_tag_if_needed(reason + ":scheduled_relocalize")
                 if self.collision_recovery_pending:
@@ -4709,6 +5520,7 @@ class TaskManager:
             "current_target_tag_id": self.current_target_screen_id,
             "current_target_screen_id": self.current_target_screen_id,
             "current_target_goal": None if target_goal is None else target_goal.as_dict(),
+            "current_navigation_plan": getattr(self, "active_navigation_plan", None),
             "current_target_distance_cm": target_distance,
             "arrived_at_target": self.arrived_at_target,
             "classifier_allowed": self.classifier_allowed,
@@ -4763,6 +5575,8 @@ class TaskManager:
                 "field_exit_ahead_cm": None if self.state.pose is None else round(self.distance_to_field_exit_ahead(self.state.pose), 1),
                 "forward_map_block_count": self.forward_map_block_count,
                 "local_replan_failures": self.local_replan_failures,
+                "identical_plan_failure_count": getattr(self, "identical_plan_failure_count", 0),
+                "plan_failure_signature": getattr(self, "plan_failure_signature", None),
                 "near_wall_recovery_actions": self.near_wall_recovery_actions,
                 "near_wall_recovery_no_progress": self.near_wall_recovery_no_progress_count,
                 "fatal_target_failures": self.fatal_target_failures,
@@ -4779,6 +5593,7 @@ class TaskManager:
             target_screen=target_screen,
             target_goal=getattr(self, "current_target_goal", None),
             recovery_waypoint=getattr(self, "active_recovery_waypoint", None),
+            navigation_plan=getattr(self, "active_navigation_plan", None),
         )
 
     def close(self):

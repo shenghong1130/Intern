@@ -62,7 +62,13 @@ class RobotState:
         per_cycle_lateral = abs(float(result.model_lateral_cm)) / actual_cycles
         per_cycle_yaw = abs(float(result.model_yaw_deg)) / actual_cycles
         if per_cycle_yaw > 1e-6:
-            uncertainty = float(nav.get("turn_uncertainty_per_cycle", 2.0))
+            large_turn_threshold = float(nav.get("large_turn_threshold_deg", 35.0))
+            uncertainty = float(nav.get(
+                "large_turn_uncertainty_per_cycle"
+                if per_cycle_yaw >= large_turn_threshold
+                else "turn_uncertainty_per_cycle",
+                2.6 if per_cycle_yaw >= large_turn_threshold else 2.0,
+            ))
         elif per_cycle_lateral > 1e-6:
             uncertainty = float(nav.get("strafe_uncertainty_per_cycle", 1.5))
         elif float(result.model_forward_cm) < -1e-6:
