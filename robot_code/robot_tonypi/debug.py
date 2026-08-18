@@ -151,7 +151,7 @@ function renderScreens(data){
 function renderEvents(events){
   events=events||[];
   if(!events.length){document.getElementById('events').innerHTML='暂无事件 / No events yet.';return;}
-    const important=new Set(['mission_state','navigation_mode','target_direct_approach_action','target_direct_recovery_suppressed','transit_bindings_updated','arrived_at_target','target_tag_and_screen_confirmed','target_visual_authorized','target_visual_confirmation_failed','target_classification_failed','classifier_gate_blocked','interaction_safety_gate_blocked','target_final_forward_started','target_final_forward_done','target_final_forward_failed','interaction_changed','interaction_not_changed','interaction_exception','left_hand_lifted','worker_request_sent','worker_response','already_target','classification_failed','classification_low_confidence','target_selected','target_not_completed_after_arrival','navigate_failed','target_failed','mission_complete','near_wall_recover','front_obstacle_recover','forward_blocked_by_map','forward_no_progress','visual_forward_no_progress','visual_progress_check_inconclusive','visual_forward_progress_restored','no_tag_recovery_triggered','recovery_start','recovery_backoff_localize_attempt','recovery_done','translation_step','turn_last_resort','turn_last_resort_noop','scan_after_turn_done','scan_after_turn_failed','turn_no_progress','suspect_stale_pose_after_turn','turn_direction_conflict','scan_after_turn_pose_rejected','turn_progress_relocalize','turn_progress_failed','turn_progress_restored','boundary_pan_filtered','boundary_safe_turn','boundary_recovery_target_selected','boundary_blind_nav_start','boundary_blind_nav_step','boundary_blind_nav_arrived','boundary_blind_nav_failed','localize_skipped_boundary_outward','head_recenter_after_scan','head_recenter_failed','action','pose_update']);
+  const important=new Set(['mission_state','navigation_mode','target_direct_approach_action','target_direct_recovery_suppressed','transit_bindings_updated','arrived_at_target','target_tag_and_screen_confirmed','target_visual_authorized','target_visual_confirmation_failed','target_classification_failed','classifier_gate_blocked','interaction_safety_gate_blocked','target_final_forward_started','target_final_forward_done','target_final_forward_failed','interaction_changed','interaction_not_changed','interaction_exception','left_hand_lifted','worker_request_sent','worker_response','already_target','classification_failed','classification_low_confidence','target_selected','target_goal_resolved','target_goal_validated','target_pose_mismatch','navigate_xy_arrival_check','target_tag_confirmed','target_classifier_unavailable','target_classifier_retry','target_classifier_recovered','recovery_waypoint_selected','recovery_action','recovery_localization_success','resume_original_target','target_not_completed_after_arrival','navigate_failed','target_failed','mission_complete','near_wall_recover','front_obstacle_recover','forward_blocked_by_map','forward_no_progress','visual_forward_no_progress','visual_progress_check_inconclusive','visual_forward_progress_restored','no_tag_recovery_triggered','recovery_start','recovery_backoff_localize_attempt','recovery_done','translation_step','turn_last_resort','turn_last_resort_noop','scan_after_turn_done','scan_after_turn_failed','turn_no_progress','suspect_stale_pose_after_turn','turn_direction_conflict','scan_after_turn_pose_rejected','turn_progress_relocalize','turn_progress_failed','turn_progress_restored','boundary_pan_filtered','boundary_safe_turn','boundary_recovery_target_selected','boundary_blind_nav_start','boundary_blind_nav_step','boundary_blind_nav_arrived','boundary_blind_nav_failed','localize_skipped_boundary_outward','head_recenter_after_scan','head_recenter_failed','action','pose_update']);
   let rows='';
   events.slice().reverse().forEach(e=>{
     const detail=Object.assign({}, e); delete detail.t; delete detail.event;
@@ -244,7 +244,16 @@ setInterval(refresh,800);
         with (self.root / "latest_state.json").open("w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2, default=str)
 
-    def render_map(self, map_model, pose=None, path=None, target_screen=None, scan_stops=None):
+    def render_map(
+        self,
+        map_model,
+        pose=None,
+        path=None,
+        target_screen=None,
+        scan_stops=None,
+        target_goal=None,
+        recovery_waypoint=None,
+    ):
         if not self.enabled:
             return
         import cv2
@@ -269,6 +278,23 @@ setInterval(refresh,800);
             cv2.circle(img, target, 4, (220, 80, 40), -1)
             cv2.circle(img, reader, 2, (180, 0, 180), -1)
             cv2.putText(img, str(screen.screen_id), (c[0] + 4, c[1] - 4), cv2.FONT_HERSHEY_SIMPLEX, 0.35, color, 1)
+        if target_goal is not None:
+            anchor_xy = target_goal.anchor_xy if hasattr(target_goal, "anchor_xy") else target_goal.get("anchor_xy")
+            goal_xy = target_goal.goal_xy if hasattr(target_goal, "goal_xy") else target_goal.get("goal_xy")
+            screen_id = target_goal.screen_id if hasattr(target_goal, "screen_id") else target_goal.get("screen_id")
+            anchor = self._map_pt(anchor_xy, scale, img.shape[0])
+            goal = self._map_pt(goal_xy, scale, img.shape[0])
+            cv2.circle(img, anchor, 8, (0, 180, 0), 2)
+            cv2.drawMarker(img, goal, (0, 0, 255), cv2.MARKER_CROSS, 16, 2)
+            cv2.line(img, anchor, goal, (0, 120, 255), 1)
+            cv2.putText(img, "TARGET {} anchor".format(screen_id), (anchor[0] + 7, anchor[1] + 14), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 120, 0), 1)
+            cv2.putText(img, "GOAL {}".format(screen_id), (goal[0] + 7, goal[1] - 7), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 220), 1)
+        if recovery_waypoint is not None:
+            xy = recovery_waypoint.get("xy") or recovery_waypoint.get("recovery_xy")
+            if xy:
+                point = self._map_pt(xy, scale, img.shape[0])
+                cv2.drawMarker(img, point, (200, 0, 200), cv2.MARKER_DIAMOND, 16, 2)
+                cv2.putText(img, "RECOVERY", (point[0] + 7, point[1] - 7), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (160, 0, 160), 1)
         if path:
             pts = [self._map_pt(pt, scale, img.shape[0]) for pt in path]
             for p0, p1 in zip(pts, pts[1:]):

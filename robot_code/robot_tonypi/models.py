@@ -32,6 +32,9 @@ class MissionState(str, Enum):
     TARGET_DIRECT_APPROACH = "TARGET_DIRECT_APPROACH"
     ARRIVED_AT_TARGET = "ARRIVED_AT_TARGET"
     CONFIRM_TARGET_SCREEN = "CONFIRM_TARGET_SCREEN"
+    TARGET_TAG_CONFIRMED = "TARGET_TAG_CONFIRMED"
+    TARGET_CLASSIFICATION_WAIT = "TARGET_CLASSIFICATION_WAIT"
+    TARGET_CLASSIFICATION_DEGRADED = "TARGET_CLASSIFICATION_DEGRADED"
     TARGET_VISIBILITY_RECOVERY = "TARGET_VISIBILITY_RECOVERY"
     TARGET_TAG_SCREEN_CONFIRMED = "TARGET_TAG_SCREEN_CONFIRMED"
     FORWARD_10CM = "FORWARD_10CM"
@@ -43,6 +46,7 @@ class MissionState(str, Enum):
     MARK_TARGET_COMPLETE = "MARK_TARGET_COMPLETE"
     MISSION_COMPLETE = "MISSION_COMPLETE"
     MISSION_FAILED = "MISSION_FAILED"
+    MISSION_BLOCKED = "MISSION_BLOCKED"
 
 
 class NearWallRecoveryResult(str, Enum):
@@ -73,6 +77,46 @@ class RobotPose:
             "confidence": self.confidence.value,
             "source": self.source,
             "last_update_s": self.last_update_s,
+        }
+
+
+@dataclass(frozen=True)
+class TargetGoal:
+    """Atomic, traceable target identity and canonical navigation pose."""
+    screen_id: int
+    tag_id: int
+    anchor_xy: Tuple[float, float]
+    goal_xy: Tuple[float, float]
+    desired_yaw_deg: float
+    source: str
+    generation_id: int
+
+    def as_dict(self) -> Dict[str, Any]:
+        return {
+            "screen_id": self.screen_id,
+            "tag_id": self.tag_id,
+            "anchor_xy": list(self.anchor_xy),
+            "goal_xy": list(self.goal_xy),
+            "desired_yaw_deg": self.desired_yaw_deg,
+            "source": self.source,
+            "generation_id": self.generation_id,
+        }
+
+
+@dataclass
+class TargetTagConfirmation:
+    """A live target identity check, independent of content classification."""
+    screen_id: int
+    tag_id: int
+    captured_s: float
+    pan: float
+
+    def as_dict(self) -> Dict[str, Any]:
+        return {
+            "screen_id": self.screen_id,
+            "tag_id": self.tag_id,
+            "captured_s": self.captured_s,
+            "pan": self.pan,
         }
 
 
@@ -177,6 +221,8 @@ class ClassificationResult:
     class_index: Optional[int] = None
     raw: Dict[str, Any] = field(default_factory=dict)
     error: str = ""
+    error_kind: str = ""
+    retryable: bool = False
 
 
 @dataclass

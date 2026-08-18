@@ -33,6 +33,8 @@ from .models import (
     RobotPose,
     Screen,
     ScreenStatus,
+    TargetGoal,
+    TargetTagConfirmation,
     TargetVisualConfirmation,
     VisualAuthorization,
 )
@@ -131,14 +133,22 @@ class TaskManager:
         self.last_target_plan = {}
         self.mission_state = MissionState.IDLE
         self.current_target_screen_id = None
+        self.current_target_goal: Optional[TargetGoal] = None
+        self.target_generation_counter = 0
+        self.active_recovery_waypoint = None
         self.arrived_at_target = False
         self.classifier_allowed = False
         self.target_visual_confirmation: Optional[TargetVisualConfirmation] = None
+        self.target_tag_confirmation: Optional[TargetTagConfirmation] = None
         self.visual_authorization: Optional[VisualAuthorization] = None
         self.final_forward_executed = False
         self.target_confirmation_retry_count = 0
         self.target_confirmation_recovery_cycle = 0
         self.last_target_confirmation_diagnostics = {}
+        self.last_target_confirmation_failure_kind = ""
+        self.classifier_available = True
+        self.last_classifier_error = ""
+        self.last_classifier_error_kind = ""
         self.transit_bindings = {}
         self.recent_bound_flower_observations: Dict[int, RecentBoundFlowerObservation] = {}
         self.bound_classification_last_attempt_s: Dict[int, float] = {}
@@ -216,6 +226,109 @@ class TaskManager:
             screen.task_target_xy = geometry["target_xy"]
             screen.task_target_yaw_deg = screen.interaction_yaw_deg
 
+    def resolve_target_goal(self, screen_id: int, generation_id: Optional[int] = None) -> TargetGoal:
+        """Resolve every consumer's target pose from the same canonical Screen."""
+        screen_id = int(screen_id)
+        screen = self.map.screens.get(screen_id)
+        if screen is None:
+            raise ValueError("unknown target screen {}".format(screen_id))
+        worker_id = int(screen.worker_id or screen.screen_id)
+        if worker_id != screen_id:
+            raise ValueError("screen/tag/worker identity mismatch for {}".format(screen_id))
+        goal_xy = screen.task_target_xy or screen.target_xy
+        desired_yaw = (
+            screen.task_target_yaw_deg
+            if screen.task_target_yaw_deg is not None
+            else screen.interaction_yaw_deg
+        )
+        return TargetGoal(
+            screen_id=screen_id,
+            tag_id=screen_id,
+            anchor_xy=(float(screen.center_xy[0]), float(screen.center_xy[1])),
+            goal_xy=(float(goal_xy[0]), float(goal_xy[1])),
+            desired_yaw_deg=float(desired_yaw),
+            source="map.screens.cardinal_task_target",
+            generation_id=int(
+                self.target_generation_counter if generation_id is None else generation_id
+            ),
+        )
+
+    def target_goal_from_screen(self, screen: Screen, generation_id: int) -> TargetGoal:
+        """Compatibility resolver for isolated tests; production uses map.screens."""
+        goal_xy = screen.task_target_xy or screen.target_xy
+        yaw = screen.task_target_yaw_deg if screen.task_target_yaw_deg is not None else screen.interaction_yaw_deg
+        return TargetGoal(
+            screen_id=int(screen.screen_id),
+            tag_id=int(screen.screen_id),
+            anchor_xy=(float(screen.center_xy[0]), float(screen.center_xy[1])),
+            goal_xy=(float(goal_xy[0]), float(goal_xy[1])),
+            desired_yaw_deg=float(yaw),
+            source="screen.cardinal_task_target",
+            generation_id=int(generation_id),
+        )
+
+    def lock_target_goal(self, screen: Screen) -> TargetGoal:
+        """Atomically lock identity and pose; only a real target change advances generation."""
+        existing = getattr(self, "current_target_goal", None)
+        if existing is None or int(existing.screen_id) != int(screen.screen_id):
+            self.target_generation_counter = int(getattr(self, "target_generation_counter", 0)) + 1
+        if hasattr(self, "map") and int(screen.screen_id) in self.map.screens:
+            goal = self.resolve_target_goal(screen.screen_id, self.target_generation_counter)
+        else:
+            goal = self.target_goal_from_screen(screen, self.target_generation_counter)
+        self.current_target_goal = goal
+        self.current_target_screen_id = goal.screen_id
+        if hasattr(self, "debug"):
+            self.debug.event("target_goal_resolved", **goal.as_dict())
+        return goal
+
+    def validate_target_goal(
+        self,
+        goal: Optional[TargetGoal] = None,
+        *,
+        requested_xy: Optional[Tuple[float, float]] = None,
+    ) -> bool:
+        """Reject stale ID/coordinate pairings before motion and before ARRIVED."""
+        goal = goal or getattr(self, "current_target_goal", None)
+        if goal is None:
+            return False
+        try:
+            canonical = (
+                self.resolve_target_goal(goal.screen_id, goal.generation_id)
+                if hasattr(self, "map")
+                else goal
+            )
+        except (KeyError, ValueError) as exc:
+            if hasattr(self, "debug"):
+                self.debug.event("target_pose_mismatch", reason=str(exc))
+            return False
+        compared_xy = goal.goal_xy if requested_xy is None else requested_xy
+        difference = distance_xy(tuple(compared_xy), canonical.goal_xy)
+        tolerance = float(self.config["navigation"].get("target_goal_consistency_tolerance_cm", 0.5))
+        valid = bool(
+            int(self.current_target_screen_id or -1) == goal.screen_id
+            and int(goal.tag_id) == goal.screen_id
+            and int(goal.generation_id) == int(getattr(self, "target_generation_counter", -1))
+            and distance_xy(goal.anchor_xy, canonical.anchor_xy) <= tolerance
+            and distance_xy(goal.goal_xy, canonical.goal_xy) <= tolerance
+            and difference <= tolerance
+            and abs(angle_diff_deg(goal.desired_yaw_deg, canonical.desired_yaw_deg)) <= 0.1
+        )
+        event = "target_goal_validated" if valid else "target_pose_mismatch"
+        if hasattr(self, "debug"):
+            self.debug.event(
+                event,
+                screen_id=goal.screen_id,
+                tag_id=goal.tag_id,
+                stored_goal_xy=goal.goal_xy,
+                resolved_goal_xy=canonical.goal_xy,
+                anchor_xy=canonical.anchor_xy,
+                difference_cm=round(difference, 3),
+                source=goal.source,
+                generation_id=goal.generation_id,
+            )
+        return valid
+
     def open_interaction_audit_log(self) -> None:
         if self.debug.root is not None:
             root = self.debug.root
@@ -288,13 +401,14 @@ class TaskManager:
                 self.finish_mission_without_available_targets()
                 break
             new_target = self.current_target_screen_id != target.screen_id
-            self.current_target_screen_id = target.screen_id
+            target_goal = self.lock_target_goal(target)
             self.arrived_at_target = False
             self.classifier_allowed = False
-            self.target_visual_confirmation = None
-            self.visual_authorization = None
-            self.final_forward_executed = False
             if new_target:
+                self.target_tag_confirmation = None
+                self.target_visual_confirmation = None
+                self.visual_authorization = None
+                self.final_forward_executed = False
                 self.target_confirmation_retry_count = 0
                 self.target_confirmation_recovery_cycle = 0
                 self.last_target_confirmation_diagnostics = {}
@@ -311,6 +425,7 @@ class TaskManager:
                 target_distance_cm=float(self.config["interaction"]["target_distance_cm"]),
                 target_final_forward_cm=float(self.config["interaction"]["target_final_forward_cm"]),
                 actual_target_offset_cm=self.target_surface_offset_cm(target),
+                target_goal=target_goal.as_dict(),
                 plan=self.last_target_plan,
             )
             if self.args.dry_run:
@@ -333,6 +448,7 @@ class TaskManager:
                 self.register_target_failure(target, failure_reason, relocalize=True)
                 self.fatal_target_failures += 1
                 self.current_target_screen_id = None
+                self.current_target_goal = None
                 self.arrived_at_target = False
                 self.classifier_allowed = False
                 self.target_visual_confirmation = None
@@ -341,7 +457,17 @@ class TaskManager:
             self.arrived_at_target = True
             self.set_mission_state(MissionState.ARRIVED_AT_TARGET)
             if not self.confirm_target_with_visibility_recovery(target):
-                return False
+                if self.mission_state in (
+                    MissionState.TARGET_CLASSIFICATION_WAIT,
+                    MissionState.TARGET_CLASSIFICATION_DEGRADED,
+                    MissionState.MISSION_BLOCKED,
+                ):
+                    self.publish_state(target)
+                    time.sleep(max(0.0, float(
+                        self.config["interaction"].get("classifier_retry_interval_s", 1.0)
+                    )))
+                    continue
+                continue
             classified = bool(target.last_classification and self.visual_authorization is not None)
             if target.status == ScreenStatus.ALREADY_TARGET:
                 classified = True
@@ -350,6 +476,7 @@ class TaskManager:
                 self.set_mission_state(MissionState.MARK_TARGET_COMPLETE)
                 self.publish_state(target)
                 self.current_target_screen_id = None
+                self.current_target_goal = None
                 self.arrived_at_target = False
                 self.classifier_allowed = False
                 self.target_visual_confirmation = None
@@ -384,6 +511,7 @@ class TaskManager:
             self.set_mission_state(MissionState.MARK_TARGET_COMPLETE)
             self.publish_state(target)
             self.current_target_screen_id = None
+            self.current_target_goal = None
             self.arrived_at_target = False
             self.classifier_allowed = False
             self.target_visual_confirmation = None
@@ -437,12 +565,16 @@ class TaskManager:
         return str(reason) in transient
 
     def preserve_current_target(self, target: Screen, reason: str) -> None:
-        self.current_target_screen_id = int(target.screen_id)
+        goal = getattr(self, "current_target_goal", None)
+        if goal is None or int(goal.screen_id) != int(target.screen_id):
+            goal = self.lock_target_goal(target)
+        self.current_target_screen_id = int(goal.screen_id)
         self.debug.event(
             "current_target_preserved",
             current_target_screen_id=target.screen_id,
             current_target_xy=target.task_target_xy or target.target_xy,
             current_target_yaw=target.task_target_yaw_deg,
+            target_goal=goal.as_dict(),
             target_preserved=True,
             reason=reason,
             target_attempts=target.attempts,
@@ -483,7 +615,7 @@ class TaskManager:
         target = self.choose_nearest_screen()
         if target is None:
             return True
-        self.current_target_screen_id = target.screen_id
+        self.lock_target_goal(target)
         self.target_visual_confirmation = None
         self.visual_authorization = None
         self.final_forward_executed = False
@@ -496,8 +628,17 @@ class TaskManager:
             return False
         self.arrived_at_target = True
         self.set_mission_state(MissionState.ARRIVED_AT_TARGET)
-        if not self.confirm_target_with_visibility_recovery(target):
-            return False
+        while not self.confirm_target_with_visibility_recovery(target):
+            if self.mission_state not in (
+                MissionState.TARGET_CLASSIFICATION_WAIT,
+                MissionState.TARGET_CLASSIFICATION_DEGRADED,
+                MissionState.MISSION_BLOCKED,
+            ) or self.time_left_s() <= 0:
+                return False
+            self.publish_state(target)
+            time.sleep(max(0.0, float(
+                self.config["interaction"].get("classifier_retry_interval_s", 1.0)
+            )))
         return bool(target.last_classification and self.visual_authorization is not None)
 
     def time_left_s(self) -> float:
@@ -913,6 +1054,8 @@ class TaskManager:
         )
         last_attempt = float(last_attempts.get(screen_id, -float("inf")))
         if timestamp - last_attempt < min_interval:
+            if not bool(getattr(self, "classifier_available", True)):
+                self.last_target_confirmation_failure_kind = "classifier_unavailable"
             self.debug.event(
                 "bound_flower_observation_skipped_rate_limit",
                 screen_id=screen_id,
@@ -925,6 +1068,17 @@ class TaskManager:
         try:
             result = self.classifier.classify_crop(candidate.crop_28x28)
         except Exception as exc:
+            self.classifier_available = False
+            self.last_classifier_error = str(exc)
+            self.last_classifier_error_kind = "service_unavailable"
+            self.last_target_confirmation_failure_kind = "classifier_unavailable"
+            self.debug.event(
+                "target_classifier_unavailable",
+                screen_id=screen_id,
+                tag_id=tag_id,
+                retryable=True,
+                error=str(exc),
+            )
             self.debug.event(
                 "bound_flower_observation_failed",
                 screen_id=screen_id,
@@ -934,6 +1088,29 @@ class TaskManager:
             )
             return None
         confidence = float(result.confidence) if result.ok else 0.0
+        if not result.ok:
+            self.last_classifier_error = result.error
+            self.last_classifier_error_kind = getattr(result, "error_kind", "") or "classification_failed"
+            self.classifier_available = self.last_classifier_error_kind != "service_unavailable"
+            self.last_target_confirmation_failure_kind = (
+                "classifier_unavailable"
+                if not self.classifier_available or bool(getattr(result, "retryable", False))
+                else "classifier_result_invalid"
+            )
+            event = (
+                "target_classifier_unavailable"
+                if self.last_target_confirmation_failure_kind == "classifier_unavailable"
+                else "target_classifier_result_invalid"
+            )
+            self.debug.event(
+                event,
+                screen_id=screen_id,
+                tag_id=tag_id,
+                error=result.error,
+                error_kind=self.last_classifier_error_kind,
+                retryable=bool(getattr(result, "retryable", False)),
+                target_tag_confirmed=getattr(self, "target_tag_confirmation", None) is not None,
+            )
         if (
             not result.ok
             or not result.flower_api
@@ -948,6 +1125,19 @@ class TaskManager:
                 confidence=round(confidence, 4),
             )
             return None
+        was_unavailable = not bool(getattr(self, "classifier_available", True))
+        self.classifier_available = True
+        self.last_classifier_error = ""
+        self.last_classifier_error_kind = ""
+        if was_unavailable:
+            self.debug.event("target_classifier_recovered", screen_id=screen_id, tag_id=tag_id)
+        self.debug.event(
+            "target_classifier_result",
+            screen_id=screen_id,
+            tag_id=tag_id,
+            flower=result.flower_api,
+            confidence=round(confidence, 4),
+        )
         observation = RecentBoundFlowerObservation(
             screen_id=screen_id,
             tag_id=tag_id,
@@ -1163,42 +1353,47 @@ class TaskManager:
         return matches[0]
 
     def confirm_target_tag_now(self, screen: Screen) -> bool:
-        """Confirm the locked Tag live with a strict center/left/right budget."""
+        """Confirm the locked Tag live; the caller recenters after consuming its frame."""
         center = float(self.config["camera"].get("head_center_angle", 100.0))
         pans = self.unique_pan_angles([center, 130.0, 70.0])
         self._last_target_live_frame = None
         self._last_target_live_tags = []
         self._last_target_live_pan = center
-        last_pan = None
-        try:
-            for pan in pans:
-                last_pan = pan
-                frame, tags = self.capture_with_tags(pan)
-                if frame is None:
-                    continue
-                detected = [int(tag.tag_id) for tag in tags]
-                if int(screen.screen_id) in detected:
-                    seen_s = now_s()
-                    self._last_target_live_frame = frame
-                    self._last_target_live_tags = tags
-                    self._last_target_live_pan = float(pan)
-                    self._last_target_tag_seen_s = seen_s
-                    self.debug.event(
-                        "target_tag_live_confirmed",
-                        screen_id=screen.screen_id,
-                        tag_id=screen.screen_id,
-                        pan=float(pan),
-                        current_tag_seen_s=seen_s,
-                    )
-                    return True
-            self.debug.event(
-                "target_tag_live_missing",
-                screen_id=screen.screen_id,
-                pan_angles=pans,
-            )
-            return False
-        finally:
-            self.center_head_after_scan("confirm_target_tag_now", last_pan)
+        for pan in pans:
+            frame, tags = self.capture_with_tags(pan)
+            if frame is None:
+                continue
+            detected = [int(tag.tag_id) for tag in tags]
+            if int(screen.screen_id) in detected:
+                seen_s = now_s()
+                self._last_target_live_frame = frame
+                self._last_target_live_tags = tags
+                self._last_target_live_pan = float(pan)
+                self._last_target_tag_seen_s = seen_s
+                self.target_tag_confirmation = TargetTagConfirmation(
+                    screen_id=screen.screen_id,
+                    tag_id=screen.screen_id,
+                    captured_s=seen_s,
+                    pan=float(pan),
+                )
+                self.set_mission_state(MissionState.TARGET_TAG_CONFIRMED)
+                self.debug.event(
+                    "target_tag_live_confirmed",
+                    screen_id=screen.screen_id,
+                    tag_id=screen.screen_id,
+                    pan=float(pan),
+                    current_tag_seen_s=seen_s,
+                    frame_retained=True,
+                )
+                self.debug.event("target_tag_confirmed", **self.target_tag_confirmation.as_dict())
+                return True
+        self.target_tag_confirmation = None
+        self.debug.event(
+            "target_tag_live_missing",
+            screen_id=screen.screen_id,
+            pan_angles=pans,
+        )
+        return False
 
     def bounded_fresh_target_observation(
         self,
@@ -1222,10 +1417,19 @@ class TaskManager:
             ))
         for attempt in range(max_retries):
             if attempt >= len(frames):
-                frame, tags = self.capture_with_tags(
-                    float(self.config["camera"].get("head_center_angle", 100.0))
+                retry_pan = float(getattr(
+                    self,
+                    "_last_target_live_pan",
+                    self.config["camera"].get("head_center_angle", 100.0),
+                ))
+                self.debug.event(
+                    "target_classifier_retry",
+                    screen_id=screen.screen_id,
+                    attempt=attempt + 1,
+                    pan=retry_pan,
                 )
-                frames.append((frame, tags, float(self.config["camera"].get("head_center_angle", 100.0))))
+                frame, tags = self.capture_with_tags(retry_pan)
+                frames.append((frame, tags, retry_pan))
             frame, tags, pan = frames[attempt]
             if frame is not None and any(int(tag.tag_id) == screen.screen_id for tag in tags):
                 try:
@@ -1248,6 +1452,8 @@ class TaskManager:
                         if observation is not None:
                             self.target_confirmation_retry_count = 0
                             return observation
+                        if getattr(self, "last_target_confirmation_failure_kind", "") == "classifier_unavailable":
+                            break
                 except Exception as exc:
                     self.debug.event(
                         "bound_flower_observation_failed",
@@ -1266,6 +1472,7 @@ class TaskManager:
         if not self.classifier_gate_open(screen):
             return False
         self.set_mission_state(MissionState.CONFIRM_TARGET_SCREEN)
+        self.last_target_confirmation_failure_kind = ""
         if self.args.dry_run:
             self.target_visual_confirmation = TargetVisualConfirmation(
                 screen_id=screen.screen_id,
@@ -1281,27 +1488,42 @@ class TaskManager:
             self.target_confirmation_retry_count = 0
         else:
             if not self.confirm_target_tag_now(screen):
+                self.last_target_confirmation_failure_kind = "target_tag_missing"
+                self.center_head_after_scan(
+                    "confirm_target_tag_now_missing", getattr(self, "_last_target_live_pan", None)
+                )
                 return False
             seen_s = float(getattr(self, "_last_target_tag_seen_s", now_s()))
-            observation = self.latest_valid_bound_flower_observation(
-                screen.screen_id,
-                current_s=seen_s,
-            )
-            if observation is None:
-                observation = self.bounded_fresh_target_observation(screen)
-                source = "fresh_target_observation"
-                if observation is not None:
-                    seen_s = max(seen_s, float(observation.captured_s))
-            else:
-                source = "recent_bound_cache"
-            if observation is None or not self.adopt_cached_target_observation(
-                screen,
-                observation,
-                current_tag_seen_s=seen_s,
-                source=source,
-            ):
-                return False
-            self.target_confirmation_retry_count = 0
+            try:
+                observation = self.latest_valid_bound_flower_observation(
+                    screen.screen_id,
+                    current_s=seen_s,
+                )
+                if observation is None:
+                    observation = self.bounded_fresh_target_observation(screen)
+                    source = "fresh_target_observation"
+                    if observation is not None:
+                        seen_s = max(seen_s, float(observation.captured_s))
+                else:
+                    source = "recent_bound_cache"
+                if observation is None:
+                    if not self.last_target_confirmation_failure_kind:
+                        self.last_target_confirmation_failure_kind = "target_screen_binding_missing"
+                    return False
+                if not self.adopt_cached_target_observation(
+                    screen,
+                    observation,
+                    current_tag_seen_s=seen_s,
+                    source=source,
+                ):
+                    self.last_target_confirmation_failure_kind = "target_evidence_mismatch"
+                    return False
+                self.target_confirmation_retry_count = 0
+            finally:
+                self.center_head_after_scan(
+                    "confirm_target_observation_consumed",
+                    getattr(self, "_last_target_live_pan", None),
+                )
         self.set_mission_state(MissionState.TARGET_TAG_SCREEN_CONFIRMED)
         self.publish_state(screen)
         return True
@@ -1332,13 +1554,16 @@ class TaskManager:
             reason="target_visibility_recovery",
             allow_failure_escalation=False,
         ) or self.state.pose is None:
+            recovered = self.recover_via_indoor_waypoint(
+                "target_visibility_recovery:no_localization"
+            )
             self.debug.event(
                 "target_visibility_recovery_action",
                 screen_id=screen.screen_id,
-                action="relocalize_only",
-                ok=False,
+                action="interior_recovery_waypoint",
+                ok=bool(recovered),
             )
-            return False
+            return bool(recovered)
         pose = self.state.pose
         normal = screen.cardinal_normal_xy
         if math.hypot(normal[0], normal[1]) < 0.5:
@@ -1392,6 +1617,26 @@ class TaskManager:
         self.set_mission_state(MissionState.ARRIVED_AT_TARGET)
         if self.confirm_target_tag_and_screen(screen):
             return True
+        failure_kind = getattr(self, "last_target_confirmation_failure_kind", "")
+        if failure_kind in ("classifier_unavailable", "classifier_result_invalid"):
+            state = (
+                MissionState.TARGET_CLASSIFICATION_WAIT
+                if failure_kind == "classifier_unavailable"
+                else MissionState.TARGET_CLASSIFICATION_DEGRADED
+            )
+            self.set_mission_state(state)
+            self.preserve_current_target(screen, failure_kind)
+            self.debug.event(
+                "target_classifier_unavailable" if failure_kind == "classifier_unavailable" else "target_classifier_degraded",
+                screen_id=screen.screen_id,
+                tag_id=screen.screen_id,
+                target_preserved=True,
+                target_tag_confirmed=getattr(self, "target_tag_confirmation", None) is not None,
+                error=getattr(self, "last_classifier_error", ""),
+                error_kind=getattr(self, "last_classifier_error_kind", ""),
+                mission_failed=False,
+            )
+            return False
         for cycle in range(1, max_cycles + 1):
             self.target_confirmation_recovery_cycle = cycle
             recovered = self.recover_target_visibility(screen, cycle)
@@ -1402,17 +1647,22 @@ class TaskManager:
             self.set_mission_state(MissionState.ARRIVED_AT_TARGET)
             if self.confirm_target_tag_and_screen(screen):
                 return True
+            failure_kind = getattr(self, "last_target_confirmation_failure_kind", "")
+            if failure_kind in ("classifier_unavailable", "classifier_result_invalid"):
+                self.set_mission_state(
+                    MissionState.TARGET_CLASSIFICATION_WAIT
+                    if failure_kind == "classifier_unavailable"
+                    else MissionState.TARGET_CLASSIFICATION_DEGRADED
+                )
+                self.preserve_current_target(screen, failure_kind)
+                return False
         screen.attempts += 1
         self.last_navigation_failure_reason = "target_screen_confirmation_unresolved"
         self.classifier_allowed = False
         self.target_visual_confirmation = None
         self.visual_authorization = None
         self.preserve_current_target(screen, self.last_navigation_failure_reason)
-        self.set_mission_state(MissionState.MISSION_FAILED)
-        hardware = getattr(self, "hardware", None)
-        stop = getattr(hardware, "stop", None)
-        if callable(stop):
-            stop()
+        self.set_mission_state(MissionState.MISSION_BLOCKED)
         self.debug.event(
             "target_screen_confirmation_unresolved",
             screen_id=screen.screen_id,
@@ -1421,6 +1671,7 @@ class TaskManager:
             target_confirmation_recovery_cycle=self.target_confirmation_recovery_cycle,
             final_forward_executed=self.final_forward_executed,
             target_preserved=True,
+            mission_failed=False,
         )
         self.publish_state(screen)
         return False
@@ -1670,18 +1921,24 @@ class TaskManager:
 
     def navigate_directly_to_target(self, screen: Screen) -> bool:
         """Navigate once to the configured endpoint and finish its cardinal yaw."""
-        target_xy = screen.task_target_xy or screen.target_xy
+        goal = getattr(self, "current_target_goal", None)
+        if goal is None or int(goal.screen_id) != int(screen.screen_id):
+            goal = self.lock_target_goal(screen)
+        if not self.validate_target_goal(goal):
+            self.last_navigation_failure_reason = "target_pose_mismatch"
+            return False
         return self.navigate_to_xy(
-            target_xy,
+            goal.goal_xy,
             reason="task_target",
             arrival_radius_cm=float(self.config["navigation"]["target_arrival_radius_cm"]),
             max_steps=int(self.config["navigation"]["max_steps_per_target"]),
-            target_yaw_deg=screen.task_target_yaw_deg,
+            target_yaw_deg=goal.desired_yaw_deg,
             target_yaw_tolerance_deg=float(
                 self.config["navigation"]["target_arrival_yaw_tolerance_deg"]
             ),
             allow_goal_high_cost=True,
             target_screen=screen,
+            target_goal=goal,
         )
 
     def execute_final_forward(self, screen: Screen) -> bool:
@@ -3189,47 +3446,57 @@ class TaskManager:
         return True
 
     def indoor_recovery_candidates(self, pose: RobotPose):
-        max_dist = float(self.config["navigation"].get("boundary_recovery_max_target_distance_cm", 170.0))
+        """Yield short, obstacle-safe points in the field's inward-shrunk region."""
+        nav = self.config["navigation"]
+        margin = float(nav.get("interior_recovery_margin_cm", 55.0))
+        clearance_required = float(nav.get("interior_recovery_min_clearance_cm", 20.0))
+        max_dist = float(nav.get("interior_recovery_max_distance_cm", 85.0))
+        sample_step = max(5.0, float(nav.get("interior_recovery_sample_step_cm", 10.0)))
         center_xy = self.field_center_xy()
-        pull = float(self.config["navigation"].get("boundary_recovery_center_pull_cm", 65.0))
-        dx = center_xy[0] - pose.x_cm
-        dy = center_xy[1] - pose.y_cm
-        dist = math.hypot(dx, dy)
-        if dist > 1e-6:
-            inward_xy = (
-                pose.x_cm + min(pull, dist) * dx / dist,
-                pose.y_cm + min(pull, dist) * dy / dist,
-            )
-            inward_xy = self.map.nearest_free_xy(inward_xy)
-            path = self.map.plan(pose.xy(), inward_xy)
-            if path:
-                path_dist = sum(distance_xy(a, b) for a, b in zip(path, path[1:])) if len(path) > 1 else distance_xy(pose.xy(), inward_xy)
-                yield {
-                    "kind": "inward",
-                    "xy": inward_xy,
-                    "path": path,
-                    "score": path_dist,
-                    "distance_cm": path_dist,
-                }
-        for screen in self.map.screens.values():
-            target_xy = screen.target_xy
-            dx = target_xy[0] - pose.x_cm
-            dy = target_xy[1] - pose.y_cm
-            dist = math.hypot(dx, dy)
-            if dist > max_dist:
+        xmin, xmax = margin, self.map.width_cm - margin
+        ymin, ymax = margin, self.map.height_cm - margin
+        if xmin > xmax or ymin > ymax:
+            return
+        preferred = (
+            min(max(pose.x_cm, xmin), xmax),
+            min(max(pose.y_cm, ymin), ymax),
+        )
+        candidates = {preferred, center_xy}
+        rings = int(math.ceil(max_dist / sample_step))
+        for ix in range(-rings, rings + 1):
+            for iy in range(-rings, rings + 1):
+                xy = (preferred[0] + ix * sample_step, preferred[1] + iy * sample_step)
+                if xmin <= xy[0] <= xmax and ymin <= xy[1] <= ymax:
+                    candidates.add(xy)
+        for xy in candidates:
+            travel = distance_xy(pose.xy(), xy)
+            if travel < 1.0 or travel > max_dist:
                 continue
-            path = self.plan_navigation_path(pose, target_xy)
-            if not path:
+            if not self.map.is_free_xy(xy):
                 continue
-            path_dist = sum(distance_xy(a, b) for a, b in zip(path, path[1:])) if len(path) > 1 else distance_xy(pose.xy(), target_xy)
-            score = path_dist + 0.2 * abs(angle_diff_deg(screen.interaction_yaw_deg, pose.yaw_deg))
+            clearance = float(self.map.robot_clearance_cm(xy))
+            if clearance < clearance_required:
+                continue
+            forward, lateral = self.local_vector_to(pose, xy)
+            lateral_mid = self.translated_pose_xy(pose, lateral_cm=lateral)
+            forward_mid = self.translated_pose_xy(pose, forward_cm=forward)
+            lateral_first = self.path_segments_clear([pose.xy(), lateral_mid, xy])
+            forward_first = self.path_segments_clear([pose.xy(), forward_mid, xy])
+            if not lateral_first and not forward_first:
+                continue
+            order = "lateral_then_longitudinal" if lateral_first else "longitudinal_then_lateral"
+            center_distance = distance_xy(xy, center_xy)
+            score = travel + 0.04 * center_distance - 0.08 * min(clearance, 80.0)
             yield {
-                "kind": "screen_viewpoint",
-                "screen_id": int(screen.screen_id),
-                "xy": target_xy,
-                "path": path,
+                "kind": "interior_safe",
+                "xy": (float(xy[0]), float(xy[1])),
+                "path": [pose.xy(), lateral_mid, xy] if lateral_first else [pose.xy(), forward_mid, xy],
                 "score": score,
-                "distance_cm": path_dist,
+                "distance_cm": travel,
+                "clearance_cm": clearance,
+                "boundary_margin_cm": margin,
+                "recovery_yaw": float(pose.yaw_deg),
+                "component_order": order,
             }
 
     def choose_boundary_recovery_target(self, pose: RobotPose):
@@ -3239,9 +3506,16 @@ class TaskManager:
         candidates.sort(key=lambda item: item["score"])
         return candidates[0]
 
-    def blind_navigate_to_xy(self, target_xy: Tuple[float, float], reason: str) -> bool:
+    def blind_navigate_to_xy(
+        self,
+        target_xy: Tuple[float, float],
+        reason: str,
+        component_order: str = "lateral_then_longitudinal",
+    ) -> bool:
+        """Move to recovery target without changing yaw, using body-axis translations."""
         max_steps = int(self.config["navigation"].get("boundary_recovery_max_steps", 18))
-        radius = float(self.config["navigation"].get("boundary_recovery_goal_radius_cm", 20.0))
+        radius = float(self.config["navigation"].get("interior_recovery_arrival_radius_cm", 6.0))
+        recovery_yaw = None if self.state.pose is None else float(self.state.pose.yaw_deg)
         self.debug.event("boundary_blind_nav_start", reason=reason, target_xy=target_xy, max_steps=max_steps)
         for step in range(max_steps):
             pose = self.state.pose
@@ -3251,28 +3525,51 @@ class TaskManager:
             if dist <= radius:
                 self.debug.event("boundary_blind_nav_arrived", step=step, distance_cm=round(dist, 1))
                 return True
-            path = self.plan_navigation_path(pose, target_xy)
-            waypoint = self.select_navigation_waypoint(pose, path, target_xy)
-            desired_yaw = math.degrees(math.atan2(waypoint[1] - pose.y_cm, waypoint[0] - pose.x_cm))
-            diff = angle_diff_deg(desired_yaw, pose.yaw_deg)
+            forward, lateral = self.local_vector_to(pose, target_xy)
+            component_tolerance = radius / math.sqrt(2.0)
+            yaw_error = 0.0 if recovery_yaw is None else angle_diff_deg(recovery_yaw, pose.yaw_deg)
             self.debug.event(
                 "boundary_blind_nav_step",
                 step=step + 1,
                 distance_cm=round(dist, 1),
-                waypoint=waypoint,
-                desired_yaw=round(desired_yaw, 1),
-                diff_yaw=round(diff, 1),
+                target_xy=target_xy,
+                recovery_yaw=recovery_yaw,
+                current_yaw=pose.yaw_deg,
+                yaw_error=round(yaw_error, 1),
+                forward_component_cm=round(forward, 1),
+                lateral_component_cm=round(lateral, 1),
             )
-            if abs(diff) > float(self.config["navigation"].get("turn_tolerance_deg", 20.0)):
-                self.turn_toward_yaw_for_recovery(desired_yaw)
-                continue
-            forward_cm = min(dist, distance_xy(pose.xy(), waypoint))
-            planned_forward_cm = self.planned_forward_step_cm(forward_cm)
-            if not self.forward_clear_for_distance(pose, planned_forward_cm):
-                self.debug.event("boundary_blind_nav_forward_blocked", checked_forward_cm=round(planned_forward_cm, 1))
+            action = None
+            lateral_first = component_order != "longitudinal_then_lateral"
+            use_lateral = abs(lateral) > component_tolerance and (
+                lateral_first or abs(forward) <= component_tolerance
+            )
+            use_longitudinal = abs(forward) > component_tolerance
+            if use_lateral:
+                action = "strafe_left_fast" if lateral > 0.0 else "strafe_right_fast"
+                requested = float(self.config["motion"]["actions"][action].get("lateral_cm", 0.0))
+                safe = self.recovery_translation_clear(pose, lateral_cm=requested)
+            elif use_longitudinal:
+                action = "forward_fast" if forward > 0.0 else "back_fast"
+                requested = float(self.config["motion"]["actions"][action].get("forward_cm", 0.0))
+                safe = self.recovery_translation_clear(pose, forward_cm=requested)
+            else:
+                return True
+            if not safe:
+                self.debug.event("recovery_action", action=action, executed=False, reason="corridor_blocked")
                 return False
-            self.motion.move_forward(forward_cm)
-            self.publish_state(path=path)
+            result = self.motion.run(action, times_override=1)
+            self.debug.event(
+                "recovery_action",
+                action=action,
+                executed=bool(result.ok),
+                recovery_yaw=recovery_yaw,
+                turn_used=False,
+                error=result.error,
+            )
+            if not result.ok:
+                return False
+            self.publish_state(path=[pose.xy(), target_xy])
         self.debug.event("boundary_blind_nav_failed", target_xy=target_xy, max_steps=max_steps)
         return False
 
@@ -3280,24 +3577,59 @@ class TaskManager:
         if not bool(self.config["navigation"].get("boundary_recovery_enabled", True)):
             return False
         pose = self.state.pose
-        if pose is None or not self.is_boundary_trapped(pose, reason):
+        if pose is None:
             return False
+        original_goal = getattr(self, "current_target_goal", None)
+        if not isinstance(getattr(self, "last_recovery", None), dict):
+            self.last_recovery = {}
+        self.last_recovery.update({
+            "t": round(now_s(), 3),
+            "reason": reason,
+            "strategy": "interior_waypoint_preserve_yaw",
+            "original_target": None if original_goal is None else original_goal.as_dict(),
+        })
         target = self.choose_boundary_recovery_target(pose)
         if target is None:
             self.debug.event("boundary_recovery_no_indoor_waypoint", reason=reason, pose=pose.as_dict())
             return False
         self.last_recovery["boundary_target"] = {
             "kind": target.get("kind"),
-            "screen_id": target.get("screen_id"),
             "xy": list(target["xy"]),
             "distance_cm": round(float(target["distance_cm"]), 1),
             "score": round(float(target["score"]), 1),
+            "clearance_cm": round(float(target["clearance_cm"]), 1),
+            "boundary_margin_cm": float(target["boundary_margin_cm"]),
+            "recovery_yaw": float(target["recovery_yaw"]),
+            "component_order": target["component_order"],
         }
-        self.debug.event("boundary_recovery_target_selected", **self.last_recovery["boundary_target"])
-        ok = self.blind_navigate_to_xy(tuple(target["xy"]), reason=reason)
+        self.active_recovery_waypoint = dict(self.last_recovery["boundary_target"])
+        self.debug.event(
+            "recovery_waypoint_selected",
+            original_target_screen_id=None if original_goal is None else original_goal.screen_id,
+            original_target_generation=None if original_goal is None else original_goal.generation_id,
+            current_pose=pose.as_dict(),
+            recovery_xy=target["xy"],
+            recovery_yaw=target["recovery_yaw"],
+            boundary_margin=target["boundary_margin_cm"],
+            reason=reason,
+            component_order=target["component_order"],
+        )
+        ok = self.blind_navigate_to_xy(
+            tuple(target["xy"]),
+            reason=reason,
+            component_order=target["component_order"],
+        )
         if not ok:
             return False
-        return self.localize_scan()
+        localized = self.localize_scan(reason="interior_recovery", allow_pan_search=True)
+        if localized:
+            self.debug.event("recovery_localization_success", recovery_xy=target["xy"])
+            self.active_recovery_waypoint = None
+            if original_goal is not None:
+                self.current_target_goal = original_goal
+                self.current_target_screen_id = original_goal.screen_id
+                self.debug.event("resume_original_target", **original_goal.as_dict())
+        return localized
 
     def wall_clearance_cm(self, pose: RobotPose, yaw_deg: Optional[float] = None) -> float:
         """Measure free map distance along a body-relative ray."""
@@ -3698,6 +4030,14 @@ class TaskManager:
         self.collision_recovery_pending = False
         self.visual_no_progress_count = 0
         self.recovery_count += 1
+        if pose is not None:
+            self.debug.event(
+                "recovery_navigation",
+                reason=reason,
+                strategy="interior_waypoint_preserve_yaw",
+                original_target_screen_id=getattr(self, "current_target_screen_id", None),
+            )
+            return self.recover_via_indoor_waypoint(reason)
         outward = False if pose is None else self.is_facing_outside(pose)
         max_attempts = max(1, int(self.config["navigation"].get("collision_recovery_localize_attempts", 3)))
         back_steps = max(1, int(self.config["navigation"].get("collision_recovery_back_steps", 1)))
@@ -3757,8 +4097,7 @@ class TaskManager:
         cooldown = float(self.config["navigation"].get("no_tag_recovery_cooldown_s", 4.0))
         if now_s() - self.last_no_tag_recovery_s < cooldown:
             return False
-        pose = self.state.pose
-        return pose is None or self.is_facing_outside(pose) or self.is_boundary_trapped(pose, "no_tag")
+        return True
 
     def recover_from_no_tag_if_needed(self, reason: str) -> bool:
         if not self.no_tag_recovery_needed():
@@ -3952,6 +4291,7 @@ class TaskManager:
         target_yaw_tolerance_deg: Optional[float] = None,
         allow_goal_high_cost: bool = False,
         target_screen: Optional[Screen] = None,
+        target_goal: Optional[TargetGoal] = None,
     ) -> bool:
         self.turn_navigation_abort = False
         self.last_navigation_failure_reason = ""
@@ -3961,6 +4301,11 @@ class TaskManager:
         self.navigation_stall_count = 0
         self.clear_turn_progress_watchdog("navigate_xy_start")
         target_xy = (float(target_xy[0]), float(target_xy[1]))
+        if target_goal is not None and not self.validate_target_goal(
+            target_goal, requested_xy=target_xy
+        ):
+            self.last_navigation_failure_reason = "target_pose_mismatch"
+            return False
         if allow_goal_high_cost and (
             not self.map.in_bounds_xy(target_xy) or not self.map.is_free_xy(target_xy)
         ):
@@ -3991,6 +4336,11 @@ class TaskManager:
             pose = self.state.pose
             if pose is None:
                 continue
+            if target_goal is not None and not self.validate_target_goal(
+                target_goal, requested_xy=target_xy
+            ):
+                self.last_navigation_failure_reason = "target_pose_mismatch"
+                return False
             localization_stop_threshold = max(
                 2, int(self.config["navigation"].get("no_tag_recovery_failures", 2))
             )
@@ -4045,7 +4395,22 @@ class TaskManager:
                             return False
                         continue
                 self.clear_navigation_noop()
-                self.debug.event("navigate_xy_arrived", reason=reason, target_xy=target_xy, distance_cm=round(dist, 1), step=step)
+                arrival = {
+                    "reason": reason,
+                    "screen_id": None if target_goal is None else target_goal.screen_id,
+                    "tag_id": None if target_goal is None else target_goal.tag_id,
+                    "robot_xy": pose.xy(),
+                    "goal_xy": target_xy,
+                    "anchor_xy": None if target_goal is None else target_goal.anchor_xy,
+                    "distance_to_goal": round(dist, 3),
+                    "distance_to_anchor": None if target_goal is None else round(distance_xy(pose.xy(), target_goal.anchor_xy), 3),
+                    "desired_yaw": target_yaw_deg,
+                    "current_yaw": pose.yaw_deg,
+                    "generation_id": None if target_goal is None else target_goal.generation_id,
+                    "step": step,
+                }
+                self.debug.event("navigate_xy_arrival_check", **arrival)
+                self.debug.event("navigate_xy_arrived", target_xy=target_xy, distance_cm=round(dist, 1), **arrival)
                 return True
             direct_path = self.target_direct_approach_path(pose, target_screen, target_xy)
             direct_mode = bool(direct_path)
@@ -4155,7 +4520,14 @@ class TaskManager:
             )
             desired_yaw = math.degrees(math.atan2(waypoint[1] - pose.y_cm, waypoint[0] - pose.x_cm))
             diff = angle_diff_deg(desired_yaw, pose.yaw_deg)
-            self.debug.render_map(self.map, pose=pose, path=path)
+            self.debug.render_map(
+                self.map,
+                pose=pose,
+                path=path,
+                target_screen=target_screen,
+                target_goal=getattr(self, "current_target_goal", None),
+                recovery_waypoint=getattr(self, "active_recovery_waypoint", None),
+            )
             self.publish_state(path=path)
             waypoint_is_exact_goal = allow_goal_high_cost and distance_xy(waypoint, target_xy) <= 0.1
             if direct_mode and target_screen is not None:
@@ -4302,13 +4674,19 @@ class TaskManager:
         return False
 
     def publish_state(self, target_screen: Optional[Screen] = None, path=None):
-        target_screen = target_screen or self.map.screens.get(self.current_target_screen_id)
+        target_goal = getattr(self, "current_target_goal", None)
+        if target_goal is not None:
+            target_screen = self.map.screens.get(target_goal.screen_id)
+        else:
+            target_screen = target_screen or self.map.screens.get(self.current_target_screen_id)
         target_distance = None
         if target_screen is not None and self.state.pose is not None:
             target_distance = round(
                 distance_xy(
                     self.state.pose.xy(),
-                    target_screen.task_target_xy or target_screen.interaction_xy,
+                    target_goal.goal_xy if target_goal is not None else (
+                        target_screen.task_target_xy or target_screen.interaction_xy
+                    ),
                 ),
                 2,
             )
@@ -4330,11 +4708,18 @@ class TaskManager:
             "mission_state": self.mission_state.value,
             "current_target_tag_id": self.current_target_screen_id,
             "current_target_screen_id": self.current_target_screen_id,
+            "current_target_goal": None if target_goal is None else target_goal.as_dict(),
             "current_target_distance_cm": target_distance,
             "arrived_at_target": self.arrived_at_target,
             "classifier_allowed": self.classifier_allowed,
             "visual_authorization": None if self.visual_authorization is None else self.visual_authorization.as_dict(),
             "target_visual_confirmation": None if self.target_visual_confirmation is None else self.target_visual_confirmation.as_dict(),
+            "target_tag_confirmation": None if getattr(self, "target_tag_confirmation", None) is None else self.target_tag_confirmation.as_dict(),
+            "classifier_health": {
+                "available": bool(getattr(self, "classifier_available", True)),
+                "last_error": getattr(self, "last_classifier_error", ""),
+                "last_error_kind": getattr(self, "last_classifier_error_kind", ""),
+            },
             "target_distance_cm": float(self.config["interaction"]["target_distance_cm"]),
             "target_final_forward_cm": float(self.config["interaction"]["target_final_forward_cm"]),
             "target_confirmation_retry_count": getattr(self, "target_confirmation_retry_count", 0),
@@ -4381,12 +4766,20 @@ class TaskManager:
                 "near_wall_recovery_actions": self.near_wall_recovery_actions,
                 "near_wall_recovery_no_progress": self.near_wall_recovery_no_progress_count,
                 "fatal_target_failures": self.fatal_target_failures,
+                "active_waypoint": getattr(self, "active_recovery_waypoint", None),
             },
             "interaction_log_path": self.interaction_audit_path,
             "screens": {sid: screen.as_dict() for sid, screen in sorted(self.map.screens.items())},
         }
         self.debug.state(data)
-        self.debug.render_map(self.map, pose=self.state.pose, path=path, target_screen=target_screen)
+        self.debug.render_map(
+            self.map,
+            pose=self.state.pose,
+            path=path,
+            target_screen=target_screen,
+            target_goal=getattr(self, "current_target_goal", None),
+            recovery_waypoint=getattr(self, "active_recovery_waypoint", None),
+        )
 
     def close(self):
         try:

@@ -110,4 +110,12 @@ task_target = base_17
     <tr><td><code>visual_authorization_check()</code></td><td>验证快照属于当前锁定目标和稳定的非目标花。</td></tr>
     <tr><td><code>RobotInteractionClient.change_flower()</code></td><td>原子举手、Worker 请求、响应处理与 finally 站立。</td></tr>
   </table>
+  <h2>Current target/recovery invariants (2026-08)</h2>
+  <div class="tree">
+    <div class="branch"><b>Atomic target:</b> <code>TargetGoal</code> owns screen_id, tag_id, anchor_xy, goal_xy, desired_yaw and generation_id. Motion and arrival both validate it against <code>map.screens</code>.</div>
+    <div class="branch"><b>Tag vs classifier:</b> a live <code>TargetTagConfirmation</code> is retained independently. Classifier connection/timeout/5xx errors enter <code>TARGET_CLASSIFICATION_WAIT</code>; they never mean that the Tag disappeared and never set <code>MISSION_FAILED</code>.</div>
+    <div class="branch"><b>Pan observation:</b> the frame captured at the successful pan is consumed for binding/classification before recentering. Retries return to that pan.</div>
+    <div class="branch"><b>Interior recovery:</b> candidates are sampled only inside the configured inward field margin, require obstacle clearance and a safe body-axis L path, preserve current yaw, and resume the original TargetGoal generation.</div>
+    <div class="branch"><b>Dashboard:</b> target anchor, actual navigation goal, recovery waypoint and planned path have separate markers using the same world-to-map transform.</div>
+  </div>
 </main></body></html>

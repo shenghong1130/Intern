@@ -233,7 +233,7 @@ class TargetStandoffFlowTests(unittest.TestCase):
         manager.preserve_current_target = lambda screen, reason: setattr(manager, "current_target_screen_id", screen.screen_id)
         manager.last_navigation_failure_reason = ""
         self.assertFalse(manager.confirm_target_with_visibility_recovery(target))
-        self.assertEqual(manager.mission_state, MissionState.MISSION_FAILED)
+        self.assertEqual(manager.mission_state, MissionState.MISSION_BLOCKED)
         self.assertEqual(manager.current_target_screen_id, 1)
         self.assertEqual(target.attempts, 1)
         self.assertFalse(manager.final_forward_executed)
@@ -246,6 +246,53 @@ class TargetStandoffFlowTests(unittest.TestCase):
         target = make_screen()
         self.assertFalse(manager.confirm_target_tag_and_screen(target))
         self.assertIsNone(manager.visual_authorization)
+
+    def test_classifier_offline_preserves_live_tag_and_never_mission_fails(self):
+        result = ClassificationResult(
+            False,
+            error="connection refused",
+            error_kind="service_unavailable",
+            retryable=True,
+        )
+        manager = classification_manager([1], [candidate()], result)
+        target = make_screen()
+        recoveries = []
+        manager.recover_target_visibility = lambda *args: recoveries.append(args) or False
+        manager.preserve_current_target = lambda screen, reason: setattr(
+            manager, "current_target_screen_id", screen.screen_id
+        )
+        self.assertFalse(manager.confirm_target_with_visibility_recovery(target))
+        self.assertEqual(manager.mission_state, MissionState.TARGET_CLASSIFICATION_WAIT)
+        self.assertEqual(manager.current_target_screen_id, 1)
+        self.assertEqual(manager.target_tag_confirmation.tag_id, 1)
+        self.assertEqual(recoveries, [])
+
+    def test_pan_frame_is_consumed_before_recenter_and_retry_uses_last_seen_pan(self):
+        manager = classification_manager(
+            [], [candidate()], ClassificationResult(True, "chuju", confidence=0.95)
+        )
+        sequence = []
+
+        def capture(pan):
+            sequence.append(("capture", float(pan)))
+            tags = [] if float(pan) == 100.0 else [SimpleNamespace(tag_id=1)]
+            return np.zeros((20, 20, 3), dtype=np.uint8), tags
+
+        manager.capture_with_tags = capture
+        detections = [[], [candidate()]]
+        manager.screen_detector.detect = lambda *args, **kwargs: detections.pop(0)
+        manager.classifier.classify_crop = lambda crop: sequence.append(("classify", 130.0)) or ClassificationResult(
+            True, "chuju", confidence=0.95
+        )
+        manager.center_head_after_scan = lambda reason, pan: sequence.append(("recenter", float(pan)))
+        self.assertTrue(manager.confirm_target_tag_and_screen(make_screen()))
+        self.assertEqual(sequence[:5], [
+            ("capture", 100.0),
+            ("capture", 130.0),
+            ("capture", 130.0),
+            ("classify", 130.0),
+            ("recenter", 130.0),
+        ])
 
     def test_low_confidence_blocks_authorization(self):
         manager = classification_manager([1], [candidate()], ClassificationResult(True, "chuju", confidence=0.10))
