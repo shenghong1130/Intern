@@ -299,6 +299,8 @@ class MapModel:
         samples = 0
         minimum_clearance = float("inf")
         clear = True
+        physical_collision = False
+        soft_cost_rejected = False
         for index in range(along_steps + 1):
             along = min(length, index * step)
             center = (
@@ -313,6 +315,7 @@ class MapModel:
                 )
                 if not self.is_free_xy(sample):
                     clear = False
+                    physical_collision = True
                     continue
                 node = self.grid_pos(sample)
                 cost = float(self.cost[node[0], node[1]])
@@ -322,12 +325,15 @@ class MapModel:
                 goal_exception = allow_goal_high_cost and node == goal_node
                 if not goal_exception and cost >= float(max_cost):
                     clear = False
+                    soft_cost_rejected = True
         return {
             "clear": clear,
             "path_length_cm": length,
             "path_obstacle_cost": total_cost / max(1, samples),
             "maximum_obstacle_cost": maximum_cost,
             "minimum_wall_clearance_cm": 0.0 if minimum_clearance == float("inf") else minimum_clearance,
+            "physical_collision": physical_collision,
+            "soft_cost_rejected": soft_cost_rejected,
         }
 
     def translation_corridor_clear(
@@ -385,6 +391,133 @@ class MapModel:
             )
         return maximum
 
+    def non_target_clearance_cm(self, xy, target_screen_id: int) -> float:
+        """Clearance to boundaries and obstacles other than the locked target."""
+        if not self.in_bounds_xy(xy):
+            return 0.0
+        x, y = float(xy[0]), float(xy[1])
+        clearance = min(x, self.width_cm - x, y, self.height_cm - y)
+        target_group = (int(target_screen_id) - 1) // 4
+        for group_id, bounds in self.building_bounds.items():
+            if int(group_id) == target_group:
+                continue
+            clearance = min(
+                clearance, self.distance_to_obstacle_rect_cm((x, y), bounds)
+            )
+        for bounds in self.dynamic_obstacles:
+            clearance = min(
+                clearance, self.distance_to_obstacle_rect_cm((x, y), bounds)
+            )
+        return max(0.0, float(clearance))
+
+    def target_direct_corridor_metrics(
+        self,
+        start_xy,
+        goal_xy,
+        target_screen_id: int,
+        half_width_cm: float,
+        max_non_target_cost: float,
+        minimum_non_target_clearance_cm: float = 0.0,
+        sample_step_cm: float = 2.0,
+    ) -> dict:
+        """Evaluate a target-owned corridor without hiding physical collisions."""
+        length = distance_xy(start_xy, goal_xy)
+        result = {
+            "clear": False,
+            "path_length_cm": length,
+            "path_obstacle_cost": 0.0,
+            "maximum_obstacle_cost": 0.0,
+            "minimum_wall_clearance_cm": 0.0,
+            "physical_collision": False,
+            "soft_cost_rejected": False,
+            "clearance_rejected": False,
+            "target_inflation_exempted": True,
+        }
+        if not self.in_bounds_xy(start_xy) or not self.in_bounds_xy(goal_xy):
+            result["physical_collision"] = True
+            return result
+        if length < 1e-6:
+            physical_free = self.is_free_xy(goal_xy)
+            clearance = self.non_target_clearance_cm(goal_xy, target_screen_id)
+            non_target_cost = self.non_target_obstacle_cost_xy(
+                goal_xy, target_screen_id
+            )
+            result.update({
+                "clear": bool(
+                    physical_free
+                    and non_target_cost < float(max_non_target_cost)
+                    and clearance >= float(minimum_non_target_clearance_cm)
+                ),
+                "path_obstacle_cost": non_target_cost,
+                "maximum_obstacle_cost": non_target_cost,
+                "minimum_wall_clearance_cm": clearance,
+                "physical_collision": not physical_free,
+                "soft_cost_rejected": non_target_cost >= float(max_non_target_cost),
+                "clearance_rejected": clearance < float(minimum_non_target_clearance_cm),
+            })
+            return result
+
+        dx = float(goal_xy[0]) - float(start_xy[0])
+        dy = float(goal_xy[1]) - float(start_xy[1])
+        tangent = (dx / length, dy / length)
+        lateral = (-tangent[1], tangent[0])
+        step = max(0.5, float(sample_step_cm))
+        longitudinal_steps = max(1, int(math.ceil(length / step)))
+        half_width = max(0.0, float(half_width_cm))
+        lateral_steps = max(1, int(math.ceil(half_width / step))) if half_width else 0
+        offsets = [0.0]
+        for index in range(1, lateral_steps + 1):
+            offset = min(half_width, index * step)
+            offsets.extend((-offset, offset))
+
+        total_cost = 0.0
+        samples = 0
+        maximum_cost = 0.0
+        minimum_clearance = float("inf")
+        physical_collision = False
+        soft_cost_rejected = False
+        for index in range(longitudinal_steps + 1):
+            along = min(length, index * step)
+            center = (
+                float(start_xy[0]) + tangent[0] * along,
+                float(start_xy[1]) + tangent[1] * along,
+            )
+            minimum_clearance = min(
+                minimum_clearance,
+                self.non_target_clearance_cm(center, target_screen_id),
+            )
+            for offset in offsets:
+                sample = (
+                    center[0] + lateral[0] * offset,
+                    center[1] + lateral[1] * offset,
+                )
+                if not self.is_free_xy(sample):
+                    physical_collision = True
+                    continue
+                cost = self.non_target_obstacle_cost_xy(sample, target_screen_id)
+                total_cost += cost
+                samples += 1
+                maximum_cost = max(maximum_cost, cost)
+                if cost >= float(max_non_target_cost):
+                    soft_cost_rejected = True
+        clearance_rejected = minimum_clearance < float(
+            minimum_non_target_clearance_cm
+        )
+        result.update({
+            "clear": not (
+                physical_collision or soft_cost_rejected or clearance_rejected
+            ),
+            "path_obstacle_cost": total_cost / max(1, samples),
+            "maximum_obstacle_cost": maximum_cost,
+            "minimum_wall_clearance_cm": (
+                0.0 if minimum_clearance == float("inf") else minimum_clearance
+            ),
+            "physical_collision": physical_collision,
+            "soft_cost_rejected": soft_cost_rejected,
+            "clearance_rejected": clearance_rejected,
+        })
+        return result
+
     def target_direct_corridor_clear(
         self,
         start_xy,
@@ -394,43 +527,15 @@ class MapModel:
         max_non_target_cost: float,
         sample_step_cm: float = 2.0,
     ) -> bool:
-        """Check a narrow final corridor, ignoring only target-building inflation.
-
-        Physical occupancy is never ignored. Inflation from every other static
-        building and every dynamic obstacle remains active.
-        """
-        if not self.in_bounds_xy(start_xy) or not self.in_bounds_xy(goal_xy):
-            return False
-        dx = float(goal_xy[0]) - float(start_xy[0])
-        dy = float(goal_xy[1]) - float(start_xy[1])
-        length = math.hypot(dx, dy)
-        if length < 1e-6:
-            return self.is_free_xy(goal_xy)
-        tangent = (dx / length, dy / length)
-        lateral = (-tangent[1], tangent[0])
-        longitudinal_steps = max(1, int(math.ceil(length / max(0.5, sample_step_cm))))
-        half_width = max(0.0, float(half_width_cm))
-        lateral_steps = max(1, int(math.ceil(half_width / max(0.5, sample_step_cm))))
-        offsets = [0.0]
-        for index in range(1, lateral_steps + 1):
-            offset = min(half_width, index * max(0.5, sample_step_cm))
-            offsets.extend((-offset, offset))
-        for index in range(longitudinal_steps + 1):
-            along = min(length, index * max(0.5, sample_step_cm))
-            center = (
-                float(start_xy[0]) + tangent[0] * along,
-                float(start_xy[1]) + tangent[1] * along,
-            )
-            for offset in offsets:
-                sample = (
-                    center[0] + lateral[0] * offset,
-                    center[1] + lateral[1] * offset,
-                )
-                if not self.is_free_xy(sample):
-                    return False
-                if self.non_target_obstacle_cost_xy(sample, target_screen_id) >= float(max_non_target_cost):
-                    return False
-        return True
+        """Check a narrow final corridor, ignoring only target-building inflation."""
+        return bool(self.target_direct_corridor_metrics(
+            start_xy,
+            goal_xy,
+            target_screen_id,
+            half_width_cm,
+            max_non_target_cost,
+            sample_step_cm=sample_step_cm,
+        )["clear"])
 
     def nearest_free_xy(self, xy) -> Tuple[float, float]:
         start = self.grid_pos(xy)

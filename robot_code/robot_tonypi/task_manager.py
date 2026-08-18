@@ -183,6 +183,7 @@ class TaskManager:
         self.local_replan_failures = 0
         self.plan_failure_signature = None
         self.identical_plan_failure_count = 0
+        self.last_recovered_deterministic_failure_key = None
         self.active_navigation_plan = None
         self.last_navigation_mode = ""
         self.last_motion_action = ""
@@ -2303,6 +2304,7 @@ class TaskManager:
         minimum_required = float(nav.get("normal_navigation_min_clearance_cm", 25.0))
         wall_scale = float(nav.get("normal_wall_clearance_penalty_scale", 4.0))
         headings = []
+        rejection_reasons = []
         for index, (start, end) in enumerate(zip(path, path[1:]), start=1):
             is_goal = allow_goal_high_cost and index == len(path) - 1
             metrics = self.movement_corridor_metrics(start, end, allow_goal_high_cost=is_goal)
@@ -2313,6 +2315,15 @@ class TaskManager:
             minimum_clearance = min(minimum_clearance, clearance)
             wall_penalty += max(0.0, wall_target - clearance) * wall_scale * segment_length / 10.0
             clearance_ok = is_goal or self.normal_navigation_clearance_ok(clearance)
+            if not bool(metrics["clear"]):
+                if bool(metrics.get("physical_collision", False)):
+                    rejection_reasons.append("corridor_physical_collision")
+                elif bool(metrics.get("soft_cost_rejected", False)):
+                    rejection_reasons.append("corridor_soft_cost_rejected")
+                else:
+                    rejection_reasons.append("corridor_blocked")
+            if not clearance_ok:
+                rejection_reasons.append("corridor_clearance_below_minimum")
             clear = clear and bool(metrics["clear"]) and clearance_ok
             headings.append(math.degrees(math.atan2(end[1] - start[1], end[0] - start[0])))
         turn_cost = 0.0
@@ -2338,6 +2349,9 @@ class TaskManager:
             "wall_clearance_penalty": wall_penalty,
             "turn_cost": turn_cost,
             "action_switch_penalty": switch_penalty,
+            "reachability_rejection_reason": (
+                None if clear else "+".join(dict.fromkeys(rejection_reasons))
+            ),
         }
 
     def path_segments_clear(
@@ -2440,15 +2454,18 @@ class TaskManager:
             return []
         half_width = float(nav.get("target_direct_corridor_half_width_cm", 6.0))
         max_cost = float(nav.get("target_direct_non_target_max_cost", 60.0))
-
         def segment_clear(start, end):
-            return self.map.target_direct_corridor_clear(
+            return self.map.target_direct_corridor_metrics(
                 start,
                 end,
                 screen.screen_id,
                 half_width,
                 max_cost,
-            )
+                # Final target motion intentionally has narrower clearance than
+                # normal navigation.  Physical obstacles and unrelated soft
+                # inflation are still enforced by the checks above.
+                minimum_non_target_clearance_cm=0.0,
+            )["clear"]
 
         start = pose.xy()
         if segment_clear(start, goal_xy):
@@ -2463,6 +2480,60 @@ class TaskManager:
             if all(segment_clear(a, b) for a, b in zip(path, path[1:])):
                 return self.compact_path_points(path)
         return []
+
+    def target_owned_approach_metrics(
+        self,
+        pose: RobotPose,
+        screen: Screen,
+        goal_xy: Tuple[float, float],
+    ) -> dict:
+        """Score an approach corridor while exempting only its target inflation."""
+        nav = self.config["navigation"]
+        metrics = self.map.target_direct_corridor_metrics(
+            pose.xy(),
+            goal_xy,
+            screen.screen_id,
+            float(nav.get("target_direct_corridor_half_width_cm", 6.0)),
+            float(nav.get("target_direct_non_target_max_cost", 60.0)),
+            # These candidates are the hand-off into the bounded final target
+            # phase, so do not re-apply normal-navigation clearance to the
+            # target-side corridor.  Unrelated inflation and all physical
+            # obstacles remain hard constraints.
+            minimum_non_target_clearance_cm=0.0,
+        )
+        reason = None
+        if not metrics.get("clear"):
+            if metrics.get("physical_collision"):
+                reason = "target_approach_physical_collision"
+            elif metrics.get("soft_cost_rejected"):
+                reason = "target_approach_unrelated_soft_cost_rejected"
+            elif metrics.get("clearance_rejected"):
+                reason = "target_approach_unrelated_clearance_rejected"
+            else:
+                reason = "target_approach_corridor_blocked"
+        length = float(metrics.get("path_length_cm", distance_xy(pose.xy(), goal_xy)))
+        obstacle_component = (
+            float(metrics.get("path_obstacle_cost", 0.0))
+            * float(nav.get("normal_path_obstacle_cost_scale", 0.35))
+        )
+        desired_heading = math.degrees(math.atan2(
+            float(goal_xy[1]) - pose.y_cm,
+            float(goal_xy[0]) - pose.x_cm,
+        ))
+        heading_delta = abs(angle_diff_deg(desired_heading, pose.yaw_deg))
+        turn_cost = 0.0
+        if heading_delta > float(nav.get("turn_tolerance_deg", 20.0)):
+            turn_cost = float(nav.get("action_planner_turn_fixed_cost_cm", 20.0))
+            turn_cost += heading_delta * float(
+                nav.get("action_planner_turn_cost_cm_per_deg", 0.8)
+            )
+        metrics.update({
+            "total_cost": length + obstacle_component + turn_cost,
+            "turn_cost": turn_cost,
+            "reachability_rejection_reason": reason,
+            "target_obstacle_soft_cost_exempted": True,
+        })
+        return metrics
 
     def navigation_point_diagnostics(self, xy: Tuple[float, float]) -> dict:
         """Describe physical occupancy and inflated footprint cost at one world point."""
@@ -2490,6 +2561,12 @@ class TaskManager:
             )
         clearance_cm = round(float(self.map.robot_clearance_cm(xy)), 3)
         clearance_traversable = self.normal_navigation_clearance_ok(clearance_cm)
+        if not free or not footprint_free:
+            occupancy_class = "HARD_BLOCKED"
+        elif footprint_max_cost >= max_cost or not clearance_traversable:
+            occupancy_class = "SOFT_HIGH_COST"
+        else:
+            occupancy_class = "SAFE"
         return {
             "xy": (float(xy[0]), float(xy[1])),
             "grid": grid,
@@ -2502,6 +2579,7 @@ class TaskManager:
                 nav.get("normal_navigation_min_clearance_cm", 25.0)
             ),
             "clearance_traversable": clearance_traversable,
+            "occupancy_class": occupancy_class,
             "footprint_free": footprint_free,
             "footprint_max_cost": footprint_max_cost,
             "footprint_traversable": (
@@ -2776,6 +2854,7 @@ class TaskManager:
 
         viable = []
         action_fallback_candidates = []
+        candidate_evaluations = []
         minimum_clearance = float(
             self.config["navigation"].get("normal_navigation_min_clearance_cm", 25.0)
         )
@@ -2794,40 +2873,89 @@ class TaskManager:
             path = []
             metrics = {}
             path_source = "astar"
+            astar = {}
+            raw_path = []
+            rejection_reason = None
+            if not detail["in_bounds"]:
+                rejection_reason = "goal_out_of_bounds"
+            elif detail["blocked"] or not detail["footprint_free"]:
+                rejection_reason = "goal_physical_footprint_collision"
+            elif not detail["footprint_traversable"] and not candidate_allow_high:
+                rejection_reason = (
+                    "goal_soft_cost_rejected"
+                    if detail["footprint_max_cost"] >= float(
+                        self.config["navigation"].get(
+                            "normal_navigation_max_cost", 55.0
+                        )
+                    )
+                    else "goal_clearance_below_minimum"
+                )
             if valid:
                 raw_path = self.map.plan(
                     pose.xy(), plan_goal, allow_goal_high_cost=candidate_allow_high
                 )
+                astar = dict(getattr(self.map, "last_astar_metrics", {}))
                 if raw_path:
                     path = self.compact_path_points([pose.xy()] + list(raw_path))
                     metrics = self.normal_path_metrics(
                         pose, path, allow_goal_high_cost=candidate_allow_high
                     )
                     if not metrics.get("clear"):
+                        rejection_reason = metrics.get(
+                            "reachability_rejection_reason"
+                        ) or "astar_path_post_validation_failed"
                         path = []
-            astar = dict(getattr(self.map, "last_astar_metrics", {}))
-            if valid and not path:
-                action_fallback_candidates.append((candidate, detail, astar))
+                else:
+                    rejection_reason = "astar_{}".format(
+                        astar.get("reason", "no_path")
+                    )
+
+            # Approach poses are generated from the locked target face.  They
+            # may ignore only that target building's soft inflation; physical
+            # occupancy, field boundaries, unrelated buildings, and dynamic
+            # obstacles remain hard constraints.  Exact goals still enter via
+            # the existing bounded target_direct_approach path.
+            target_approach_eligible = bool(
+                target_screen is not None
+                and candidate["goal_type"] == "approach"
+                and self.current_target_screen_id == int(target_screen.screen_id)
+                and detail["in_bounds"]
+                and not detail["blocked"]
+            )
+            if not path and target_approach_eligible:
+                target_metrics = self.target_owned_approach_metrics(
+                    pose, target_screen, plan_goal
+                )
+                if target_metrics.get("clear"):
+                    path = [pose.xy(), plan_goal]
+                    metrics = target_metrics
+                    path_source = "target_owned_approach"
+                    rejection_reason = None
+                else:
+                    rejection_reason = target_metrics.get(
+                        "reachability_rejection_reason"
+                    ) or rejection_reason
+
             cost = float(metrics.get("total_cost", float("inf")))
             if path:
                 cost += 0.25 * distance_xy(plan_goal, goal_xy)
                 viable.append((
                     cost, candidate, path, metrics, detail, astar, path_source
                 ))
-            self.debug.event(
-                "staging_candidate_generated",
-                screen_id=screen_id,
-                goal_type=candidate["goal_type"],
-                candidate_xy=plan_goal,
-                candidate_grid=detail["grid"],
-                blocked=detail["blocked"],
-                footprint_traversable=detail["footprint_traversable"],
-                clearance_cm=detail["clearance_cm"],
-                reachable=bool(path),
-                cost=None if not path else round(cost, 3),
-                astar_reason=astar.get("reason"),
-                astar_expanded_nodes=astar.get("expanded_nodes"),
-            )
+            evaluation = {
+                "candidate": candidate,
+                "detail": detail,
+                "astar": astar,
+                "path": path,
+                "metrics": metrics,
+                "path_source": path_source if path else None,
+                "cost": cost,
+                "rejection_reason": rejection_reason,
+                "astar_path_found": bool(raw_path),
+            }
+            candidate_evaluations.append(evaluation)
+            if valid and not path:
+                action_fallback_candidates.append(evaluation)
         # Prefer the established A* approach/staging ordering.  Only when all
         # center-cell A* routes fail footprint clearance do we invoke the
         # action-space planner as a second way to reach those same candidates.
@@ -2836,7 +2964,10 @@ class TaskManager:
             and action_fallback_candidates
             and bool(self.config["navigation"].get("action_planner_enabled", True))
         ):
-            for candidate, detail, astar in action_fallback_candidates:
+            for evaluation in action_fallback_candidates:
+                candidate = evaluation["candidate"]
+                detail = evaluation["detail"]
+                astar = evaluation["astar"]
                 plan_goal = candidate["xy"]
                 candidate_allow_high = bool(candidate.get("allow_goal_high_cost", False))
                 alternate = self.map.plan_action_path(
@@ -2847,6 +2978,10 @@ class TaskManager:
                     allow_goal_high_cost=candidate_allow_high,
                 )
                 if not alternate:
+                    evaluation["rejection_reason"] = "+".join(filter(None, (
+                        evaluation.get("rejection_reason"),
+                        "action_planner_no_path",
+                    )))
                     continue
                 metrics = self.normal_path_metrics(
                     pose,
@@ -2854,6 +2989,11 @@ class TaskManager:
                     allow_goal_high_cost=candidate_allow_high,
                 )
                 if not metrics.get("clear"):
+                    evaluation["rejection_reason"] = "+".join(filter(None, (
+                        evaluation.get("rejection_reason"),
+                        metrics.get("reachability_rejection_reason")
+                        or "action_planner_path_post_validation_failed",
+                    )))
                     continue
                 planner_metrics = getattr(self.map, "last_action_plan_metrics", {})
                 if planner_metrics.get("total_cost") is not None:
@@ -2869,13 +3009,57 @@ class TaskManager:
                     astar,
                     "action_planner",
                 ))
+                evaluation.update({
+                    "path": alternate,
+                    "metrics": metrics,
+                    "path_source": "action_planner",
+                    "cost": cost,
+                    "rejection_reason": None,
+                })
+        for evaluation in candidate_evaluations:
+            candidate = evaluation["candidate"]
+            detail = evaluation["detail"]
+            astar = evaluation["astar"]
+            path = evaluation["path"]
+            cost = evaluation["cost"]
+            self.debug.event(
+                "staging_candidate_generated",
+                screen_id=screen_id,
+                goal_type=candidate["goal_type"],
+                candidate_xy=candidate["xy"],
+                candidate_grid=detail["grid"],
+                blocked=detail["blocked"],
+                occupancy_class=detail["occupancy_class"],
+                footprint_traversable=detail["footprint_traversable"],
+                footprint_free=detail["footprint_free"],
+                footprint_max_cost=detail["footprint_max_cost"],
+                clearance_cm=detail["clearance_cm"],
+                reachable=bool(path),
+                reachability_rejection_reason=evaluation["rejection_reason"],
+                selected_path_source=evaluation["path_source"],
+                cost=None if not path else round(float(cost), 3),
+                astar_path_found=evaluation["astar_path_found"],
+                astar_reason=astar.get("reason"),
+                astar_expanded_nodes=astar.get("expanded_nodes"),
+            )
         if not viable:
+            candidate_rejections = [
+                {
+                    "goal_type": item["candidate"]["goal_type"],
+                    "candidate_xy": item["candidate"]["xy"],
+                    "reason": item["rejection_reason"],
+                    "astar_reason": item["astar"].get("reason"),
+                    "astar_path_found": item["astar_path_found"],
+                }
+                for item in candidate_evaluations
+            ]
             self.active_navigation_plan = {
                 "goal_type": "none",
                 "goal_xy": None,
                 "final_target_xy": list(goal_xy),
                 "staging_xy": None,
                 "direct_corridor_clear": False,
+                "candidate_rejections": candidate_rejections,
             }
             self.emit_navigation_plan_diagnostic(
                 pose, target_screen, goal_xy, "none", None, False
@@ -2898,6 +3082,7 @@ class TaskManager:
             "staging_xy": list(normal_goal) if goal_type in ("staging", "approach") else None,
             "direct_corridor_clear": False,
             "source": selected.get("source"),
+            "path_source": initial_path_source,
         }
         self.debug.event(
             "normal_navigation_staging_target",
@@ -4805,6 +4990,21 @@ class TaskManager:
         )
         return self.identical_plan_failure_count, signature
 
+    def deterministic_plan_failure_key(
+        self,
+        final_goal_xy: Tuple[float, float],
+        reason: str,
+    ) -> tuple:
+        """Identify failures that recovery motion cannot change semantically."""
+        target_goal = getattr(self, "current_target_goal", None)
+        return (
+            getattr(self, "current_target_screen_id", None),
+            None if target_goal is None else target_goal.generation_id,
+            self.map.grid_pos(final_goal_xy),
+            str(reason),
+            self.map_planning_signature(),
+        )
+
     def clear_plan_failure_watchdog(self, reason: str) -> None:
         if getattr(self, "identical_plan_failure_count", 0):
             self.debug.event(
@@ -5226,6 +5426,7 @@ class TaskManager:
         if episode != getattr(self, "navigation_plan_episode", None):
             self.navigation_plan_episode = episode
             self.clear_plan_failure_watchdog("new_navigation_target")
+            self.last_recovered_deterministic_failure_key = None
         self.clear_turn_progress_watchdog("navigate_xy_start")
         target_xy = (float(target_xy[0]), float(target_xy[1]))
         if target_goal is not None and not self.validate_target_goal(
@@ -5489,6 +5690,7 @@ class TaskManager:
                     free_neighbor_count=start_detail["free_neighbor_count"],
                     astar_expanded_nodes=astar.get("expanded_nodes"),
                     astar_reason=astar.get("reason"),
+                    candidate_rejections=plan.get("candidate_rejections", []),
                     local_replan_failures=self.local_replan_failures,
                     failure_signature=repr(signature),
                 )
@@ -5507,7 +5709,29 @@ class TaskManager:
                     self.config["navigation"].get("identical_local_replan_failure_threshold", 3)
                 ))
                 if count >= threshold:
+                    deterministic_key = self.deterministic_plan_failure_key(
+                        target_xy, self.last_navigation_failure_reason
+                    )
                     self.set_mission_state(MissionState.NAVIGATION_RECOVERY)
+                    if deterministic_key == getattr(
+                        self, "last_recovered_deterministic_failure_key", None
+                    ):
+                        self.last_navigation_failure_reason = "navigation_blocked"
+                        self.set_mission_state(MissionState.NAVIGATION_BLOCKED)
+                        self.debug.event(
+                            "deterministic_recovery_repeat_blocked",
+                            screen_id=getattr(self, "current_target_screen_id", None),
+                            target_generation=(
+                                None if target_goal is None
+                                else target_goal.generation_id
+                            ),
+                            target_xy=target_xy,
+                            map_signature=self.map_planning_signature(),
+                            failure_reason="no_reachable_approach_or_staging",
+                            recovery_repeated=False,
+                            target_preserved=True,
+                        )
+                        return False
                     self.debug.event(
                         "local_replan_escalated",
                         failure_count=count,
@@ -5519,6 +5743,7 @@ class TaskManager:
                         reason + ":repeated_plan_failure"
                     )
                     if recovered:
+                        self.last_recovered_deterministic_failure_key = deterministic_key
                         self.clear_plan_failure_watchdog("interior_recovery_success")
                         self.debug.event(
                             "interior_recovery_waypoint_selected",
@@ -5545,6 +5770,7 @@ class TaskManager:
                         return False
                 continue
             self.clear_plan_failure_watchdog("path_plan_success")
+            self.last_recovered_deterministic_failure_key = None
             if bool(getattr(self, "pending_post_action_replan", False)):
                 self.debug.event(
                     "post_action_replan",

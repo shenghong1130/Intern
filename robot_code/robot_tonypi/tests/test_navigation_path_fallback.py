@@ -97,6 +97,80 @@ class RealFailureRegressionTests(unittest.TestCase):
             4, (172.50, 64.96, 106.5), (207.5, 50.0)
         )
 
+    def test_screen_17_astar_successful_safe_candidate_is_reachable(self):
+        pose = RobotPose(
+            100.90, 234.88, 0.0, Confidence.HIGH, "TEST", now_s()
+        )
+        manager = competition_manager(17, pose)
+        screen = manager.map.screens[17]
+        path = manager.plan_navigation_path(
+            pose,
+            screen.task_target_xy,
+            allow_goal_high_cost=True,
+            target_screen=screen,
+        )
+        self.assertTrue(path)
+        self.assertNotEqual(manager.active_navigation_plan["goal_type"], "none")
+        candidate = next(
+            data for name, data in manager.debug.events
+            if name == "staging_candidate_generated"
+            and tuple(data["candidate_xy"]) == (62.0, 274.5)
+        )
+        self.assertFalse(candidate["blocked"])
+        self.assertTrue(candidate["footprint_traversable"])
+        self.assertEqual(candidate["astar_reason"], "success")
+        self.assertTrue(candidate["astar_path_found"])
+        self.assertTrue(candidate["reachable"])
+        self.assertIsNone(candidate["reachability_rejection_reason"])
+
+    def test_ordinary_navigation_still_rejects_soft_high_cost_goal(self):
+        pose = RobotPose(
+            100.90, 234.88, 0.0, Confidence.HIGH, "TEST", now_s()
+        )
+        manager = competition_manager(17, pose)
+        goal = manager.map.screens[17].task_target_xy
+        self.assertFalse(manager.navigation_point_diagnostics(goal)["footprint_traversable"])
+        path = manager.plan_navigation_path(
+            pose, goal, allow_goal_high_cost=False, target_screen=None
+        )
+        self.assertEqual(path, [])
+        event = next(
+            data for name, data in manager.debug.events
+            if name == "staging_candidate_generated"
+        )
+        self.assertFalse(event["reachable"])
+        self.assertIn("goal_soft_cost_rejected", event["reachability_rejection_reason"])
+
+    def test_screen_18_final_target_uses_target_owned_soft_cost_exemption(self):
+        pose = RobotPose(140.0, 243.0, 0.0, Confidence.HIGH, "TEST", now_s())
+        manager = competition_manager(18, pose)
+        screen = manager.map.screens[18]
+        detail = manager.navigation_point_diagnostics(screen.task_target_xy)
+        self.assertFalse(detail["blocked"])
+        self.assertFalse(detail["footprint_traversable"])
+        path = manager.target_direct_approach_path(
+            pose, screen, screen.task_target_xy
+        )
+        self.assertEqual(path[-1], screen.task_target_xy)
+
+    def test_target_owned_approach_never_ignores_unrelated_obstacle(self):
+        pose = RobotPose(140.0, 243.0, 0.0, Confidence.HIGH, "TEST", now_s())
+        manager = competition_manager(18, pose)
+        screen = manager.map.screens[18]
+        manager.map.add_dynamic_obstacle((122.0, 243.0), size_cm=8.0)
+        metrics = manager.target_owned_approach_metrics(
+            pose, screen, screen.task_target_xy
+        )
+        self.assertFalse(metrics["clear"])
+        self.assertEqual(
+            metrics["reachability_rejection_reason"],
+            "target_approach_physical_collision",
+        )
+        self.assertEqual(
+            manager.target_direct_approach_path(pose, screen, screen.task_target_xy),
+            [],
+        )
+
 
 class ApproachAndStagingTests(unittest.TestCase):
     def setUp(self):
@@ -126,7 +200,10 @@ class ApproachAndStagingTests(unittest.TestCase):
             self.pose, self.screen.task_target_xy, target_screen=self.screen
         )
         selected = tuple(self.manager.active_navigation_plan["goal_xy"])
-        self.assertEqual(self.manager.active_navigation_plan["goal_type"], "staging")
+        self.assertIn(
+            self.manager.active_navigation_plan["goal_type"],
+            ("staging", "approach"),
+        )
         self.assertIn(selected, calls)
         self.assertLess(distance_xy(path[-1], selected), 0.1)
         self.assertNotEqual(selected, self.screen.task_target_xy)
@@ -285,6 +362,50 @@ class RepeatedPlanningFailureTests(unittest.TestCase):
         self.assertEqual(len(recovery_calls), 1)
         self.assertIs(manager.current_target_goal, original_goal)
         self.assertEqual(manager.current_target_screen_id, 35)
+
+    def test_same_deterministic_failure_does_not_repeat_recovery_episode(self):
+        manager = self.manager
+        manager.mission_state = MissionState.NAVIGATE_TO_TARGET
+        manager.navigation_plan_episode = None
+        manager.navigation_stall_signature = None
+        manager.navigation_stall_count = 0
+        manager.near_wall_recovery_no_progress_count = 0
+        manager.near_wall_recovery_actions = 0
+        manager.turn_navigation_abort = False
+        manager.collision_recovery_pending = False
+        manager.pending_post_action_replan = False
+        manager.last_navigation_failure_reason = ""
+        manager.clear_turn_progress_watchdog = lambda reason: None
+        manager.clear_navigation_noop = lambda: None
+        manager.time_left_s = lambda: 100.0
+        manager.near_wall_now = lambda pose: False
+        manager.target_direct_approach_path = lambda *args, **kwargs: []
+        manager.plan_navigation_path = lambda *args, **kwargs: []
+        manager.localize_scan = lambda *args, **kwargs: True
+        manager.set_mission_state = lambda state: setattr(manager, "mission_state", state)
+        recovery_calls = []
+
+        def recover(reason):
+            recovery_calls.append(reason)
+            return True
+
+        manager.recover_via_indoor_waypoint = recover
+        ok = manager.navigate_to_xy(
+            self.goal,
+            max_steps=12,
+            target_screen=manager.map.screens[35],
+            target_goal=manager.current_target_goal,
+        )
+        self.assertFalse(ok)
+        self.assertEqual(len(recovery_calls), 1)
+        self.assertEqual(manager.mission_state, MissionState.NAVIGATION_BLOCKED)
+        self.assertEqual(manager.last_navigation_failure_reason, "navigation_blocked")
+        events = [
+            data for name, data in manager.debug.events
+            if name == "deterministic_recovery_repeat_blocked"
+        ]
+        self.assertEqual(len(events), 1)
+        self.assertFalse(events[0]["recovery_repeated"])
 
     def test_arrival_requires_fresh_visual_pose_after_dead_reckoning(self):
         manager = self.manager
