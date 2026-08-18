@@ -181,6 +181,11 @@ class MissionSchedulerTests(unittest.TestCase):
         self.assertEqual(manager.state.pose.yaw_deg, 15.0)
         self.assertEqual(manager.state.pose.source, "DEAD_RECKONING")
         self.assertEqual(manager.state.pose.confidence, Confidence.LOW)
+        self.assertEqual(manager.consecutive_localize_failures, 1)
+        self.assertEqual(
+            manager.last_localization_attempt_result,
+            "scan_after_turn_pose_rejected",
+        )
 
     def test_wrong_direction_turn_is_rejected(self):
         result = evaluate_turn_progress(
@@ -191,6 +196,59 @@ class MissionSchedulerTests(unittest.TestCase):
         )
         self.assertTrue(result["direction_conflict"])
         self.assertTrue(result["reject_visual_pose"])
+
+    def test_scan_after_turn_visible_tag_without_pose_counts_localization_failure(self):
+        manager = TaskManager.__new__(TaskManager)
+        tag = SimpleNamespace(tag_id=26, center=(320.0, 220.0))
+        manager.args = SimpleNamespace(dry_run=False)
+        manager.config = {
+            "vision": {"scan_after_turn_enabled": True, "scan_after_turn_min_interval_s": 0},
+            "camera": {"head_center_angle": 100},
+        }
+        manager.time_left_s = lambda: 100
+        manager.last_scan_after_turn_s = 0
+        manager.capture_with_tags = lambda center: (SimpleNamespace(), [tag])
+        manager.localizer = SimpleNamespace(
+            estimate_from_frame=lambda *args, **kwargs: (None, SimpleNamespace()),
+            last_estimation_diagnostics={
+                "detected_tag_ids": [26],
+                "candidate_localization_tag_ids": [26],
+                "rejected_tags": [{
+                    "tag_id": 26,
+                    "tag_area_px": 800.0,
+                    "tag_center_px": [320.0, 220.0],
+                    "stage": "solve_pnp",
+                    "reason": "pnp_failed",
+                }],
+            },
+        )
+        manager.state = SimpleNamespace(
+            pose=RobotPose(10, 10, 15, Confidence.LOW, "DEAD_RECKONING", 2),
+            actions_since_localize=2,
+            motion_uncertainty=5.2,
+        )
+        events = []
+        manager.debug = SimpleNamespace(
+            event=lambda name, **data: events.append((name, data)),
+            save_image=lambda *args, **kwargs: None,
+        )
+        manager.observe_transit_bindings = lambda frame, tags, annotated, center, reason: annotated
+        manager.transit_bindings = {}
+        manager.publish_state = lambda *args, **kwargs: None
+        manager.last_localize_success_s = 0
+        manager.localization_failures = 0
+        manager.consecutive_localize_failures = 0
+        manager.consecutive_no_tag_scans = 0
+        result = manager.scan_after_turn("test", "turn_right_large")
+        self.assertFalse(result["accepted"])
+        self.assertEqual(manager.consecutive_localize_failures, 1)
+        self.assertEqual(manager.consecutive_no_tag_scans, 0)
+        self.assertEqual(
+            manager.last_localization_attempt_result,
+            "pose_unavailable_with_tags",
+        )
+        rejection = next(data for name, data in events if name == "localization_tag_rejected")
+        self.assertEqual(rejection["reason"], "pnp_failed")
 
     def test_successful_turn_clears_counter(self):
         manager = TaskManager.__new__(TaskManager)

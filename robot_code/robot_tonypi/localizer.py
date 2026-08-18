@@ -97,6 +97,7 @@ class Localizer:
         self.edge_margin = float(config["localization"]["edge_margin_px"])
         self.min_id = int(config["localization"]["allowed_min_id"])
         self.max_id = int(config["localization"]["allowed_max_id"])
+        self.last_estimation_diagnostics = {}
 
     def estimate_from_frame(
         self,
@@ -108,22 +109,100 @@ class Localizer:
         annotated = frame.copy() if annotate else frame
         best = None
         best_area = -1.0
+        detected_ids = []
+        candidate_ids = []
+        rejected = []
+        accepted_tag_id = None
+        accepted_tag_area_px = None
+        accepted_tag_center_px = None
         for tag in tags:
+            tag_id = int(tag.tag_id)
+            detected_ids.append(tag_id)
             if not (self.min_id <= int(tag.tag_id) <= self.max_id):
+                rejected.append(self.tag_rejection_detail(
+                    tag, "id_filter", "id_out_of_range"
+                ))
                 continue
+            candidate_ids.append(tag_id)
             area = self.tag_area(tag)
             if area < best_area:
+                rejected.append(self.tag_rejection_detail(
+                    tag, "candidate_selection", "lower_area_than_selected"
+                ))
                 continue
-            pose = self._solve_tag_pose(tag, annotated)
+            pose, stage, rejection_reason = self._solve_tag_pose_detailed(
+                tag, annotated
+            )
             if pose is not None:
                 pose.yaw_deg = normalize_angle_deg(pose.yaw_deg - (float(head_pan_angle) - 100.0))
                 best = pose
                 best_area = area
+                accepted_tag_id = tag_id
+                accepted_tag_area_px = round(float(area), 1)
+                accepted_tag_center_px = [
+                    round(float(tag.center[0]), 1),
+                    round(float(tag.center[1]), 1),
+                ]
+            else:
+                rejected.append(self.tag_rejection_detail(
+                    tag, stage, rejection_reason
+                ))
+        self.last_estimation_diagnostics = {
+            "detected_tag_ids": detected_ids,
+            "candidate_localization_tag_ids": candidate_ids,
+            "rejected_tags": rejected,
+            "accepted_tag_id": accepted_tag_id,
+            "accepted_tag_area_px": accepted_tag_area_px,
+            "accepted_tag_center_px": accepted_tag_center_px,
+            "result": (
+                "accepted_visual_pose"
+                if best is not None
+                else "pose_unavailable_with_tags"
+                if detected_ids
+                else "no_tag"
+            ),
+        }
         return best, annotated
 
     def _solve_tag_pose(self, tag: TagDetection, frame) -> Optional[RobotPose]:
+        pose, _, _ = self._solve_tag_pose_detailed(tag, frame)
+        return pose
+
+    def tag_rejection_detail(
+        self,
+        tag: TagDetection,
+        stage: str,
+        reason: str,
+    ) -> dict:
+        try:
+            area = round(float(self.tag_area(tag)), 1)
+        except Exception:
+            area = None
+        try:
+            center = [round(float(tag.center[0]), 1), round(float(tag.center[1]), 1)]
+        except Exception:
+            center = None
+        return {
+            "tag_id": int(tag.tag_id),
+            "tag_area_px": area,
+            "tag_center_px": center,
+            "stage": str(stage),
+            "reason": str(reason),
+        }
+
+    def _solve_tag_pose_detailed(
+        self,
+        tag: TagDetection,
+        frame,
+    ) -> Tuple[Optional[RobotPose], str, str]:
+        """Run the existing pose math while retaining its real rejection stage."""
         cv = _cv2()
-        ok, reason = self.quality_gate(tag, frame.shape)
+        try:
+            ok, reason = self.quality_gate(tag, frame.shape)
+        except Exception as exc:
+            return None, "corner_geometry", "invalid_corner_geometry:{}".format(
+                type(exc).__name__
+            )
         color = (0, 220, 0) if ok else (0, 0, 255)
         cv.polylines(frame, [np.int32(tag.corners)], True, color, 2)
         cv.putText(
@@ -136,17 +215,34 @@ class Localizer:
             2,
         )
         if not ok:
-            return None
+            rejection = "edge_margin" if reason == "EDGE" else "too_small"
+            return None, "quality_gate", rejection
 
         key = str(int(tag.tag_id))
         if key not in self.tag_poses:
-            return None
-        obj_pts = np.array(self.tag_poses[key][:4], dtype=np.float64)
-        img_pts = np.array(tag.corners, dtype=np.float64)
-        success, rvec, tvec = cv.solvePnP(obj_pts, img_pts, self.cam_matrix, self.dist_coeff)
+            return None, "world_position_lookup", "world_position_missing"
+        try:
+            obj_pts = np.array(self.tag_poses[key][:4], dtype=np.float64)
+            img_pts = np.array(tag.corners, dtype=np.float64)
+            if obj_pts.shape != (4, 3) or img_pts.shape != (4, 2):
+                return None, "corner_geometry", "invalid_corner_geometry"
+            success, rvec, tvec = cv.solvePnP(
+                obj_pts, img_pts, self.cam_matrix, self.dist_coeff
+            )
+        except Exception as exc:
+            return None, "solve_pnp", "pnp_exception:{}".format(type(exc).__name__)
         if not success:
-            return None
-        rmat, _ = cv.Rodrigues(rvec)
+            return None, "solve_pnp", "pnp_failed"
+        if not np.all(np.isfinite(tvec)):
+            return None, "pose_vector", "invalid_tvec"
+        if not np.all(np.isfinite(rvec)):
+            return None, "pose_vector", "invalid_rvec"
+        try:
+            rmat, _ = cv.Rodrigues(rvec)
+        except Exception as exc:
+            return None, "rotation", "rodrigues_exception:{}".format(type(exc).__name__)
+        if not np.all(np.isfinite(rmat)):
+            return None, "rotation", "invalid_rotation"
         cam_pos = -np.dot(rmat.T, tvec)
         heading = np.dot(rmat.T, np.array([[0], [0], [1]], dtype=np.float64))
         yaw = math.degrees(math.atan2(heading[1][0], heading[0][0]))
@@ -154,7 +250,7 @@ class Localizer:
         forward = np.array([math.cos(math.radians(yaw)), math.sin(math.radians(yaw))], dtype=np.float64)
         robot_xy = camera_xy - self.camera_forward_offset_cm * forward
         if not self._pose_in_bounds(robot_xy):
-            return None
+            return None, "map_bounds", "pose_out_of_bounds"
         return RobotPose(
             x_cm=float(robot_xy[0]),
             y_cm=float(robot_xy[1]),
@@ -162,7 +258,7 @@ class Localizer:
             confidence=Confidence.HIGH,
             source="VISION_TAG_{}".format(tag.tag_id),
             last_update_s=now_s(),
-        )
+        ), "accepted", "accepted_visual_pose"
 
     def estimate_tag_world_xy(
         self,
