@@ -237,6 +237,7 @@ class AdaptiveBatchTests(unittest.TestCase):
         manager.last_localization_pose_conflict = True
         conflict = manager.adaptive_relocalization_decision("normal", emit=False)
         manager.last_localization_pose_conflict = False
+        manager.state.actions_since_localize = 1
         large = manager.adaptive_relocalization_decision(
             "normal",
             last_action="turn_left_large",
@@ -248,6 +249,53 @@ class AdaptiveBatchTests(unittest.TestCase):
         )
         self.assertEqual(conflict["reason"], "visual_dead_reckoning_conflict")
         self.assertEqual(large["reason"], "large_turn")
+
+    def test_new_large_turn_requires_one_relocalization(self):
+        manager = adaptive_manager()
+        manager.state.actions_since_localize = 1
+        decision = manager.adaptive_relocalization_decision(
+            "normal", last_action="turn_left_large", emit=False
+        )
+        self.assertEqual(decision["decision"], "relocalize_now")
+        self.assertEqual(decision["reason"], "large_turn")
+        self.assertTrue(decision["large_turn_relocalization_pending"])
+
+    def test_successful_relocalization_consumes_historical_large_turn(self):
+        manager = adaptive_manager()
+        manager.last_motion_action = "turn_left_large"
+        manager.state.set_pose(RobotPose(
+            150.0, 150.0, 0.0, Confidence.HIGH, "VISION", now_s()
+        ))
+        decision = manager.adaptive_relocalization_decision("normal", emit=False)
+        self.assertEqual(manager.state.actions_since_localize, 0)
+        self.assertEqual(manager.state.motion_uncertainty, 0.0)
+        self.assertEqual(decision["decision"], "continue_dead_reckoning")
+        self.assertNotEqual(decision["reason"], "large_turn")
+        self.assertFalse(decision["large_turn_relocalization_pending"])
+
+    def test_later_large_turn_can_trigger_relocalization_again(self):
+        manager = adaptive_manager()
+        manager.last_motion_action = "turn_left_large"
+        manager.state.set_pose(RobotPose(
+            150.0, 150.0, 0.0, Confidence.HIGH, "VISION", now_s()
+        ))
+        first_consumed = manager.adaptive_relocalization_decision("normal", emit=False)
+        self.assertNotEqual(first_consumed["reason"], "large_turn")
+
+        new_turn = ActionResult(
+            "turn_left_large", "turn", 1, 0.0,
+            model_yaw_deg=45.0, executed_times=1,
+        )
+        manager.state.apply_action_result(new_turn)
+        next_decision = manager.adaptive_relocalization_decision(
+            "normal",
+            last_action="turn_left_large",
+            action_result=new_turn,
+            emit=False,
+        )
+        self.assertGreater(manager.state.actions_since_localize, 0)
+        self.assertEqual(next_decision["decision"], "relocalize_now")
+        self.assertEqual(next_decision["reason"], "large_turn")
 
     def test_tag_quality_and_visual_odometry_conflict_affect_confidence(self):
         manager = adaptive_manager()

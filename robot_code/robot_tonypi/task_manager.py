@@ -3214,7 +3214,7 @@ class TaskManager:
             decision, reason = "relocalize_now", "pose_confidence_low"
         elif bool(getattr(self, "last_localization_pose_conflict", False)):
             decision, reason = "relocalize_now", "visual_dead_reckoning_conflict"
-        elif large_turn:
+        elif large_turn and actions > 0:
             decision, reason = "relocalize_now", "large_turn"
         elif obstacle_tight:
             decision, reason = "relocalize_now", "obstacle_tight_navigation"
@@ -3232,6 +3232,7 @@ class TaskManager:
             "effective_pose_confidence": confidence.value,
             "navigation_mode": phase,
             "last_action": action_key or None,
+            "large_turn_relocalization_pending": bool(large_turn and actions > 0),
             "action_budget": action_budget,
             "uncertainty_limit": uncertainty_limit,
             "decision": decision,
