@@ -328,12 +328,12 @@ setInterval(refresh,800);
             p = self._map_pt((pose.x_cm, pose.y_cm), scale, img.shape[0])
             cv2.circle(img, p, 6, (0, 0, 0), -1)
             yaw = np.radians(pose.yaw_deg)
-            q = (int(p[0] + 18 * np.cos(yaw)), int(p[1] - 18 * np.sin(yaw)))
+            q = (int(p[0] + 18 * np.cos(yaw)), int(p[1] + 18 * np.sin(yaw)))
             cv2.line(img, p, q, (0, 0, 0), 2)
         cv2.imwrite(str(self.root / "latest_map.jpg"), img)
 
     def _map_pt(self, xy, scale, height_px):
-        return int(xy[0] * scale), int(height_px - xy[1] * scale)
+        return int(xy[0] * scale), int(xy[1] * scale)
 
     def close(self):
         if self.httpd is not None:
