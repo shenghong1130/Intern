@@ -2873,7 +2873,7 @@ class TaskManager:
                     )
                 ),
             )
-            if self.execute_final_forward(screen):
+            if self.recalibrate_target_for_nfc_retry(screen, retry_attempt):
                 return "reapproached"
             self.debug.event(
                 "nfc_interaction_invalid_response",
@@ -2885,6 +2885,69 @@ class TaskManager:
             )
             self.mission_retry_pause("recovery_retry_interval_s")
         return "mission_timeout"
+
+    def recalibrate_target_for_nfc_retry(
+        self,
+        screen: Screen,
+        retry_attempt: int,
+    ) -> bool:
+        """Rebuild the 20 cm target pose and identity lock before NFC attempt 2."""
+        self.debug.event(
+            "nfc_retry_target_recalibration_started",
+            screen_id=screen.screen_id,
+            tag_id=screen.screen_id,
+            attempt=int(retry_attempt),
+            task_target_xy=screen.task_target_xy or screen.target_xy,
+            desired_yaw=screen.task_target_yaw_deg,
+        )
+        goal = self.lock_target_goal(screen)
+        self.arrived_at_target = False
+        self.set_mission_state(MissionState.NAVIGATE_TO_TARGET)
+        if not self.navigate_to_screen(screen):
+            self.debug.event(
+                "nfc_retry_target_recalibration_failed",
+                screen_id=screen.screen_id,
+                tag_id=screen.screen_id,
+                attempt=int(retry_attempt),
+                stage="navigate_to_task_target",
+                target_goal=goal.as_dict(),
+                reason=self.last_navigation_failure_reason or "navigation_failed",
+            )
+            return False
+        self.arrived_at_target = True
+        self.set_mission_state(MissionState.ARRIVED_AT_TARGET)
+        if not self.confirm_target_tag_now(screen):
+            self.debug.event(
+                "nfc_retry_target_recalibration_failed",
+                screen_id=screen.screen_id,
+                tag_id=screen.screen_id,
+                attempt=int(retry_attempt),
+                stage="confirm_current_target_tag",
+                target_goal=goal.as_dict(),
+                reason="target_tag_not_confirmed",
+            )
+            return False
+        if not self.execute_final_forward(screen):
+            self.debug.event(
+                "nfc_retry_target_recalibration_failed",
+                screen_id=screen.screen_id,
+                tag_id=screen.screen_id,
+                attempt=int(retry_attempt),
+                stage="final_forward",
+                target_goal=goal.as_dict(),
+                reason="final_forward_failed",
+            )
+            return False
+        self.debug.event(
+            "nfc_retry_target_recalibration_completed",
+            screen_id=screen.screen_id,
+            tag_id=screen.screen_id,
+            attempt=int(retry_attempt),
+            target_goal=goal.as_dict(),
+            tag_confirmed=True,
+            final_forward_executed=True,
+        )
+        return True
 
     def give_up_nfc_change(self, screen: Screen, attempts: int, reason: str) -> None:
         """Retire one Screen after the bounded two physical NFC attempts."""
@@ -5809,6 +5872,186 @@ class TaskManager:
             return True
         return False
 
+    def forced_escape_translation_candidate(
+        self,
+        pose: RobotPose,
+        *,
+        name: str,
+        action: str,
+        forward_cm: float = 0.0,
+        lateral_cm: float = 0.0,
+    ) -> dict:
+        """Evaluate a bounded escape while tolerating only pre-existing overlap."""
+        result = {
+            "name": name,
+            "action": action,
+            "endpoint": None,
+            "cost": None,
+            "clearance": 0.0,
+            "valid": False,
+            "reason": "map_metrics_unavailable",
+            "new_hard_collision": False,
+            "allow_initial_overlap": True,
+            "require_clearance_improvement": True,
+        }
+        map_obj = getattr(self, "map", None)
+        required = ("is_free_xy", "in_bounds_xy", "grid_pos", "cost")
+        if map_obj is None or any(not hasattr(map_obj, item) for item in required):
+            return result
+        endpoint = self.translated_pose_xy(
+            pose,
+            forward_cm=float(forward_cm),
+            lateral_cm=float(lateral_cm),
+        )
+        result["endpoint"] = (round(endpoint[0], 3), round(endpoint[1], 3))
+        if not map_obj.in_bounds_xy(endpoint):
+            result["reason"] = "endpoint_out_of_bounds"
+            return result
+
+        nav = self.config["navigation"]
+        half_width = max(
+            0.0,
+            float(nav.get("translation_corridor_half_width_cm", 8.0)),
+        )
+        sample_step = max(0.5, min(1.0, float(getattr(map_obj, "res", 1.0))))
+        dx = float(endpoint[0]) - float(pose.x_cm)
+        dy = float(endpoint[1]) - float(pose.y_cm)
+        length = math.hypot(dx, dy)
+        if length < 0.1:
+            result["reason"] = "zero_modeled_motion"
+            return result
+        tangent = (dx / length, dy / length)
+        normal = (-tangent[1], tangent[0])
+        offsets = [0.0]
+        offset_steps = max(1, int(math.ceil(half_width / sample_step)))
+        for index in range(1, offset_steps + 1):
+            offset = min(half_width, index * sample_step)
+            offsets.extend((-offset, offset))
+
+        def footprint_blocked_cells(center_xy):
+            blocked = set()
+            for offset in offsets:
+                sample = (
+                    float(center_xy[0]) + normal[0] * offset,
+                    float(center_xy[1]) + normal[1] * offset,
+                )
+                if not map_obj.in_bounds_xy(sample) or not map_obj.is_free_xy(sample):
+                    blocked.add(map_obj.grid_pos(sample))
+            return blocked
+
+        initial_overlap = footprint_blocked_cells(pose.xy())
+        endpoint_overlap = footprint_blocked_cells(endpoint)
+        new_collision_cells = set()
+        longitudinal_steps = max(1, int(math.ceil(length / sample_step)))
+        for index in range(1, longitudinal_steps + 1):
+            along = min(length, index * sample_step)
+            center = (
+                float(pose.x_cm) + tangent[0] * along,
+                float(pose.y_cm) + tangent[1] * along,
+            )
+            for offset in offsets:
+                sample = (
+                    center[0] + normal[0] * offset,
+                    center[1] + normal[1] * offset,
+                )
+                if not map_obj.in_bounds_xy(sample):
+                    new_collision_cells.add(("out_of_bounds",))
+                    continue
+                if not map_obj.is_free_xy(sample):
+                    node = map_obj.grid_pos(sample)
+                    if node not in initial_overlap:
+                        new_collision_cells.add(node)
+
+        current = self.navigation_point_diagnostics(pose.xy())
+        candidate = self.navigation_point_diagnostics(endpoint)
+        current_cost = float(current["cost"] if current["cost"] is not None else float("inf"))
+        endpoint_cost = float(candidate["cost"] if candidate["cost"] is not None else float("inf"))
+        current_clearance = float(current["clearance_cm"])
+        endpoint_clearance = float(candidate["clearance_cm"])
+        cost_improvement = current_cost - endpoint_cost
+        clearance_improvement = endpoint_clearance - current_clearance
+        overlap_improvement = len(initial_overlap) - len(endpoint_overlap)
+        minimum_cost = float(nav.get("planner_start_escape_min_cost_improvement", 2.0))
+        minimum_clearance = float(nav.get("near_wall_min_clearance_improvement_cm", 1.5))
+        endpoint_center_free = bool(map_obj.is_free_xy(endpoint))
+        overlap_not_worse = (
+            not endpoint_overlap
+            if not initial_overlap
+            else len(endpoint_overlap) < len(initial_overlap)
+        )
+        safety_improved = bool(
+            cost_improvement >= minimum_cost
+            or clearance_improvement >= minimum_clearance
+            or overlap_improvement > 0
+            or (not bool(current["free_neighbor_count"]) and endpoint_center_free)
+            or (not bool(map_obj.is_free_xy(pose.xy())) and endpoint_center_free)
+        )
+        valid = bool(
+            endpoint_center_free
+            and not new_collision_cells
+            and overlap_not_worse
+            and safety_improved
+        )
+        reason = "safer_endpoint" if valid else (
+            "endpoint_hard_occupied" if not endpoint_center_free else
+            "new_hard_collision" if new_collision_cells else
+            "footprint_overlap_not_improved" if not overlap_not_worse else
+            "insufficient_safety_improvement"
+        )
+        priority_bonus = 2.0 if name in ("left", "right") else (1.0 if name == "backward" else 0.5)
+        score = (
+            25.0 * float(overlap_improvement)
+            + 10.0 * float(clearance_improvement)
+            + max(-100.0, min(100.0, float(cost_improvement)))
+            + priority_bonus
+        )
+        result.update({
+            "cost": round(endpoint_cost, 3),
+            "clearance": round(endpoint_clearance, 3),
+            "valid": valid,
+            "reason": reason,
+            "new_hard_collision": bool(new_collision_cells),
+            "current_cost": round(current_cost, 3),
+            "current_clearance": round(current_clearance, 3),
+            "cost_improvement": round(cost_improvement, 3),
+            "clearance_improvement": round(clearance_improvement, 3),
+            "initial_overlap_cells": len(initial_overlap),
+            "endpoint_overlap_cells": len(endpoint_overlap),
+            "overlap_improvement": overlap_improvement,
+            "score": round(score, 3),
+        })
+        return result
+
+    def forced_escape_translation_candidates(self, pose: RobotPose) -> List[dict]:
+        """Evaluate both lateral directions before longitudinal escape moves."""
+        actions = self.config["motion"]["actions"]
+        return [
+            self.forced_escape_translation_candidate(
+                pose,
+                name="left",
+                action="strafe_left_fast",
+                lateral_cm=float(actions["strafe_left_fast"].get("lateral_cm", 0.0)),
+            ),
+            self.forced_escape_translation_candidate(
+                pose,
+                name="right",
+                action="strafe_right_fast",
+                lateral_cm=float(actions["strafe_right_fast"].get("lateral_cm", 0.0)),
+            ),
+            self.forced_escape_translation_candidate(
+                pose,
+                name="backward",
+                action="back_fast",
+                forward_cm=float(actions["back_fast"].get("forward_cm", 0.0)),
+            ),
+            self.forced_escape_translation_candidate(
+                pose,
+                name="forward",
+                action="forward_micro",
+                forward_cm=float(actions["forward_micro"].get("forward_cm", 0.0)),
+            ),
+        ]
+
     def execute_bounded_escape(self, reason: str) -> NearWallRecoveryResult:
         """Use tiny configured turns when conservative normal recovery vetoes all moves."""
         nav = self.config["navigation"]
@@ -5851,30 +6094,87 @@ class TaskManager:
                 target_id=target_id,
             )
             return NearWallRecoveryResult.LOCALIZATION_REQUIRED
-        center_clearance = (
-            self.distance_to_nearest_boundary(pose)
-            if hasattr(self.map, "width_cm") and hasattr(self.map, "height_cm")
-            else float("inf")
+        current_detail = (
+            self.navigation_point_diagnostics(pose.xy())
+            if hasattr(self.map, "grid_pos") and hasattr(self.map, "cost")
+            else {}
         )
-        minimum = max(0.0, float(nav.get("forced_escape_min_center_clearance_cm", 0.0)))
-        center_free = not hasattr(self.map, "is_free_xy") or self.map.is_free_xy(pose.xy())
-        if not center_free or center_clearance < minimum:
+        candidates = self.forced_escape_translation_candidates(pose)
+        valid_candidates = [item for item in candidates if item.get("valid")]
+        selected = max(valid_candidates, key=lambda item: item["score"]) if valid_candidates else None
+        evaluation = {item["name"]: item for item in candidates}
+        self.debug.event(
+            "forced_escape_candidate_evaluation",
+            current_pose=pose.as_dict(),
+            current_cost=current_detail.get("cost"),
+            current_clearance=current_detail.get("clearance_cm"),
+            current_center_free=(
+                None if not hasattr(self.map, "is_free_xy")
+                else bool(self.map.is_free_xy(pose.xy()))
+            ),
+            left=evaluation.get("left"),
+            right=evaluation.get("right"),
+            forward=evaluation.get("forward"),
+            backward=evaluation.get("backward"),
+            selected_action=None if selected is None else selected["action"],
+            reason=(
+                "best_safety_improvement"
+                if selected is not None
+                else "no_safe_translation_candidate"
+            ),
+        )
+        if selected is not None:
             self.debug.event(
-                "recovery_action_rejected",
-                phase="forced_escape",
-                action=None,
-                executed=False,
-                reason="hard_center_safety_gate",
-                center_free=bool(center_free),
-                boundary_clearance_cm=round(center_clearance, 2),
+                "forced_escape_action_selected",
+                action=selected["action"],
+                candidate=selected["name"],
+                endpoint=selected["endpoint"],
+                cost=selected["cost"],
+                clearance=selected["clearance"],
+                reason=selected["reason"],
             )
+            outcome = self.execute_near_wall_recovery_action(
+                selected["action"], "forced_escape", 1, 1
+            )
+            self.debug.event(
+                "forced_escape_action_executed",
+                action=selected["action"],
+                candidate=selected["name"],
+                executed=outcome != NearWallRecoveryResult.HARDWARE_FAILURE,
+                outcome=outcome.value,
+            )
+            if outcome in (
+                NearWallRecoveryResult.RECOVERED,
+                NearWallRecoveryResult.RETRY_WITH_NEW_POSE,
+                NearWallRecoveryResult.LOCALIZATION_REQUIRED,
+                NearWallRecoveryResult.HARDWARE_FAILURE,
+            ):
+                if outcome in (
+                    NearWallRecoveryResult.RECOVERED,
+                    NearWallRecoveryResult.RETRY_WITH_NEW_POSE,
+                ):
+                    self.near_wall_recovery_rejection_count = 0
+                self.debug.event(
+                    "forced_escape_finished",
+                    success=outcome in (
+                        NearWallRecoveryResult.RECOVERED,
+                        NearWallRecoveryResult.RETRY_WITH_NEW_POSE,
+                    ),
+                    reason="translation_executed_replan",
+                    action=selected["action"],
+                    target_id=target_id,
+                )
+                return outcome
+            self.near_wall_recovery_rejection_count = 0
             self.debug.event(
                 "forced_escape_finished",
-                success=False,
-                reason="hard_center_safety_gate",
+                success=True,
+                reason="bounded_translation_changed_pose_replan",
+                action=selected["action"],
                 target_id=target_id,
             )
-            return NearWallRecoveryResult.LOCALIZATION_REQUIRED
+            return NearWallRecoveryResult.RETRY_WITH_NEW_POSE
+
         left_clearance = self.wall_clearance_cm(pose, pose.yaw_deg + 90.0)
         right_clearance = self.wall_clearance_cm(pose, pose.yaw_deg - 90.0)
         actions = (
@@ -5882,7 +6182,7 @@ class TaskManager:
             if left_clearance >= right_clearance
             else ["turn_right_fast", "turn_left_fast"]
         )
-        max_actions = max(1, min(2, int(nav.get("forced_escape_max_turn_actions", 2))))
+        max_actions = 1
         any_executed = False
         for index, action in enumerate(actions[:max_actions], 1):
             self.debug.event(

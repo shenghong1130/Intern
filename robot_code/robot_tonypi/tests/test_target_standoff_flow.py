@@ -336,6 +336,7 @@ class TargetStandoffFlowTests(unittest.TestCase):
         manager.nfc_interaction_gave_up = False
         manager.nfc_gave_up_screen_ids = set()
         manager.recent_bound_flower_observations = {}
+        manager.last_navigation_failure_reason = ""
         manager.state = SimpleNamespace(pose=None)
         manager.debug = DebugStub()
         manager.sequence = []
@@ -361,6 +362,23 @@ class TargetStandoffFlowTests(unittest.TestCase):
         manager.write_interaction_audit = lambda record: None
         manager.time_left_s = lambda: 100.0
         manager.mission_retry_pause = lambda *args, **kwargs: None
+        manager.lock_target_goal = lambda screen: (
+            manager.sequence.append(("lock_target", screen.screen_id))
+            or SimpleNamespace(
+                screen_id=screen.screen_id,
+                as_dict=lambda: {
+                    "screen_id": screen.screen_id,
+                    "goal_xy": list(screen.task_target_xy or screen.target_xy),
+                    "desired_yaw_deg": screen.task_target_yaw_deg,
+                },
+            )
+        )
+        manager.navigate_to_screen = lambda screen: (
+            manager.sequence.append(("navigate_target", screen.screen_id)) or True
+        )
+        manager.confirm_target_tag_now = lambda screen: (
+            manager.sequence.append(("confirm_tag", screen.screen_id)) or True
+        )
         return manager, target
 
     def test_post_forward_needs_change_runs_transaction_without_extra_motion(self):
@@ -435,6 +453,23 @@ class TargetStandoffFlowTests(unittest.TestCase):
         )
         self.assertIn(("motion", "back_fast", 4), manager.sequence)
         self.assertIn(("motion", "interaction_forward_10cm", 1), manager.sequence)
+        retry_order = [
+            item[0] for item in manager.sequence
+            if item[0] in (
+                "lock_target",
+                "navigate_target",
+                "confirm_tag",
+                "motion",
+                "change",
+            )
+        ]
+        self.assertLess(retry_order.index("lock_target"), retry_order.index("navigate_target"))
+        self.assertLess(retry_order.index("navigate_target"), retry_order.index("confirm_tag"))
+        final_forward_index = next(
+            index for index, item in enumerate(manager.sequence)
+            if item == ("motion", "interaction_forward_10cm", 1)
+        )
+        self.assertLess(manager.sequence.index(("confirm_tag", target.screen_id)), final_forward_index)
         event_names = [name for name, _ in manager.debug.events]
         self.assertIn("nfc_interaction_retry_started", event_names)
         self.assertIn("nfc_retry_retreat", event_names)

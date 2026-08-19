@@ -531,7 +531,7 @@ class MissionSchedulerTests(unittest.TestCase):
         self.assertEqual(manager.near_wall_recovery_rejection_count, 1)
         self.assertEqual(
             [action for action, _ in manager.actions],
-            ["turn_left_fast", "turn_right_fast"],
+            ["turn_left_fast"],
         )
         second = manager.recover_from_near_wall("same")
         self.assertEqual(second, NearWallRecoveryResult.STILL_NEAR_WALL)
@@ -539,6 +539,72 @@ class MissionSchedulerTests(unittest.TestCase):
         self.assertGreaterEqual(manager.near_wall_recovery_rejection_count, 2)
         self.assertNotEqual(manager.last_navigation_failure_reason, "near_wall_recovery_exhausted")
         self.assertTrue(any(name == "forced_escape_started" for name, _ in manager.events))
+
+    def test_forced_escape_allows_unsafe_start_and_selects_safer_lateral_endpoint(self):
+        class Cost:
+            def __getitem__(self, node):
+                return 80.0 if node[1] < 6 else 10.0
+
+        class EscapeMap:
+            width_cm = 100.0
+            height_cm = 100.0
+            res = 1.0
+            rows = 100
+            cols = 100
+            cost = Cost()
+            screens = {}
+
+            @staticmethod
+            def in_bounds_xy(xy):
+                return 0.0 <= xy[0] < 100.0 and 0.0 <= xy[1] < 100.0
+
+            @staticmethod
+            def grid_pos(xy):
+                return int(xy[0]), int(xy[1])
+
+            @classmethod
+            def is_free_xy(cls, xy):
+                return cls.in_bounds_xy(xy) and xy[1] >= 6.0
+
+            @classmethod
+            def robot_clearance_cm(cls, xy):
+                return max(0.0, float(xy[1]) - 5.0) if cls.is_free_xy(xy) else 0.0
+
+            @staticmethod
+            def _neighbors(node, include_diagonal=True):
+                return []
+
+            @staticmethod
+            def is_free_grid(node):
+                return node[1] >= 6
+
+        start = RobotPose(10.0, 5.0, 0.0, Confidence.HIGH, "VISION", 1.0)
+        after = RobotPose(10.0, 9.0, 0.0, Confidence.HIGH, "VISION", 2.0)
+        manager = near_wall_manager([start, after], lambda pose: True)
+        manager.state.pose = start
+        manager.map = EscapeMap()
+
+        outcome = manager.execute_bounded_escape("all_actions_vetoed")
+
+        self.assertEqual(outcome, NearWallRecoveryResult.RETRY_WITH_NEW_POSE)
+        self.assertEqual(manager.actions, [("strafe_left_fast", 1)])
+        evaluations = [
+            data for name, data in manager.events
+            if name == "forced_escape_candidate_evaluation"
+        ]
+        self.assertEqual(len(evaluations), 1)
+        self.assertFalse(evaluations[0]["current_center_free"])
+        self.assertTrue(evaluations[0]["left"]["valid"])
+        self.assertFalse(evaluations[0]["right"]["valid"])
+        self.assertEqual(evaluations[0]["selected_action"], "strafe_left_fast")
+        self.assertFalse(any(
+            data.get("reason") == "hard_center_safety_gate"
+            for _, data in manager.events
+        ))
+        self.assertTrue(any(
+            name == "forced_escape_action_executed"
+            for name, _ in manager.events
+        ))
 
     def test_failed_relocalization_after_real_recovery_action_is_not_physical_no_progress(self):
         manager = near_wall_manager([], lambda pose: True)
