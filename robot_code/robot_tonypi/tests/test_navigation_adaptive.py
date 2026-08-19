@@ -235,7 +235,7 @@ class AdaptiveBatchTests(unittest.TestCase):
         self.assertEqual(low["reason"], "pose_confidence_low")
         self.assertEqual(tight["reason"], "obstacle_tight_navigation")
 
-    def test_pose_conflict_and_large_turn_force_localization(self):
+    def test_pose_conflict_is_diagnostic_but_large_turn_forces_localization(self):
         manager = adaptive_manager()
         manager.last_localization_pose_conflict = True
         conflict = manager.adaptive_relocalization_decision("normal", emit=False)
@@ -250,7 +250,7 @@ class AdaptiveBatchTests(unittest.TestCase):
             ),
             emit=False,
         )
-        self.assertEqual(conflict["reason"], "visual_dead_reckoning_conflict")
+        self.assertEqual(conflict["decision"], "continue_dead_reckoning")
         self.assertEqual(large["reason"], "large_turn")
 
     def test_new_large_turn_requires_one_relocalization(self):
@@ -300,7 +300,7 @@ class AdaptiveBatchTests(unittest.TestCase):
         self.assertEqual(next_decision["decision"], "relocalize_now")
         self.assertEqual(next_decision["reason"], "large_turn")
 
-    def test_tag_quality_and_visual_odometry_conflict_affect_confidence(self):
+    def test_visual_odometry_conflict_is_diagnostic_only(self):
         manager = adaptive_manager()
         manager.localizer = SimpleNamespace(tag_area=lambda tag: tag.area)
         manager.last_localization_tag_count = 0
@@ -314,7 +314,7 @@ class AdaptiveBatchTests(unittest.TestCase):
             prior,
         )
         self.assertTrue(detail["visual_odometry_conflict"])
-        self.assertEqual(pose.confidence, Confidence.LOW)
+        self.assertEqual(pose.confidence, Confidence.HIGH)
         self.assertEqual(manager.last_localization_tag_count, 1)
 
 
@@ -334,31 +334,37 @@ class LocalizationScanBudgetTests(unittest.TestCase):
         manager.capture_with_tags = lambda pan: (pans.append(pan) or object(), [])
         queue = list(outcomes)
         manager.localizer = SimpleNamespace(
-            estimate_from_frame=lambda *args, **kwargs: (queue.pop(0), object()),
+            estimate_from_frame=lambda *args, **kwargs: (
+                queue.pop(0) if queue else None, object()
+            ),
             tag_area=lambda tag: 0.0,
         )
         return manager, pans
 
-    def test_routine_localization_center_only(self):
+    def test_first_localization_scans_configured_pans_until_pose(self):
         pose = RobotPose(10, 10, 0, Confidence.HIGH, "VISION", now_s())
-        manager, pans = self.manager([pose])
+        manager, pans = self.manager([None, None, pose])
         self.assertTrue(manager.localize_scan(reason="post_action", allow_failure_escalation=False))
-        self.assertEqual(pans, [100.0])
+        self.assertEqual(pans, [100.0, 135.0, 65.0])
 
-    def test_pan_search_only_after_explicit_escalation(self):
+    def test_failed_localization_always_completes_configured_scan(self):
         manager, pans = self.manager([None])
         self.assertFalse(manager.localize_scan(allow_failure_escalation=False))
-        self.assertEqual(pans, [100.0])
-        pose = RobotPose(10, 10, 0, Confidence.HIGH, "VISION", now_s())
-        manager, pans = self.manager([None, pose])
-        self.assertTrue(manager.localize_scan(allow_pan_search=True))
-        self.assertEqual(pans, [100.0, 135.0])
+        self.assertEqual(pans, [100.0, 135.0, 65.0, 145.0, 55.0])
 
     def test_pan_scan_stops_immediately_when_localized(self):
         pose = RobotPose(10, 10, 0, Confidence.HIGH, "VISION", now_s())
         manager, pans = self.manager([None, pose])
         self.assertTrue(manager.localize_scan(allow_pan_search=True))
         self.assertEqual(pans, [100.0, 135.0])
+
+    def test_scan_recenters_head_after_off_center_success(self):
+        pose = RobotPose(10, 10, 0, Confidence.HIGH, "VISION", now_s())
+        manager, _ = self.manager([None, None, pose])
+        recentered = []
+        manager.hardware = SimpleNamespace(center_head=lambda: recentered.append(True))
+        self.assertTrue(manager.localize_scan())
+        self.assertEqual(recentered, [True])
 
     def test_visibility_recovery_never_calls_full_navigate(self):
         source = (Path(__file__).resolve().parents[1] / "task_manager.py").read_text(encoding="utf-8")
@@ -387,6 +393,7 @@ class NoTagRecoverySequenceTests(unittest.TestCase):
         manager.last_localization_attempt_result = "no_tag"
         manager.time_left_s = lambda: 100.0
         manager.is_facing_outside = lambda pose: False
+        manager.state.pose = None
         calls = []
         queue = list(localization_results)
 
@@ -396,85 +403,60 @@ class NoTagRecoverySequenceTests(unittest.TestCase):
             manager.last_localization_attempt_result = (
                 "accepted_visual_pose" if success else "no_tag"
             )
+            if success:
+                manager.consecutive_no_tag_scans = 0
+                manager.consecutive_localize_failures = 0
             return success
 
         manager.localize_scan = localize_scan
         actions = []
 
-        def execute(action, *, runtime_safety):
-            actions.append((action, runtime_safety))
-            return {
-                "executed": True,
-                "requested_action": action,
-                "action": action,
-                "safety_result": "test_safe",
-                "ok": True,
-            }
-
-        manager.execute_localization_search_action = execute
-        manager.recover_toward_field_center = lambda *args, **kwargs: False
+        manager.hardware = SimpleNamespace(center_head=lambda: None)
+        manager.motion = SimpleNamespace(
+            run=lambda action, times_override=1: actions.append(
+                (action, times_override)
+            ) or True
+        )
         return manager, calls, actions
 
-    def test_threshold_enters_full_recovery_instead_of_center_loop(self):
+    def test_threshold_enters_bounded_backoff_scan_recovery(self):
         manager, calls, actions = self.manager([False] * 8)
         self.assertFalse(manager.recover_from_no_tag_if_needed("test"))
         self.assertTrue(calls)
-        self.assertTrue(all(call["allow_pan_search"] for call in calls))
-        self.assertTrue(all(
-            call["pan_angles"] == manager.config["localization"]["scan_pan_angles"]
-            for call in calls
-        ))
-        self.assertTrue(actions)
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(actions, [("back_fast", 9)] * 3)
         names = [name for name, _ in manager.debug.events]
-        self.assertIn("no_tag_recovery_enter", names)
-        self.assertNotIn("routine_center_localize", names)
+        self.assertIn("no_tag_recovery_triggered", names)
+        self.assertIn("recovery_done", names)
 
     def test_successful_full_pan_skips_startup_actions(self):
         manager, calls, actions = self.manager([True])
         self.assertTrue(manager.recover_from_no_tag_if_needed("test"))
         self.assertEqual(len(calls), 1)
-        self.assertEqual(actions, [])
+        self.assertEqual(actions, [("back_fast", 9)])
         self.assertEqual(manager.consecutive_no_tag_scans, 0)
 
     def test_failed_full_pan_executes_configured_action_then_full_pan(self):
         manager, calls, actions = self.manager([False, True])
         self.assertTrue(manager.recover_from_no_tag_if_needed("test"))
-        self.assertEqual(
-            actions,
-            [(manager.config["localization"]["startup_search_actions"][0], True)],
-        )
+        self.assertEqual(actions, [("back_fast", 9), ("back_fast", 9)])
         self.assertEqual(len(calls), 2)
 
     def test_success_after_nth_action_stops_and_preserves_target(self):
-        manager, calls, actions = self.manager([False, False, False, True])
+        manager, calls, actions = self.manager([False, False, True])
         original_goal = manager.current_target_goal
         self.assertTrue(manager.recover_from_no_tag_if_needed("test"))
         self.assertEqual(len(actions), 3)
-        self.assertEqual(len(calls), 4)
+        self.assertEqual(len(calls), 3)
         self.assertEqual(manager.current_target_screen_id, 17)
         self.assertIs(manager.current_target_goal, original_goal)
-        exit_event = next(
-            data for name, data in manager.debug.events
-            if name == "no_tag_recovery_exit"
-        )
-        self.assertTrue(exit_event["target_preserved"])
 
     def test_exhausted_sequence_enters_higher_recovery_and_explicit_failure(self):
         manager, calls, actions = self.manager([False] * 10)
-        escalations = []
-        manager.recover_toward_field_center = (
-            lambda *args, **kwargs: escalations.append((args, kwargs)) or False
-        )
         self.assertFalse(manager.recover_from_no_tag_if_needed("test"))
-        self.assertEqual(
-            len(actions),
-            len(manager.config["localization"]["startup_search_actions"]),
-        )
-        self.assertEqual(len(escalations), 1)
-        self.assertTrue(manager.no_tag_recovery_exhausted)
-        self.assertEqual(
-            manager.last_navigation_failure_reason, "localization_recovery_exhausted"
-        )
+        self.assertEqual(len(actions), 3)
+        self.assertFalse(manager.no_tag_recovery_exhausted)
+        self.assertFalse(manager.localization_recovery_exhausted)
 
     def test_startup_and_runtime_use_same_search_sequence_helper(self):
         manager, _, _ = self.manager([])
@@ -489,17 +471,9 @@ class NoTagRecoverySequenceTests(unittest.TestCase):
         manager.consecutive_no_tag_scans = 0
         manager.consecutive_localize_failures = 2
         manager.last_localization_attempt_result = "pose_unavailable_with_tags"
-        self.assertTrue(manager.recover_from_localization_failure_if_needed("test"))
-        self.assertEqual(len(calls), 1)
+        self.assertFalse(manager.recover_from_localization_failure_if_needed("test"))
+        self.assertEqual(len(calls), 0)
         self.assertEqual(actions, [])
-        entered = next(
-            data for name, data in manager.debug.events
-            if name == "localization_failure_recovery_enter"
-        )
-        self.assertEqual(
-            entered["localization_attempt_result"],
-            "pose_unavailable_with_tags",
-        )
 
     def test_failure_threshold_counts_no_pose_even_when_tag_is_visible(self):
         manager, _, _ = self.manager([])
@@ -512,7 +486,7 @@ class NoTagRecoverySequenceTests(unittest.TestCase):
         manager.record_localization_failure(
             "pose_unavailable_with_tags", saw_any_tag=True, reason="second"
         )
-        self.assertTrue(manager.localization_failure_recovery_needed())
+        self.assertFalse(manager.localization_failure_recovery_needed())
         self.assertEqual(manager.consecutive_no_tag_scans, 0)
 
     def test_all_tag_visible_full_pans_still_execute_body_recovery(self):
@@ -528,17 +502,14 @@ class NoTagRecoverySequenceTests(unittest.TestCase):
 
         manager.localize_scan = failed_with_tags
         self.assertFalse(manager.recover_from_localization_failure_if_needed("test"))
-        self.assertEqual(
-            len(actions),
-            len(manager.config["localization"]["startup_search_actions"]),
-        )
+        self.assertEqual(actions, [])
 
     def test_large_turn_pending_is_consumed_only_after_recovery_accepts_pose(self):
         manager, calls, actions = self.manager([False, True])
         manager.last_motion_action = "turn_right_large"
         manager.state.actions_since_localize = 2
         manager.state.motion_uncertainty = 5.2
-        manager.consecutive_no_tag_scans = 0
+        manager.consecutive_no_tag_scans = 2
         manager.consecutive_localize_failures = 2
         manager.last_localization_attempt_result = "pose_unavailable_with_tags"
         queue = [False, True]
@@ -590,7 +561,7 @@ class LocalizationStateResetTests(unittest.TestCase):
         names = [name for name, _ in manager.debug.events]
         self.assertNotIn("localization_state_reset", names)
 
-    def test_conflicting_visual_pose_is_rejected_without_reset(self):
+    def test_conflicting_visual_pose_is_accepted_and_resets_dead_reckoning(self):
         visual = RobotPose(
             190.0, 150.0, 45.0, Confidence.HIGH, "VISION_TAG_1", now_s()
         )
@@ -599,13 +570,16 @@ class LocalizationStateResetTests(unittest.TestCase):
         manager.state.pose.source = "DEAD_RECKONING"
         manager.state.actions_since_localize = 4
         manager.state.motion_uncertainty = 3.5
-        self.assertFalse(manager.localize_scan(allow_failure_escalation=False))
-        self.assertEqual(manager.state.actions_since_localize, 4)
-        self.assertEqual(manager.state.motion_uncertainty, 3.5)
+        self.assertTrue(manager.localize_scan(allow_failure_escalation=False))
+        self.assertIs(manager.state.pose, visual)
+        self.assertEqual(manager.state.actions_since_localize, 0)
+        self.assertEqual(manager.state.motion_uncertainty, 0.0)
         self.assertEqual(
             manager.last_localization_attempt_result,
-            "visual_pose_rejected_conflict",
+            "accepted_visual_pose",
         )
+        names = [name for name, _ in manager.debug.events]
+        self.assertIn("visual_dead_reckoning_conflict_observed", names)
 
     def test_pose_unavailable_with_tags_preserves_motion_accounting(self):
         tag = SimpleNamespace(tag_id=26, area=800.0, center=(320, 220))

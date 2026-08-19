@@ -61,8 +61,6 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "startup_attempts": 14,
         "startup_search_actions": ["turn_left_fast", "turn_left_fast", "turn_left_fast", "turn_left_fast", "back_fast"],
         "scan_pan_angles": [100, 135, 65, 155, 45],
-        "routine_center_only": True,
-        "center_failures_before_pan_search": 2,
         "high_confidence_tag_area_scale": 2.0,
     },
     "vision": {
@@ -167,6 +165,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "target_direct_entry_visual_pose_max_age_s": 4.0,
         "localization_fresh_high_s": 4.0,
         "localization_fresh_medium_s": 10.0,
+        # Diagnostic warning thresholds only; never reject an AprilTag pose.
         "localization_pose_conflict_distance_cm": 15.0,
         "localization_pose_conflict_yaw_deg": 25.0,
         "relocalize_after_each_action_batch": True,

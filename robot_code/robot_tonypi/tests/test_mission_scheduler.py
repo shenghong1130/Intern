@@ -140,16 +140,14 @@ class MissionSchedulerTests(unittest.TestCase):
         self.assertTrue(result["turn_no_progress"])
         self.assertTrue(result["reject_visual_pose"])
 
-    def test_scan_after_turn_stale_pose_keeps_dead_reckoning(self):
+    def test_scan_after_turn_conflict_still_accepts_visual_pose(self):
         manager = TaskManager.__new__(TaskManager)
         before = RobotPose(10, 10, 0, Confidence.HIGH, "BEFORE", 1)
         dead_reckoning = RobotPose(10, 10, 15, Confidence.HIGH, "DEAD_RECKONING", 2)
         stale_visual = RobotPose(10.1, 10.1, 0.2, Confidence.HIGH, "VISION", 3)
         manager.args = SimpleNamespace(dry_run=False)
-        manager.config = {
-            "vision": {"scan_after_turn_enabled": True, "scan_after_turn_min_interval_s": 0},
-            "camera": {"head_center_angle": 100},
-        }
+        manager.config = load_config(None)
+        manager.config["vision"]["scan_after_turn_min_interval_s"] = 0
         manager.start_time = 0
         manager.time_left_s = lambda: 100
         manager.last_scan_after_turn_s = 0
@@ -177,14 +175,12 @@ class MissionSchedulerTests(unittest.TestCase):
             target_yaw=60.0,
         )
         self.assertTrue(result["suspect_stale_pose"])
-        self.assertFalse(result["accepted"])
-        self.assertEqual(manager.state.pose.yaw_deg, 15.0)
-        self.assertEqual(manager.state.pose.source, "DEAD_RECKONING")
-        self.assertEqual(manager.state.pose.confidence, Confidence.LOW)
-        self.assertEqual(manager.consecutive_localize_failures, 1)
+        self.assertTrue(result["accepted"])
+        self.assertIs(manager.state.pose, stale_visual)
+        self.assertEqual(manager.consecutive_localize_failures, 0)
         self.assertEqual(
             manager.last_localization_attempt_result,
-            "scan_after_turn_pose_rejected",
+            "accepted_visual_pose",
         )
 
     def test_wrong_direction_turn_is_rejected(self):
@@ -565,6 +561,70 @@ class MissionSchedulerTests(unittest.TestCase):
         self.assertEqual(target.attempts, 1)
         self.assertTrue(manager.register_target_failure(target, "navigation_failed", relocalize=True))
         self.assertEqual(target.status, ScreenStatus.FAILED)
+
+    def test_navigation_failure_clears_target_and_selects_next(self):
+        first = screen(2, (10.0, 0.0))
+        second = screen(3, (20.0, 0.0))
+        manager = TaskManager.__new__(TaskManager)
+        manager.config = load_config(None)
+        manager.config["mission"]["max_main_loops"] = 2
+        manager.state = SimpleNamespace(
+            pose=RobotPose(0.0, 0.0, 0.0, Confidence.HIGH, "VISION", 1.0)
+        )
+        manager.args = SimpleNamespace(dry_run=False)
+        manager.debug_events = []
+        manager.debug = SimpleNamespace(
+            event=lambda name, **data: manager.debug_events.append((name, data))
+        )
+        manager.current_target_screen_id = None
+        manager.current_target_goal = None
+        manager.post_interaction_retreat_pending = False
+        manager.arrived_at_target = False
+        manager.classifier_allowed = False
+        manager.target_tag_confirmation = None
+        manager.target_visual_confirmation = None
+        manager.visual_authorization = None
+        manager.final_forward_executed = False
+        manager.target_confirmation_retry_count = 0
+        manager.target_confirmation_recovery_cycle = 0
+        manager.last_target_confirmation_diagnostics = {}
+        manager.last_target_plan = {}
+        manager.fatal_target_failures = 0
+        manager.last_navigation_failure_reason = ""
+        manager.time_left_s = lambda: 100.0
+        manager.target_reached = lambda: False
+        selected = iter([first, second])
+        manager.choose_nearest_screen = lambda: next(selected)
+
+        def lock_target_goal(target):
+            manager.current_target_screen_id = target.screen_id
+            goal = SimpleNamespace(
+                screen_id=target.screen_id,
+                as_dict=lambda: {"screen_id": target.screen_id},
+            )
+            manager.current_target_goal = goal
+            return goal
+
+        manager.lock_target_goal = lock_target_goal
+        manager.target_surface_offset_cm = lambda target: 20.0
+        visited = []
+
+        def fail_navigation(target):
+            visited.append(target.screen_id)
+            manager.last_navigation_failure_reason = "navigation_step_limit"
+            return False
+
+        manager.navigate_to_screen = fail_navigation
+        self.assertFalse(manager.run_mission())
+        self.assertEqual(visited, [2, 3])
+        self.assertEqual(first.status, ScreenStatus.FAILED)
+        self.assertEqual(second.status, ScreenStatus.FAILED)
+        self.assertIsNone(manager.current_target_screen_id)
+        failures = [
+            data for name, data in manager.debug_events
+            if name == "target_navigation_failed"
+        ]
+        self.assertEqual([item["screen_id"] for item in failures], [2, 3])
 
     def test_failed_is_terminal_but_not_successfully_processed(self):
         failed = screen(2, (10.0, 0.0))

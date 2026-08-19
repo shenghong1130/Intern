@@ -44,9 +44,7 @@
     "detector_upscale": 1.5,
     "min_tag_area_px": 350.0,
     "edge_margin_px": 35.0,
-    "high_confidence_tag_area_scale": 2.0,
-    "routine_center_only": true,
-    "center_failures_before_pan_search": 2
+    "high_confidence_tag_area_scale": 2.0
   },
   "motion": {
     "enable_imu": false,
