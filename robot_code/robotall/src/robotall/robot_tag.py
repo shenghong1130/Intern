@@ -83,6 +83,7 @@ def wait_for_response(
     poll_interval_s: float,
     progress_interval_s: float,
     write_quiet_s: float,
+    overall_timeout_s: float = 0.0,
 ) -> tuple[dict[str, Any] | None, float, float | None, int]:
     start = time.monotonic()
     next_progress = start + progress_interval_s if progress_interval_s > 0 else float("inf")
@@ -91,6 +92,9 @@ def wait_for_response(
     while True:
         now = time.monotonic()
         elapsed = now - start
+        if overall_timeout_s > 0 and elapsed >= overall_timeout_s:
+            final_elapsed = None if scan_seen_at is None else now - scan_seen_at
+            return None, elapsed, final_elapsed, polls
         if scan_seen_at is None:
             if scan_timeout_s > 0 and elapsed > scan_timeout_s:
                 return None, elapsed, None, polls
@@ -170,6 +174,7 @@ def main() -> None:
     parser.add_argument("--no-wait-response", action="store_true", help="with --read-response, read once immediately instead of waiting")
     parser.add_argument("--timeout", type=float, default=1.0, help="seconds to wait for a matching final response after response writing is detected")
     parser.add_argument("--scan-timeout", type=float, default=0.0, help="seconds to wait for response writing to begin; 0 waits forever")
+    parser.add_argument("--overall-timeout", type=float, default=0.0, help="hard deadline for one request attempt; 0 disables the overall deadline")
     parser.add_argument("--retries", type=int, default=2, help="number of timeout retries; total attempts are retries + 1")
     parser.add_argument("--poll-interval", type=float, default=0.10, help="seconds between response mailbox polls")
     parser.add_argument("--write-quiet", type=float, default=0.50, help="seconds to pause after detecting a partial response write")
@@ -263,6 +268,7 @@ def main() -> None:
                     worker_id=expected_worker_id,
                     scan_timeout_s=args.scan_timeout,
                     timeout_s=args.timeout,
+                    overall_timeout_s=args.overall_timeout,
                     poll_interval_s=args.poll_interval,
                     progress_interval_s=args.progress_interval if args.verbose_wait else 0.0,
                     write_quiet_s=args.write_quiet,
@@ -312,6 +318,7 @@ def send_request(
     wait_response: bool = True,
     scan_timeout_s: float = 0.0,
     timeout_s: float = 1.0,
+    overall_timeout_s: float = 0.0,
     poll_interval_s: float = 0.10,
     write_quiet_s: float = 0.50,
     i2c_retries: int = 8,
@@ -429,6 +436,7 @@ def send_request(
                 worker_id=expected_worker_id,
                 scan_timeout_s=scan_timeout_s,
                 timeout_s=timeout_s,
+                overall_timeout_s=overall_timeout_s,
                 poll_interval_s=poll_interval_s,
                 progress_interval_s=progress_interval_s if verbose_wait else 0.0,
                 write_quiet_s=write_quiet_s,
@@ -465,6 +473,7 @@ def register_robot(
     wait_response: bool = True,
     scan_timeout_s: float = 0.0,
     timeout_s: float = 1.0,
+    overall_timeout_s: float = 0.0,
     poll_interval_s: float = 0.10,
     i2c_retries: int = 8,
     i2c_retry_delay_s: float = 0.02,
@@ -491,6 +500,7 @@ def register_robot(
         wait_response=wait_response,
         scan_timeout_s=scan_timeout_s,
         timeout_s=timeout_s,
+        overall_timeout_s=overall_timeout_s,
         poll_interval_s=poll_interval_s,
         i2c_retries=i2c_retries,
         i2c_retry_delay_s=i2c_retry_delay_s,

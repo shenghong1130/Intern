@@ -142,6 +142,8 @@ class TaskManager:
         self.target_tag_confirmation: Optional[TargetTagConfirmation] = None
         self.visual_authorization: Optional[VisualAuthorization] = None
         self.final_forward_executed = False
+        self.nfc_interaction_status = {}
+        self.nfc_interaction_stopped_for_mission_timeout = False
         self.post_interaction_retreat_pending = False
         self.post_interaction_retreat_completed = False
         self.post_interaction_retreat_blocked = False
@@ -577,6 +579,15 @@ class TaskManager:
                 self.set_mission_state(MissionState.NEEDS_CHANGE)
                 attempts_before = target.attempts
                 changed = self.process_screen_interaction(target)
+                if (
+                    not changed
+                    and getattr(
+                        self,
+                        "nfc_interaction_stopped_for_mission_timeout",
+                        False,
+                    )
+                ):
+                    return self.finish_mission_on_timeout()
                 if not changed and target.status == ScreenStatus.NEEDS_CHANGE:
                     if target.attempts == attempts_before:
                         self.register_target_failure(target, "interaction_failed")
@@ -2559,7 +2570,12 @@ class TaskManager:
         )
         return bool(result.ok)
 
-    def complete_post_interaction_retreat(self, screen: Screen) -> bool:
+    def complete_post_interaction_retreat(
+        self,
+        screen: Screen,
+        *,
+        reason: str = "post_interaction",
+    ) -> bool:
         """Reverse out of the close pose exactly once, then relocalize."""
         if not getattr(self, "post_interaction_retreat_pending", False):
             return True
@@ -2593,7 +2609,7 @@ class TaskManager:
                 action=action_key,
                 modeled_cycle_cm=modeled_cycle_cm,
                 action_cycles=cycles,
-                reason="post_interaction",
+                reason=reason,
             )
             stand_result = self.motion.run("stand", times_override=1)
             if not stand_result.ok:
@@ -2634,7 +2650,7 @@ class TaskManager:
 
         self.set_mission_state(MissionState.POST_INTERACTION_RELOCALIZE)
         localized = self.localize_scan(
-            reason="post_interaction_retreat",
+            reason="{}_retreat".format(reason),
             allow_pan_search=True,
             allow_failure_escalation=False,
         )
@@ -2644,6 +2660,7 @@ class TaskManager:
             success=bool(localized),
             center_first=True,
             pan_search_on_center_failure=True,
+            reason=reason,
             pose=None if self.state.pose is None else self.state.pose.as_dict(),
         )
         if not localized:
@@ -2654,6 +2671,118 @@ class TaskManager:
         self.post_interaction_retreat_blocked = False
         self.post_interaction_screen_id = None
         return True
+
+    def update_nfc_interaction_status(
+        self,
+        screen: Screen,
+        attempt: int,
+        state: str,
+        *,
+        started_s: Optional[float] = None,
+        last_failure_reason: str = "",
+        seq=None,
+    ) -> None:
+        elapsed = 0.0 if started_s is None else max(0.0, time.monotonic() - started_s)
+        self.nfc_interaction_status = {
+            "screen_id": int(screen.screen_id),
+            "attempt": int(attempt),
+            "state": str(state),
+            "seq": seq,
+            "elapsed_s": round(elapsed, 3),
+            "last_failure_reason": str(last_failure_reason or ""),
+        }
+
+    def restore_nfc_physical_contact(
+        self,
+        screen: Screen,
+        *,
+        completed_attempt: int,
+        seq,
+        failure_reason: str,
+    ) -> bool:
+        """Retreat, relocalize, and repeat the existing final 10 cm approach."""
+        retry_attempt = int(completed_attempt) + 1
+        self.debug.event(
+            "nfc_interaction_retry_started",
+            screen_id=screen.screen_id,
+            attempt=retry_attempt,
+            previous_attempt=completed_attempt,
+            seq=seq,
+            elapsed_s=0.0,
+            reason=failure_reason,
+            target_preserved=True,
+        )
+        while self.time_left_s() > 0.0:
+            self.update_nfc_interaction_status(
+                screen,
+                retry_attempt,
+                "RETRY_RETREAT",
+                last_failure_reason=failure_reason,
+                seq=seq,
+            )
+            self.debug.event(
+                "nfc_retry_retreat",
+                screen_id=screen.screen_id,
+                attempt=retry_attempt,
+                seq=seq,
+                elapsed_s=0.0,
+                reason=failure_reason,
+                retreat_cm=float(
+                    self.config["interaction"].get(
+                        "post_interaction_retreat_cm", 10.0
+                    )
+                ),
+            )
+            retreated = self.complete_post_interaction_retreat(
+                screen,
+                reason="nfc_retry",
+            )
+            self.debug.event(
+                "nfc_retry_relocalize",
+                screen_id=screen.screen_id,
+                attempt=retry_attempt,
+                seq=seq,
+                elapsed_s=0.0,
+                success=bool(retreated),
+                reason=("accepted_visual_pose" if retreated else "retry_pending"),
+                target_preserved=True,
+            )
+            if not retreated:
+                self.mission_retry_pause("recovery_retry_interval_s")
+                continue
+
+            self.update_nfc_interaction_status(
+                screen,
+                retry_attempt,
+                "RETRY_REAPPROACH",
+                last_failure_reason=failure_reason,
+                seq=seq,
+            )
+            self.debug.event(
+                "nfc_retry_reapproach",
+                screen_id=screen.screen_id,
+                attempt=retry_attempt,
+                seq=seq,
+                elapsed_s=0.0,
+                reason="repeat_existing_final_forward",
+                forward_cm=float(
+                    self.config["interaction"].get(
+                        "target_final_forward_cm", 10.0
+                    )
+                ),
+            )
+            if self.execute_final_forward(screen):
+                return True
+            self.debug.event(
+                "nfc_interaction_invalid_response",
+                screen_id=screen.screen_id,
+                attempt=retry_attempt,
+                seq=seq,
+                elapsed_s=0.0,
+                reason="nfc_retry_reapproach_failed",
+            )
+            self.mission_retry_pause("recovery_retry_interval_s")
+        return False
 
     def process_screen_interaction(self, screen: Screen) -> bool:
         worker_id = self.worker_id_for_screen(screen)
@@ -2672,61 +2801,128 @@ class TaskManager:
             )
             return False
 
-        pose_snapshot = None if self.state.pose is None else self.state.pose.as_dict()
-        screen.status = ScreenStatus.INTERACTING
-        self.set_mission_state(MissionState.EXECUTE_CHANGE)
-        result = self.interaction.change_flower(
-            screen_id=screen.screen_id,
-            worker_id=worker_id,
-            from_flower=from_flower,
-            to_flower=self.target_flower,
-            safety_gate=lambda: self.visual_authorization_check(
-                screen,
-                expected_from_flower=from_flower,
-            ),
-        )
-        record = {
-            "t": round(time.time(), 3),
-            "screen_id": screen.screen_id,
-            "worker_id": worker_id,
-            "from_flower": from_flower,
-            "to_flower": self.target_flower,
-            "success": result.success,
-            "simulated": result.simulated,
-            "error": result.error,
-            "response": result.response,
-            "pose": pose_snapshot,
-            "visual_authorization": None if self.visual_authorization is None else self.visual_authorization.as_dict(),
-            "target_visual_confirmation": None if self.target_visual_confirmation is None else self.target_visual_confirmation.as_dict(),
-            "target_distance_cm": float(self.config["interaction"]["target_distance_cm"]),
-            "target_final_forward_cm": float(self.config["interaction"]["target_final_forward_cm"]),
-            "target_confirmation_retry_count": getattr(self, "target_confirmation_retry_count", 0),
-            "target_confirmation_max_retries": int(self.config["interaction"].get("target_confirmation_max_retries", 3)),
-            "target_confirmation_recovery_cycle": getattr(self, "target_confirmation_recovery_cycle", 0),
-            "target_confirmation_diagnostics": getattr(self, "last_target_confirmation_diagnostics", {}),
-            "final_forward_executed": self.final_forward_executed,
-            "post_interaction_retreat": {
-                "pending": bool(getattr(self, "post_interaction_retreat_pending", False)),
-                "physical_retreat_completed": bool(getattr(
-                    self, "post_interaction_retreat_completed", False
+        self.nfc_interaction_stopped_for_mission_timeout = False
+        attempt = 1
+        while self.time_left_s() > 0.0:
+            pose_snapshot = None if self.state.pose is None else self.state.pose.as_dict()
+            screen.status = ScreenStatus.INTERACTING
+            self.set_mission_state(MissionState.EXECUTE_CHANGE)
+            attempt_started = time.monotonic()
+            attempt_timeout = min(
+                float(self.config["interaction"].get(
+                    "flower_change_attempt_timeout_s", 15.0
                 )),
-                "blocked": bool(getattr(self, "post_interaction_retreat_blocked", False)),
-                "screen_id": getattr(self, "post_interaction_screen_id", None),
-                "requested_cm": float(
-                    self.config["interaction"].get("post_interaction_retreat_cm", 10.0)
+                max(0.1, self.time_left_s()),
+            )
+            self.update_nfc_interaction_status(
+                screen,
+                attempt,
+                "WAITING_NFC",
+                started_s=attempt_started,
+            )
+            result = self.interaction.change_flower(
+                screen_id=screen.screen_id,
+                worker_id=worker_id,
+                from_flower=from_flower,
+                to_flower=self.target_flower,
+                safety_gate=lambda: self.visual_authorization_check(
+                    screen,
+                    expected_from_flower=from_flower,
                 ),
-            },
-            "interaction_check": authorization_check.as_dict(),
-        }
-        self.write_interaction_audit(record)
-        self.latest_interaction_result = record
-        self.recent_interaction_results.append(record)
-        self.recent_interaction_results = self.recent_interaction_results[-5:]
-        changed = apply_worker_change_result(screen, result)
-        if changed:
-            self.debug.event("interaction_changed", **record)
-            return True
-        self.debug.event("interaction_not_changed", **record)
+                attempt=attempt,
+                attempt_timeout_s=attempt_timeout,
+            )
+            response = dict(result.response or {})
+            seq = response.get("seq")
+            if seq is None:
+                seq = (response.get("request") or {}).get("nonce")
+            elapsed = max(0.0, time.monotonic() - attempt_started)
+            record = {
+                "t": round(time.time(), 3),
+                "screen_id": screen.screen_id,
+                "worker_id": worker_id,
+                "attempt": attempt,
+                "seq": seq,
+                "elapsed_s": round(elapsed, 3),
+                "attempt_timeout_s": attempt_timeout,
+                "from_flower": from_flower,
+                "to_flower": self.target_flower,
+                "success": result.success,
+                "simulated": result.simulated,
+                "error": result.error,
+                "response": result.response,
+                "pose": pose_snapshot,
+                "visual_authorization": None if self.visual_authorization is None else self.visual_authorization.as_dict(),
+                "target_visual_confirmation": None if self.target_visual_confirmation is None else self.target_visual_confirmation.as_dict(),
+                "target_distance_cm": float(self.config["interaction"]["target_distance_cm"]),
+                "target_final_forward_cm": float(self.config["interaction"]["target_final_forward_cm"]),
+                "target_confirmation_retry_count": getattr(self, "target_confirmation_retry_count", 0),
+                "target_confirmation_max_retries": int(self.config["interaction"].get("target_confirmation_max_retries", 3)),
+                "target_confirmation_recovery_cycle": getattr(self, "target_confirmation_recovery_cycle", 0),
+                "target_confirmation_diagnostics": getattr(self, "last_target_confirmation_diagnostics", {}),
+                "final_forward_executed": self.final_forward_executed,
+                "post_interaction_retreat": {
+                    "pending": bool(getattr(self, "post_interaction_retreat_pending", False)),
+                    "physical_retreat_completed": bool(getattr(
+                        self, "post_interaction_retreat_completed", False
+                    )),
+                    "blocked": bool(getattr(self, "post_interaction_retreat_blocked", False)),
+                    "screen_id": getattr(self, "post_interaction_screen_id", None),
+                    "requested_cm": float(
+                        self.config["interaction"].get("post_interaction_retreat_cm", 10.0)
+                    ),
+                },
+                "interaction_check": authorization_check.as_dict(),
+            }
+            self.write_interaction_audit(record)
+            self.latest_interaction_result = record
+            self.recent_interaction_results.append(record)
+            self.recent_interaction_results = self.recent_interaction_results[-5:]
+            if result.success:
+                changed = apply_worker_change_result(screen, result)
+                self.update_nfc_interaction_status(
+                    screen,
+                    attempt,
+                    "SUCCESS",
+                    started_s=attempt_started,
+                    seq=seq,
+                )
+                self.debug.event("interaction_changed", **record)
+                return bool(changed)
+
+            failure_reason = result.error or "nfc_invalid_response"
+            self.update_nfc_interaction_status(
+                screen,
+                attempt,
+                "RETRY_RETREAT",
+                started_s=attempt_started,
+                last_failure_reason=failure_reason,
+                seq=seq,
+            )
+            self.debug.event(
+                "interaction_not_changed",
+                retrying_same_target=True,
+                **record
+            )
+            if self.time_left_s() <= 0.0:
+                break
+            if not self.restore_nfc_physical_contact(
+                screen,
+                completed_attempt=attempt,
+                seq=seq,
+                failure_reason=failure_reason,
+            ):
+                break
+            attempt += 1
+
+        screen.status = ScreenStatus.NEEDS_CHANGE
+        self.nfc_interaction_stopped_for_mission_timeout = True
+        self.update_nfc_interaction_status(
+            screen,
+            attempt,
+            "MISSION_TIMEOUT",
+            last_failure_reason="global_mission_timeout",
+        )
         return False
 
     def path_length_cm(self, path: List[Tuple[float, float]], fallback_start=None, fallback_goal=None) -> float:
@@ -6867,6 +7063,7 @@ class TaskManager:
                 "ready": bool(self.last_interaction_check and self.last_interaction_check.get("ready")),
                 "left_hand_lifted": self.left_hand_lifted,
                 "last_check": self.last_interaction_check,
+                "nfc": dict(getattr(self, "nfc_interaction_status", {})),
             },
             "last_target_plan": self.last_target_plan,
             "localization_health": {

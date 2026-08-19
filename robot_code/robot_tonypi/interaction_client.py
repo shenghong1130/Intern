@@ -40,6 +40,12 @@ class RobotInteractionClient:
         self._send_request = send_request_fn
         self.transaction_active = False
         self.left_hand_lifted = False
+        self._request_seq = int(time.monotonic_ns()) & 0xFF
+
+    def _next_request_seq(self) -> int:
+        """Allocate a fresh mailbox sequence for each physical NFC attempt."""
+        self._request_seq = (int(self._request_seq) + 1) & 0xFF
+        return self._request_seq
 
     def _emit(self, name: str, **data) -> None:
         if self.event_callback is not None:
@@ -68,6 +74,8 @@ class RobotInteractionClient:
         from_flower: str,
         to_flower: str,
         safety_gate: Callable[[], InteractionAuthorizationCheck],
+        attempt: int = 1,
+        attempt_timeout_s: Optional[float] = None,
     ) -> WorkerChangeResult:
         if worker_id is None:
             return WorkerChangeResult(success=False, error="worker_id_missing")
@@ -90,6 +98,7 @@ class RobotInteractionClient:
             "worker_id": int(worker_id),
             "from_flower": from_flower,
             "to_flower": to_flower,
+            "attempt": max(1, int(attempt)),
         }
         self.transaction_active = True
         self._phase("transaction_start", **request_meta)
@@ -142,6 +151,33 @@ class RobotInteractionClient:
                 )
                 return WorkerChangeResult(success=False, worker_id=worker_id, error="interaction_authorization_invalid_after_lift")
 
+            configured_timeout = max(0.1, float(
+                self.cfg.get("flower_change_attempt_timeout_s", 15.0)
+            ))
+            physical_timeout = configured_timeout
+            if attempt_timeout_s is not None:
+                physical_timeout = max(
+                    0.1, min(configured_timeout, float(attempt_timeout_s))
+                )
+            scan_timeout = max(0.1, min(
+                physical_timeout,
+                float(self.cfg.get("flower_change_scan_timeout_s", 15.0)),
+            ))
+            response_timeout = max(0.1, float(
+                self.cfg.get("flower_change_response_timeout_s", 1.0)
+            ))
+            seq = self._next_request_seq()
+            request_meta["seq"] = seq
+            request_meta["timeout_s"] = physical_timeout
+            started = time.monotonic()
+            self._emit("nfc_interaction_started", **request_meta)
+            self._emit(
+                "nfc_interaction_waiting",
+                elapsed_s=0.0,
+                **request_meta,
+            )
+            if int(attempt) > 1:
+                self._emit("nfc_retry_request_sent", **request_meta)
             self._phase("worker_request_sent", **request_meta)
             result = self._send_request(
                 team=self.team,
@@ -150,21 +186,70 @@ class RobotInteractionClient:
                 worker_id=int(worker_id),
                 from_flower=from_flower,
                 to_flower=to_flower,
+                seq=seq,
                 clear_first=True,
                 read_response=True,
                 wait_response=True,
-                scan_timeout_s=float(self.cfg.get("flower_change_scan_timeout_s", 0.0)),
+                scan_timeout_s=scan_timeout,
+                timeout_s=response_timeout,
+                overall_timeout_s=physical_timeout,
                 verbose_wait=True,
+                retries=0,
             )
+            result["seq"] = seq
             ok = bool(result.get("ok"))
+            elapsed = max(0.0, time.monotonic() - started)
+            elapsed = float(result.get("elapsed_total_s", elapsed) or elapsed)
+            response = result.get("response")
+            self._emit(
+                "nfc_interaction_response",
+                ok=ok,
+                elapsed_s=round(elapsed, 3),
+                response=response,
+                **request_meta,
+            )
+            if ok:
+                self._emit(
+                    "nfc_interaction_success",
+                    elapsed_s=round(elapsed, 3),
+                    **request_meta,
+                )
+            elif response is None:
+                self._emit(
+                    "nfc_interaction_timeout",
+                    elapsed_s=round(elapsed, 3),
+                    reason="no_valid_nfc_response",
+                    action="retreat_and_retry",
+                    **request_meta,
+                )
+            else:
+                self._emit(
+                    "nfc_interaction_invalid_response",
+                    elapsed_s=round(elapsed, 3),
+                    reason="worker_response_not_ok",
+                    response=response,
+                    **request_meta,
+                )
             self._phase("worker_response", ok=ok, result=result, **request_meta)
             return WorkerChangeResult(
                 success=ok,
                 worker_id=worker_id,
                 response=dict(result),
-                error="" if ok else "worker_response_not_ok",
+                error="" if ok else (
+                    "nfc_timeout" if response is None else "worker_response_not_ok"
+                ),
             )
         except Exception as exc:
+            elapsed = None
+            if "started" in locals():
+                elapsed = round(max(0.0, time.monotonic() - started), 3)
+            self._emit(
+                "nfc_interaction_invalid_response",
+                elapsed_s=elapsed,
+                reason="interaction_exception",
+                error=str(exc),
+                **request_meta,
+            )
             self._emit("interaction_exception", error=str(exc), **request_meta)
             return WorkerChangeResult(success=False, worker_id=worker_id, error=str(exc))
         finally:

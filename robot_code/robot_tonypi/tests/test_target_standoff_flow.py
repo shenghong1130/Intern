@@ -329,6 +329,8 @@ class TargetStandoffFlowTests(unittest.TestCase):
         manager.last_interaction_check = None
         manager.latest_interaction_result = None
         manager.recent_interaction_results = []
+        manager.nfc_interaction_status = {}
+        manager.nfc_interaction_stopped_for_mission_timeout = False
         manager.state = SimpleNamespace(pose=None)
         manager.debug = DebugStub()
         manager.sequence = []
@@ -352,6 +354,8 @@ class TargetStandoffFlowTests(unittest.TestCase):
         manager.interaction = SimpleNamespace(change_flower=change_flower)
         manager.set_mission_state = lambda state: setattr(manager, "mission_state", state)
         manager.write_interaction_audit = lambda record: None
+        manager.time_left_s = lambda: 100.0
+        manager.mission_retry_pause = lambda *args, **kwargs: None
         return manager, target
 
     def test_post_forward_needs_change_runs_transaction_without_extra_motion(self):
@@ -360,6 +364,110 @@ class TargetStandoffFlowTests(unittest.TestCase):
         self.assertEqual(manager.sequence, [("change", 1, 1)])
         self.assertTrue(manager.final_forward_executed)
         self.assertEqual(target.status, ScreenStatus.CHANGED)
+
+    def test_nfc_timeout_retreats_reapproaches_then_second_attempt_succeeds(self):
+        manager, target = self.interaction_manager()
+        manager.post_interaction_retreat_pending = True
+        manager.post_interaction_retreat_completed = False
+        manager.post_interaction_retreat_blocked = False
+        manager.post_interaction_screen_id = target.screen_id
+        manager.localize_scan = lambda **kwargs: True
+        results = iter((
+            WorkerChangeResult(
+                False,
+                worker_id=1,
+                response={"seq": 10, "response": None},
+                error="nfc_timeout",
+            ),
+            WorkerChangeResult(
+                True,
+                worker_id=1,
+                response={"seq": 11, "ok": True},
+            ),
+        ))
+
+        def change_flower(**kwargs):
+            manager.sequence.append(("change", kwargs["attempt"]))
+            return next(results)
+
+        manager.interaction = SimpleNamespace(change_flower=change_flower)
+
+        self.assertTrue(manager.process_screen_interaction(target))
+        self.assertEqual(target.status, ScreenStatus.CHANGED)
+        self.assertEqual(
+            [item for item in manager.sequence if item[0] == "change"],
+            [("change", 1), ("change", 2)],
+        )
+        self.assertIn(("motion", "back_fast", 4), manager.sequence)
+        self.assertIn(("motion", "interaction_forward_10cm", 1), manager.sequence)
+        event_names = [name for name, _ in manager.debug.events]
+        self.assertIn("nfc_interaction_retry_started", event_names)
+        self.assertIn("nfc_retry_retreat", event_names)
+        self.assertIn("nfc_retry_relocalize", event_names)
+        self.assertIn("nfc_retry_reapproach", event_names)
+
+    def test_every_nfc_timeout_requires_retreat_and_forward_before_resend(self):
+        manager, target = self.interaction_manager()
+        manager.post_interaction_retreat_pending = True
+        manager.post_interaction_retreat_completed = False
+        manager.post_interaction_retreat_blocked = False
+        manager.post_interaction_screen_id = target.screen_id
+        manager.localize_scan = lambda **kwargs: True
+        results = iter((
+            WorkerChangeResult(False, worker_id=1, response={"seq": 20}, error="nfc_timeout"),
+            WorkerChangeResult(False, worker_id=1, response={"seq": 21}, error="nfc_timeout"),
+            WorkerChangeResult(True, worker_id=1, response={"seq": 22, "ok": True}),
+        ))
+
+        def change_flower(**kwargs):
+            manager.sequence.append(("change", kwargs["attempt"]))
+            return next(results)
+
+        manager.interaction = SimpleNamespace(change_flower=change_flower)
+
+        self.assertTrue(manager.process_screen_interaction(target))
+        compact = [
+            item for item in manager.sequence
+            if item[0] == "change"
+            or (item[0] == "motion" and item[1] in (
+                "back_fast", "interaction_forward_10cm"
+            ))
+        ]
+        self.assertEqual(compact, [
+            ("change", 1),
+            ("motion", "back_fast", 4),
+            ("motion", "interaction_forward_10cm", 1),
+            ("change", 2),
+            ("motion", "back_fast", 4),
+            ("motion", "interaction_forward_10cm", 1),
+            ("change", 3),
+        ])
+
+    def test_nfc_retry_stops_only_at_global_timeout_without_target_failure(self):
+        manager, target = self.interaction_manager()
+        manager.post_interaction_retreat_pending = True
+        manager.post_interaction_retreat_completed = False
+        manager.post_interaction_retreat_blocked = False
+        manager.post_interaction_screen_id = target.screen_id
+        timed_out = {"value": False}
+        manager.time_left_s = lambda: 0.0 if timed_out["value"] else 100.0
+
+        def change_flower(**kwargs):
+            timed_out["value"] = True
+            return WorkerChangeResult(
+                False,
+                worker_id=1,
+                response={"seq": 30},
+                error="nfc_timeout",
+            )
+
+        manager.interaction = SimpleNamespace(change_flower=change_flower)
+
+        self.assertFalse(manager.process_screen_interaction(target))
+        self.assertTrue(manager.nfc_interaction_stopped_for_mission_timeout)
+        self.assertEqual(manager.current_target_screen_id, target.screen_id)
+        self.assertEqual(target.status, ScreenStatus.NEEDS_CHANGE)
+        self.assertEqual(target.attempts, 0)
 
     def test_close_interaction_retreats_10cm_then_forces_search_localization(self):
         manager, target = self.interaction_manager()

@@ -5,6 +5,7 @@ import sys
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "robotall" / "src"))
 
 from robot_tonypi.config import load_config
 from robot_tonypi.interaction_client import RobotInteractionClient
@@ -24,6 +25,8 @@ from robot_tonypi.models import (
     WorkerChangeResult,
 )
 from robot_tonypi.load_pos import load_tag_pos
+from robotall import robot_tag
+from robotall.robot_tag import response_matches
 
 
 def make_screen(worker_id=12):
@@ -50,7 +53,7 @@ def ready_check():
     return InteractionAuthorizationCheck(ready=True)
 
 
-def make_client(actions, response=None, error=None):
+def make_client(actions, response=None, error=None, event_callback=None):
     config = load_config(None)
     config["interaction"]["left_hand_settle_s"] = 0.0
 
@@ -68,6 +71,7 @@ def make_client(actions, response=None, error=None):
         "1234",
         "red-1",
         config,
+        event_callback=event_callback,
         act_fn=act,
         send_request_fn=send,
     )
@@ -175,6 +179,9 @@ class InteractionFlowTests(unittest.TestCase):
         self.assertTrue(actions[2][1]["read_response"])
         self.assertTrue(actions[2][1]["wait_response"])
         self.assertTrue(actions[2][1]["verbose_wait"])
+        self.assertEqual(actions[2][1]["scan_timeout_s"], 15.0)
+        self.assertEqual(actions[2][1]["overall_timeout_s"], 15.0)
+        self.assertEqual(actions[2][1]["retries"], 0)
         self.assertEqual(
             set(actions[2][1]),
             {
@@ -184,11 +191,15 @@ class InteractionFlowTests(unittest.TestCase):
                 "worker_id",
                 "from_flower",
                 "to_flower",
+                "seq",
                 "clear_first",
                 "read_response",
                 "wait_response",
                 "scan_timeout_s",
+                "timeout_s",
+                "overall_timeout_s",
                 "verbose_wait",
+                "retries",
             },
         )
         self.assertEqual(actions[-1], ("act", "stand", {}))
@@ -196,9 +207,116 @@ class InteractionFlowTests(unittest.TestCase):
         self.assertTrue(apply_worker_change_result(screen, result))
         self.assertEqual(screen.status, ScreenStatus.CHANGED)
 
+    def test_each_physical_attempt_uses_fresh_sequence(self):
+        actions = []
+        client = make_client(
+            actions,
+            response={"ok": False, "response": None, "elapsed_total_s": 15.0},
+        )
+
+        first = run_client(client)
+        second = run_client(client)
+
+        self.assertFalse(first.success)
+        self.assertEqual(first.error, "nfc_timeout")
+        sends = [item[1] for item in actions if item[0] == "send_request"]
+        self.assertEqual(len(sends), 2)
+        self.assertNotEqual(sends[0]["seq"], sends[1]["seq"])
+        self.assertEqual([item["retries"] for item in sends], [0, 0])
+
+    def test_nfc_success_at_five_seconds_does_not_retry(self):
+        actions = []
+        events = []
+        client = make_client(
+            actions,
+            response={
+                "ok": True,
+                "response": {"valid": True, "status": 1},
+                "elapsed_total_s": 5.0,
+            },
+            event_callback=lambda name, **data: events.append((name, data)),
+        )
+
+        result = run_client(client)
+
+        self.assertTrue(result.success)
+        self.assertEqual(
+            len([item for item in actions if item[0] == "send_request"]),
+            1,
+        )
+        success = [data for name, data in events if name == "nfc_interaction_success"]
+        self.assertEqual(len(success), 1)
+        self.assertEqual(success[0]["elapsed_s"], 5.0)
+        self.assertNotIn("nfc_interaction_retry_started", [name for name, _ in events])
+
+    def test_late_old_sequence_response_cannot_match_new_attempt(self):
+        old_seq = 41
+        current_seq = 42
+        stale = {
+            "valid": True,
+            "seq": old_seq,
+            "workerId": 12,
+            "status": 1,
+        }
+        current = dict(stale, seq=current_seq)
+
+        self.assertFalse(response_matches(
+            stale, seq=current_seq, worker_id=12, require_status=True
+        ))
+        self.assertTrue(response_matches(
+            current, seq=current_seq, worker_id=12, require_status=True
+        ))
+
+    def test_nfc_wait_has_hard_fifteen_second_attempt_deadline(self):
+        class Clock:
+            now = 0.0
+
+            def monotonic(self):
+                return self.now
+
+            def sleep(self, seconds):
+                self.now += float(seconds)
+
+        clock = Clock()
+        old_time = robot_tag.time
+        old_unpack = robot_tag.unpack_response_packet
+        robot_tag.time = type("FakeTime", (), {
+            "monotonic": clock.monotonic,
+            "sleep": clock.sleep,
+        })()
+        robot_tag.unpack_response_packet = lambda packet: {
+            "valid": True,
+            "magic": "RBS1",
+            "seq": 41,
+            "workerId": 12,
+            "status": 1,
+        }
+        try:
+            response, elapsed, _, _ = robot_tag.wait_for_response(
+                type("FakeTag", (), {"read_response": lambda self: b""})(),
+                seq=42,
+                worker_id=12,
+                scan_timeout_s=15.0,
+                timeout_s=1.0,
+                overall_timeout_s=15.0,
+                poll_interval_s=1.0,
+                progress_interval_s=0.0,
+                write_quiet_s=0.0,
+            )
+        finally:
+            robot_tag.time = old_time
+            robot_tag.unpack_response_packet = old_unpack
+
+        self.assertIsNone(response)
+        self.assertEqual(elapsed, 15.0)
+
     def test_case_5_ok_false_does_not_report_success_and_stands(self):
         actions = []
-        result = run_client(make_client(actions, response={"ok": False, "reason": "no worker"}))
+        result = run_client(make_client(actions, response={
+            "ok": False,
+            "reason": "no worker",
+            "response": {"valid": True, "status": 2},
+        }))
 
         self.assertFalse(result.success)
         self.assertEqual(result.error, "worker_response_not_ok")

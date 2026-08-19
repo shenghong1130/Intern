@@ -334,7 +334,9 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         # TonyPi left-hand center relative to body center along body-left.
         # No reliable mechanical measurement is available yet; calibrate on site.
         "left_hand_body_offset_cm": 0.0,
-        "flower_change_scan_timeout_s": 0.0,
+        "flower_change_scan_timeout_s": 15.0,
+        "flower_change_attempt_timeout_s": 15.0,
+        "flower_change_response_timeout_s": 1.0,
         "left_hand_settle_s": 0.5,
     },
     "mission": {
