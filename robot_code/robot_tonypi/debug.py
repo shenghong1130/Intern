@@ -260,7 +260,9 @@ setInterval(refresh,800);
         import cv2
 
         scale = 2.0
-        img = np.full((int(map_model.height_cm * scale), int(map_model.width_cm * scale), 3), 245, dtype=np.uint8)
+        # Display axes are intentionally transposed: world y runs right and
+        # world x runs down, while world (0, 0) remains at the top-left.
+        img = np.full((int(map_model.width_cm * scale), int(map_model.height_cm * scale), 3), 245, dtype=np.uint8)
         for screen in map_model.screens.values():
             color = (180, 180, 180)
             status = str(getattr(screen.status, "value", screen.status))
@@ -328,12 +330,12 @@ setInterval(refresh,800);
             p = self._map_pt((pose.x_cm, pose.y_cm), scale, img.shape[0])
             cv2.circle(img, p, 6, (0, 0, 0), -1)
             yaw = np.radians(pose.yaw_deg)
-            q = (int(p[0] + 18 * np.cos(yaw)), int(p[1] + 18 * np.sin(yaw)))
+            q = (int(p[0] + 18 * np.sin(yaw)), int(p[1] + 18 * np.cos(yaw)))
             cv2.line(img, p, q, (0, 0, 0), 2)
         cv2.imwrite(str(self.root / "latest_map.jpg"), img)
 
     def _map_pt(self, xy, scale, height_px):
-        return int(xy[0] * scale), int(xy[1] * scale)
+        return int(xy[1] * scale), int(xy[0] * scale)
 
     def close(self):
         if self.httpd is not None:
