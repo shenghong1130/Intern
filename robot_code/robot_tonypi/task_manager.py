@@ -185,6 +185,8 @@ class TaskManager:
         self.near_wall_recovery_actions = 0
         self.navigation_stall_signature = None
         self.navigation_stall_count = 0
+        self.decision_stall_signature = None
+        self.decision_stall_count = 0
         self.local_replan_failures = 0
         self.plan_failure_signature = None
         self.identical_plan_failure_count = 0
@@ -4508,22 +4510,14 @@ class TaskManager:
                 goal_dist_cm,
                 near_wall=near_wall,
             )
-            travel = -cycles * step_cm
-            end_xy = self.translated_pose_xy(pose, forward_cm=travel)
-            corridor = self.movement_corridor_metrics(pose.xy(), end_xy)
-            if not corridor["clear"]:
-                self.debug.event(
-                    "reverse_rejected",
-                    navigation_mode="normal",
-                    selected_action=None,
-                    reverse_preferred=False,
-                    reverse_rejected_reason="rear_corridor_blocked_before_execute",
-                    movement_corridor_clear=False,
-                    target_local_forward_cm=round(float(action.get("forward_cm", 0.0)), 2),
-                    target_local_lateral_cm=round(float(action.get("lateral_cm", 0.0)), 2),
-                )
-                self.localize_scan()
-                return "recovered"
+            # The planner has already collision-checked the selected reverse
+            # prefix and attached the authoritative corridor metrics. In
+            # particular, a start-projection escape is deliberately evaluated
+            # with escape_corridor_metrics(), whose soft-inflation policy
+            # permits a physically clear, non-worsening escape. Rechecking it
+            # here with the normal-navigation policy could veto forever the
+            # exact action the planner had just accepted.
+            corridor = action.get("corridor_metrics") or {}
             self.debug.event(
                 "action_batch_started",
                 action=key,
@@ -4531,7 +4525,7 @@ class TaskManager:
                 requested_action_cycles=requested,
                 selected_action_cycles=cycles,
                 adaptive_batch_reason=batch_reason,
-                movement_corridor_clear=True,
+                movement_corridor_clear=bool(corridor.get("clear", True)),
                 minimum_wall_clearance_cm=round(
                     float(corridor["minimum_wall_clearance_cm"]), 2
                 ),
@@ -4551,6 +4545,7 @@ class TaskManager:
             if not result.ok:
                 self.last_navigation_failure_reason = "hardware_failure"
                 return "failed"
+            self.clear_decision_stall()
             self.clear_turn_progress_watchdog("successful_reverse")
             tight_limit = float(self.config["navigation"].get(
                 "relocalize_obstacle_tight_clearance_cm", 20.0
@@ -4589,7 +4584,18 @@ class TaskManager:
                     movement_corridor_clear=False,
                     **context
                 )
-                self.localize_scan()
+                if self.register_decision_stall(
+                    pose,
+                    waypoint,
+                    "strafe",
+                    "translation_corridor_blocked_before_execute",
+                ):
+                    self.recover_from_near_wall(
+                        str(context.get("reason", "translation"))
+                        + ":decision_stall"
+                    )
+                else:
+                    self.localize_scan()
                 return "recovered"
             detail.update(requested_action_cycles=requested, adaptive_batch_reason=batch_reason)
             self.debug.event("action_batch_started", action=key, requested_action_cycles=requested, selected_action_cycles=cycles, **context)
@@ -4598,6 +4604,7 @@ class TaskManager:
             if not result.ok:
                 self.last_navigation_failure_reason = "hardware_failure"
                 return "failed"
+            self.clear_decision_stall()
             self.clear_turn_progress_watchdog("successful_translation")
             tight_limit = float(self.config["navigation"].get(
                 "relocalize_obstacle_tight_clearance_cm", 20.0
@@ -4617,6 +4624,12 @@ class TaskManager:
             return "moved"
 
         if self.front_obstacle_visible():
+            self.register_decision_stall(
+                pose,
+                waypoint,
+                "forward",
+                "front_obstacle_visible_before_execute",
+            )
             self.debug.event("front_obstacle_recover", **context)
             reason = str(context.get("reason", "front_obstacle_visible"))
             self.recover_toward_field_center(reason + ":front_obstacle_visible", backoff=True)
@@ -4627,6 +4640,12 @@ class TaskManager:
         map_check_min = float(self.config["navigation"].get("forward_map_check_min_cm", 16.0))
         if planned_forward_cm >= map_check_min and not self.forward_clear_for_distance(pose, planned_forward_cm):
             self.forward_map_block_count += 1
+            self.register_decision_stall(
+                pose,
+                waypoint,
+                "forward",
+                "forward_map_blocked_before_execute",
+            )
             block_detail = dict(context)
             block_detail.update(
                 {
@@ -4672,6 +4691,7 @@ class TaskManager:
         if not result.ok:
             self.last_navigation_failure_reason = "hardware_failure"
             return "failed"
+        self.clear_decision_stall()
         self.clear_turn_progress_watchdog("successful_translation")
         self.set_pending_forward_progress(pose_before_forward, abs(float(result.model_forward_cm)))
         self.evaluate_visual_forward_progress(visual_before, abs(float(result.model_forward_cm)))
@@ -5643,6 +5663,53 @@ class TaskManager:
             target_xy=target_xy,
         )
         return True
+
+    def register_decision_stall(
+        self,
+        pose: RobotPose,
+        target_xy: Tuple[float, float],
+        selected_action: str,
+        failure_reason: str,
+    ) -> bool:
+        """Escalate a repeated executor veto with an unchanged planner input."""
+        signature = (
+            getattr(self, "current_target_screen_id", None),
+            round(float(target_xy[0]), 1),
+            round(float(target_xy[1]), 1),
+            round(float(pose.x_cm), 1),
+            round(float(pose.y_cm), 1),
+            round(float(pose.yaw_deg), 1),
+            selected_action,
+            failure_reason,
+        )
+        if signature == getattr(self, "decision_stall_signature", None):
+            self.decision_stall_count = int(getattr(
+                self, "decision_stall_count", 0
+            )) + 1
+        else:
+            self.decision_stall_signature = signature
+            self.decision_stall_count = 1
+        stalled = self.decision_stall_count >= 2
+        if stalled:
+            self.debug.event(
+                "decision_stall_detected",
+                selected_action=selected_action,
+                executed=False,
+                failure_reason=failure_reason,
+                count=self.decision_stall_count,
+                pose=pose.as_dict(),
+                target_xy=target_xy,
+                current_target_screen_id=getattr(
+                    self, "current_target_screen_id", None
+                ),
+                next_strategy="near_wall_recovery",
+            )
+        return stalled
+
+    def clear_decision_stall(self) -> None:
+        """A physical action invalidates any prior no-motion decision stall."""
+        self.decision_stall_signature = None
+        self.decision_stall_count = 0
 
     def map_planning_signature(self):
         dynamic = []

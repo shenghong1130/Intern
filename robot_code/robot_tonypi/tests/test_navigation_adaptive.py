@@ -771,6 +771,126 @@ class PlannerPreferenceTests(unittest.TestCase):
         self.assertEqual(calls, [("back_fast", 6)])
         self.assertEqual(relocalized, [("translation_reverse", (100.0, 150.0))])
 
+    def test_start_escape_reverse_trusts_authoritative_planner_corridor(self):
+        manager = self.translation_manager()
+        manager.active_navigation_plan = {"goal_type": "start_projection"}
+        manager.escape_corridor_metrics = lambda *args, **kwargs: {
+            "clear": True,
+            "path_obstacle_cost": 0.0,
+            "minimum_wall_clearance_cm": 12.0,
+        }
+        action = manager.choose_translation_action(
+            manager.state.pose, (140.0, 150.0)
+        )
+        self.assertEqual(action["kind"], "reverse")
+        self.assertTrue(action["corridor_metrics"]["clear"])
+
+        # Reproduce the old contradiction: normal navigation rejects the
+        # prefix, although the start-escape planner has already accepted it.
+        manager.movement_corridor_metrics = lambda *args, **kwargs: {
+            "clear": False,
+            "path_obstacle_cost": 80.0,
+            "minimum_wall_clearance_cm": 12.0,
+        }
+        calls = []
+        manager.motion = SimpleNamespace(
+            reverse_cycles_for_distance=lambda distance: 1,
+            run=lambda key, times_override=1: calls.append((key, times_override))
+            or ActionResult(
+                key,
+                "back",
+                times_override,
+                0.0,
+                model_forward_cm=-2.5 * times_override,
+                executed_times=times_override,
+            ),
+        )
+        manager.forward_map_block_count = 0
+        manager.near_wall_now = lambda pose: False
+        manager.clear_turn_progress_watchdog = lambda reason: None
+        manager.post_action_relocalize = lambda *args, **kwargs: True
+
+        status = manager.execute_translation_action(
+            action,
+            manager.state.pose,
+            (140.0, 150.0),
+            10.0,
+            {"reason": "start_escape_test"},
+        )
+
+        self.assertEqual(status, "moved")
+        self.assertEqual(calls, [("back_fast", 1)])
+        self.assertFalse(any(
+            name == "reverse_rejected"
+            and data.get("reverse_rejected_reason")
+            == "rear_corridor_blocked_before_execute"
+            for name, data in manager.debug.events
+        ))
+        started = next(
+            data for name, data in manager.debug.events
+            if name == "action_batch_started"
+        )
+        self.assertTrue(started["movement_corridor_clear"])
+
+    def test_identical_executor_veto_twice_emits_decision_stall(self):
+        manager = self.translation_manager()
+        pose = manager.state.pose
+        target = (170.0, 150.0)
+
+        self.assertFalse(manager.register_decision_stall(
+            pose, target, "strafe", "translation_corridor_blocked_before_execute"
+        ))
+        self.assertTrue(manager.register_decision_stall(
+            pose, target, "strafe", "translation_corridor_blocked_before_execute"
+        ))
+
+        event = next(
+            data for name, data in manager.debug.events
+            if name == "decision_stall_detected"
+        )
+        self.assertEqual(event["selected_action"], "strafe")
+        self.assertFalse(event["executed"])
+        self.assertEqual(event["count"], 2)
+
+    def test_second_identical_executor_veto_enters_recovery(self):
+        manager = self.translation_manager()
+        manager.forward_map_block_count = 0
+        manager.motion = SimpleNamespace(lateral_cycles_for_distance=lambda distance: 1)
+        manager.near_wall_now = lambda pose: False
+        manager.movement_corridor_metrics = lambda *args, **kwargs: {
+            "clear": False,
+            "path_obstacle_cost": 80.0,
+            "minimum_wall_clearance_cm": 10.0,
+        }
+        localizations = []
+        recoveries = []
+        manager.localize_scan = lambda *args, **kwargs: localizations.append(True) or False
+        manager.recover_from_near_wall = (
+            lambda reason: recoveries.append(reason) or None
+        )
+        action = {
+            "kind": "strafe",
+            "distance_cm": 8.0,
+            "planned_cm": 4.0,
+            "progress_cm": 4.0,
+            "forward_cm": 0.0,
+            "lateral_cm": 8.0,
+        }
+
+        for _ in range(2):
+            status = manager.execute_translation_action(
+                action,
+                manager.state.pose,
+                (150.0, 170.0),
+                20.0,
+                {"reason": "identical_veto_test"},
+            )
+            self.assertEqual(status, "recovered")
+
+        self.assertEqual(len(localizations), 1)
+        self.assertEqual(len(recoveries), 1)
+        self.assertIn("decision_stall", recoveries[0])
+
     def test_low_confidence_rejects_direct_reverse(self):
         manager = self.translation_manager(Confidence.LOW)
         action = manager.choose_translation_action(manager.state.pose, (100.0, 150.0))
