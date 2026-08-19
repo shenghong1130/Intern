@@ -313,14 +313,18 @@ class MissionSchedulerTests(unittest.TestCase):
         manager = manager_at(0.0, 0.0, [screen(9, (-10.0, 0.0)), screen(4, (10.0, 0.0))])
         self.assertEqual(manager.choose_nearest_screen().screen_id, 4)
 
-    def test_completed_and_failed_targets_are_not_reselected(self):
+    def test_completed_and_temporarily_failed_targets_are_rotated(self):
         complete = screen(1, (1.0, 0.0))
         complete.status = ScreenStatus.CHANGED
         invalid = screen(2, (2.0, 0.0))
-        invalid.status = ScreenStatus.FAILED
         available = screen(3, (30.0, 0.0))
         manager = manager_at(0.0, 0.0, [complete, invalid, available])
+        manager.debug = SimpleNamespace(event=lambda *args, **kwargs: None)
+        manager.time_left_s = lambda: 100.0
+        manager.temporarily_failed_targets = {2: {"reason": "navigation_failed"}}
         self.assertEqual(manager.choose_nearest_screen().screen_id, 3)
+        manager.release_temporary_target_failures("test")
+        self.assertEqual(manager.choose_nearest_screen().screen_id, 2)
 
     def test_classifier_gate_requires_arrival_and_locked_target(self):
         target = screen(2, (10.0, 0.0))
@@ -513,7 +517,7 @@ class MissionSchedulerTests(unittest.TestCase):
         self.assertGreaterEqual(len(manager.actions), 1)
         self.assertTrue(any(name == "near_wall_recovery_no_progress" for name, _ in manager.events))
 
-    def test_rejected_near_wall_actions_increment_and_abort_second_episode(self):
+    def test_rejected_near_wall_actions_trigger_forced_escape_not_physical_stall(self):
         manager = near_wall_manager([], lambda pose: True)
         manager.map = SimpleNamespace(
             screens={},
@@ -523,12 +527,27 @@ class MissionSchedulerTests(unittest.TestCase):
         manager.choose_near_wall_lateral_direction = lambda *args, **kwargs: None
         first = manager.recover_from_near_wall("same")
         self.assertEqual(first, NearWallRecoveryResult.STILL_NEAR_WALL)
-        self.assertEqual(manager.near_wall_recovery_no_progress_count, 1)
+        self.assertEqual(manager.near_wall_recovery_no_progress_count, 0)
+        self.assertEqual(manager.near_wall_recovery_rejection_count, 1)
+        self.assertEqual(
+            [action for action, _ in manager.actions],
+            ["turn_left_fast", "turn_right_fast"],
+        )
         second = manager.recover_from_near_wall("same")
         self.assertEqual(second, NearWallRecoveryResult.STILL_NEAR_WALL)
-        self.assertGreaterEqual(manager.near_wall_recovery_no_progress_count, 2)
-        self.assertEqual(manager.last_navigation_failure_reason, "near_wall_recovery_exhausted")
-        self.assertTrue(any(name == "near_wall_recovery_aborted" for name, _ in manager.events))
+        self.assertEqual(manager.near_wall_recovery_no_progress_count, 0)
+        self.assertGreaterEqual(manager.near_wall_recovery_rejection_count, 2)
+        self.assertNotEqual(manager.last_navigation_failure_reason, "near_wall_recovery_exhausted")
+        self.assertTrue(any(name == "forced_escape_started" for name, _ in manager.events))
+
+    def test_failed_relocalization_after_real_recovery_action_is_not_physical_no_progress(self):
+        manager = near_wall_manager([], lambda pose: True)
+        result = manager.execute_near_wall_recovery_action(
+            "turn_left_fast", "test", 1, 1
+        )
+        self.assertEqual(result, NearWallRecoveryResult.LOCALIZATION_REQUIRED)
+        self.assertEqual(manager.near_wall_recovery_actions, 1)
+        self.assertEqual(manager.near_wall_recovery_no_progress_count, 0)
 
     def test_navigate_retries_failed_recovery_without_abandoning_target(self):
         manager = TaskManager.__new__(TaskManager)
@@ -550,17 +569,20 @@ class MissionSchedulerTests(unittest.TestCase):
         self.assertEqual(len(calls), 3)
         self.assertEqual(manager.last_navigation_failure_reason, "navigation_step_limit")
 
-    def test_navigation_failure_retries_before_terminal_failed(self):
+    def test_navigation_failure_rotates_target_after_bounded_local_retries(self):
         target = screen(2, (10.0, 0.0))
         manager = TaskManager.__new__(TaskManager)
         manager.config = load_config(None)
         manager.debug = SimpleNamespace(event=lambda *args, **kwargs: None)
         manager.localize_scan = lambda: True
+        manager.state = SimpleNamespace(pose=None)
+        manager.time_left_s = lambda: 100.0
         self.assertFalse(manager.register_target_failure(target, "navigation_failed", relocalize=True))
         self.assertEqual(target.status, ScreenStatus.UNKNOWN)
         self.assertEqual(target.attempts, 1)
         self.assertTrue(manager.register_target_failure(target, "navigation_failed", relocalize=True))
-        self.assertEqual(target.status, ScreenStatus.FAILED)
+        self.assertEqual(target.status, ScreenStatus.UNKNOWN)
+        self.assertIn(target.screen_id, manager.temporarily_failed_targets)
 
     def test_navigation_failure_clears_target_and_selects_next(self):
         first = screen(2, (10.0, 0.0))
@@ -590,8 +612,12 @@ class MissionSchedulerTests(unittest.TestCase):
         manager.last_target_confirmation_diagnostics = {}
         manager.last_target_plan = {}
         manager.fatal_target_failures = 0
+        manager.temporarily_failed_targets = {}
+        manager.target_failure_counts = {}
+        manager.global_recovery_cycles = 0
+        manager.mission_completion_announced = False
         manager.last_navigation_failure_reason = ""
-        manager.time_left_s = lambda: 100.0
+        manager.time_left_s = lambda: 100.0 if len(visited) < 2 else 0.0
         manager.target_reached = lambda: False
         selected = iter([first, second])
         manager.choose_nearest_screen = lambda: next(selected)
@@ -615,10 +641,16 @@ class MissionSchedulerTests(unittest.TestCase):
             return False
 
         manager.navigate_to_screen = fail_navigation
-        self.assertFalse(manager.run_mission())
+        manager.hardware = SimpleNamespace(stop=lambda: None)
+        manager.publish_state = lambda *args, **kwargs: None
+        manager.map = FakeMap([first, second])
+        manager.map.processed_count = lambda: 0
+        manager.map.completed_count = lambda: 0
+        self.assertTrue(manager.run_mission())
         self.assertEqual(visited, [2, 3])
-        self.assertEqual(first.status, ScreenStatus.FAILED)
-        self.assertEqual(second.status, ScreenStatus.FAILED)
+        self.assertEqual(first.status, ScreenStatus.UNKNOWN)
+        self.assertEqual(second.status, ScreenStatus.UNKNOWN)
+        self.assertEqual(set(manager.temporarily_failed_targets), {2, 3})
         self.assertIsNone(manager.current_target_screen_id)
         failures = [
             data for name, data in manager.debug_events
@@ -626,15 +658,15 @@ class MissionSchedulerTests(unittest.TestCase):
         ]
         self.assertEqual([item["screen_id"] for item in failures], [2, 3])
 
-    def test_failed_is_terminal_but_not_successfully_processed(self):
+    def test_legacy_failed_status_is_retryable_and_not_processed(self):
         failed = screen(2, (10.0, 0.0))
         failed.status = ScreenStatus.FAILED
         self.assertFalse(failed.done())
-        self.assertTrue(failed.terminal())
+        self.assertFalse(failed.terminal())
         model = SimpleNamespace(screens={2: failed})
         self.assertEqual(sum(1 for item in model.screens.values() if item.done()), 0)
 
-    def test_all_terminal_failures_produce_mission_failed(self):
+    def test_all_temporary_failures_trigger_global_recovery_and_release(self):
         failed = screen(2, (10.0, 0.0))
         failed.status = ScreenStatus.FAILED
         manager = TaskManager.__new__(TaskManager)
@@ -645,7 +677,43 @@ class MissionSchedulerTests(unittest.TestCase):
         )
         manager.debug = SimpleNamespace(event=lambda *args, **kwargs: None)
         manager.set_mission_state = lambda state: setattr(manager, "mission_state", state)
-        self.assertEqual(manager.finish_mission_without_available_targets(), MissionState.MISSION_FAILED)
+        manager.temporarily_failed_targets = {2: {"reason": "navigation_failed"}}
+        manager.time_left_s = lambda: 100.0
+        calls = []
+        manager.perform_global_recovery = lambda reason: calls.append(reason) or False
+        self.assertEqual(
+            manager.finish_mission_without_available_targets(),
+            MissionState.SELECT_NEAREST_TARGET,
+        )
+        self.assertEqual(calls, ["all_targets_temporarily_failed"])
+        self.assertEqual(manager.temporarily_failed_targets, {})
+        self.assertNotEqual(manager.mission_state, MissionState.MISSION_FAILED)
+
+    def test_global_timeout_is_the_automatic_terminal_state(self):
+        manager = TaskManager.__new__(TaskManager)
+        manager.state = SimpleNamespace(
+            pose=RobotPose(0.0, 0.0, 0.0, Confidence.HIGH, "VISION", 1.0)
+        )
+        manager.config = load_config(None)
+        manager.args = SimpleNamespace(dry_run=False)
+        manager.map = SimpleNamespace(
+            processed_count=lambda: 0,
+            completed_count=lambda: 0,
+            screens={},
+        )
+        manager.debug_events = []
+        manager.debug = SimpleNamespace(
+            event=lambda name, **data: manager.debug_events.append((name, data))
+        )
+        manager.hardware = SimpleNamespace(stop=lambda: None)
+        manager.publish_state = lambda *args, **kwargs: None
+        manager.temporarily_failed_targets = {}
+        manager.global_recovery_cycles = 0
+        manager.time_left_s = lambda: 0.0
+        manager.set_mission_state = lambda state: setattr(manager, "mission_state", state)
+        self.assertTrue(manager.run_mission())
+        self.assertEqual(manager.mission_state, MissionState.MISSION_TIMEOUT)
+        self.assertTrue(any(name == "mission_timeout" for name, _ in manager.debug_events))
 
 
 if __name__ == "__main__":

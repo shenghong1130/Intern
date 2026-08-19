@@ -49,6 +49,7 @@ class MissionState(str, Enum):
     POST_INTERACTION_RELOCALIZE = "POST_INTERACTION_RELOCALIZE"
     MARK_TARGET_COMPLETE = "MARK_TARGET_COMPLETE"
     MISSION_COMPLETE = "MISSION_COMPLETE"
+    MISSION_TIMEOUT = "MISSION_TIMEOUT"
     MISSION_FAILED = "MISSION_FAILED"
     MISSION_BLOCKED = "MISSION_BLOCKED"
 
@@ -159,7 +160,9 @@ class Screen:
 
     def terminal(self) -> bool:
         """Return whether this target must no longer be selected."""
-        return self.done() or self.status == ScreenStatus.FAILED
+        # FAILED remains a dashboard/backward-compatibility label. Runtime
+        # failures are retryable; only processed screens leave selection.
+        return self.done()
 
     def successful(self) -> bool:
         return self.status == ScreenStatus.CHANGED

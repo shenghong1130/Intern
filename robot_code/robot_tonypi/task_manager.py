@@ -181,6 +181,7 @@ class TaskManager:
         self.turn_navigation_abort = False
         self.turn_progress_failure_start_diff = None
         self.near_wall_recovery_no_progress_count = 0
+        self.near_wall_recovery_rejection_count = 0
         self.near_wall_recovery_actions = 0
         self.navigation_stall_signature = None
         self.navigation_stall_count = 0
@@ -193,6 +194,10 @@ class TaskManager:
         self.last_motion_action = ""
         self.localization_failures = 0
         self.fatal_target_failures = 0
+        self.temporarily_failed_targets: Dict[int, dict] = {}
+        self.target_failure_counts: Dict[int, int] = {}
+        self.global_recovery_cycles = 0
+        self.mission_completion_announced = False
         self.pending_post_action_replan = False
         self.last_navigation_failure_reason = ""
         self.interaction_audit_file = None
@@ -393,18 +398,58 @@ class TaskManager:
         finally:
             self.close()
 
+    def finish_mission_on_timeout(self) -> bool:
+        """The global deadline is the only automatic terminal mission event."""
+        self.set_mission_state(MissionState.MISSION_TIMEOUT)
+        self.debug.event(
+            "mission_timeout",
+            successful=self.map.processed_count(),
+            changed=self.map.completed_count(),
+            temporary_failed=sorted(getattr(self, "temporarily_failed_targets", {})),
+            recovery_cycles=int(getattr(self, "global_recovery_cycles", 0)),
+        )
+        self.hardware.stop()
+        self.publish_state()
+        return True
+
+    def mission_retry_pause(self, config_key: str = "recovery_retry_interval_s") -> None:
+        delay = max(0.0, float(self.config["mission"].get(config_key, 0.5)))
+        time.sleep(min(delay, max(0.0, self.time_left_s())))
+
     def run_mission(self) -> bool:
         self.set_mission_state(MissionState.LOCALIZE)
-        if self.state.pose is None:
-            if not self.initial_localize():
-                self.debug.event("mission_abort", reason="initial_localize_failed")
-                return False
-        loops = 0
-        while loops < int(self.config["mission"]["max_main_loops"]):
-            loops += 1
-            if self.time_left_s() <= 0:
-                self.debug.event("mission_stop", reason="time_limit")
+        while self.state.pose is None and self.time_left_s() > 0:
+            self.debug.event("relocalization_started", reason="initial_localize")
+            if self.initial_localize():
+                self.debug.event("relocalization_success", reason="initial_localize")
                 break
+            self.debug.event(
+                "relocalization_failed",
+                reason="initial_localize_failed",
+                remaining_time=round(self.time_left_s(), 1),
+                mission_continues=True,
+            )
+            self.mission_retry_pause()
+        if self.time_left_s() <= 0:
+            return self.finish_mission_on_timeout()
+        loops = 0
+        loop_watchdog = max(1, int(self.config["mission"].get("max_main_loops", 10000)))
+        while self.time_left_s() > 0:
+            loops += 1
+            if loops > loop_watchdog:
+                self.debug.event(
+                    "global_recovery_started",
+                    reason="main_loop_watchdog",
+                    loops=loops,
+                    remaining_time=round(self.time_left_s(), 1),
+                )
+                self.perform_global_recovery("main_loop_watchdog")
+                loops = 0
+            if getattr(self, "mission_completion_announced", False):
+                if self.mission_state != MissionState.MISSION_COMPLETE:
+                    self.set_mission_state(MissionState.MISSION_COMPLETE)
+                self.mission_retry_pause("completed_idle_interval_s")
+                continue
             # Never hand a close post-interaction pose to the normal planner.
             # After the physical retreat succeeds, localization retries do not
             # repeat that retreat.
@@ -432,14 +477,18 @@ class TaskManager:
                 )))
                 continue
             if self.target_reached():
-                self.set_mission_state(MissionState.MISSION_COMPLETE)
-                self.debug.event("mission_success", completed=self.map.completed_count())
-                break
+                if not getattr(self, "mission_completion_announced", False):
+                    self.mission_completion_announced = True
+                    self.set_mission_state(MissionState.MISSION_COMPLETE)
+                    self.debug.event("mission_success", completed=self.map.completed_count())
+                self.mission_retry_pause("completed_idle_interval_s")
+                continue
             self.set_mission_state(MissionState.SELECT_NEAREST_TARGET)
             target = self.choose_nearest_screen()
             if target is None:
                 self.finish_mission_without_available_targets()
-                break
+                self.mission_retry_pause()
+                continue
             new_target = self.current_target_screen_id != target.screen_id
             target_goal = self.lock_target_goal(target)
             self.arrived_at_target = False
@@ -481,15 +530,7 @@ class TaskManager:
             ok = self.navigate_to_screen(target)
             if not ok:
                 failure_reason = self.last_navigation_failure_reason or "navigation_failed"
-                target.attempts += 1
-                target.notes.append(failure_reason)
-                target.status = ScreenStatus.FAILED
-                self.debug.event(
-                    "target_navigation_failed",
-                    screen_id=target.screen_id,
-                    reason=failure_reason,
-                    attempts=target.attempts,
-                )
+                self.register_temporary_target_failure(target, failure_reason)
                 self.fatal_target_failures += 1
                 self.clear_current_target_context()
                 continue
@@ -559,7 +600,7 @@ class TaskManager:
             self.set_mission_state(MissionState.MARK_TARGET_COMPLETE)
             self.publish_state(target)
             self.clear_current_target_context()
-        return self.mission_state == MissionState.MISSION_COMPLETE
+        return self.finish_mission_on_timeout()
 
     def clear_current_target_context(self) -> None:
         self.current_target_screen_id = None
@@ -571,23 +612,20 @@ class TaskManager:
         self.final_forward_executed = False
 
     def mark_target_terminal_failed(self, target: Screen, reason: str) -> None:
-        target.status = ScreenStatus.FAILED
-        target.notes.append(reason)
-        self.debug.event(
-            "target_terminal_failed",
-            screen_id=target.screen_id,
-            reason=reason,
-            attempts=target.attempts,
-            max_attempts=int(self.config["mission"].get("max_target_attempts", 2)),
-        )
+        """Compatibility entry point: runtime failures are never permanent."""
+        self.register_temporary_target_failure(target, reason)
 
     def register_target_failure(self, target: Screen, reason: str, relocalize: bool = False) -> bool:
-        """Record a retryable target failure; return True only when terminal."""
+        """Record a bounded local retry; True means rotate the target temporarily."""
         target.attempts += 1
         target.notes.append(reason)
         max_attempts = max(1, int(self.config["mission"].get("max_target_attempts", 2)))
         if target.attempts >= max_attempts:
-            self.mark_target_terminal_failed(target, reason)
+            self.register_temporary_target_failure(
+                target,
+                reason,
+                increment_attempt=False,
+            )
             return True
         self.debug.event(
             "target_retry",
@@ -597,8 +635,86 @@ class TaskManager:
             max_attempts=max_attempts,
         )
         if relocalize:
-            self.localize_scan()
+            self.debug.event("relocalization_started", reason=reason, target_id=target.screen_id)
+            localized = bool(self.localize_scan())
+            self.debug.event(
+                "relocalization_success" if localized else "relocalization_failed",
+                reason=reason,
+                target_id=target.screen_id,
+            )
         return False
+
+    def is_retryable_target_failure(self, reason: str) -> bool:
+        """Navigation/localization/runtime failures never permanently blacklist a target."""
+        return str(reason) not in ("target_completed", "already_target")
+
+    def register_temporary_target_failure(
+        self,
+        target: Screen,
+        reason: str,
+        *,
+        increment_attempt: bool = True,
+    ) -> None:
+        """Temporarily rotate an unfinished target without blacklisting it."""
+        target_id = int(target.screen_id)
+        if not hasattr(self, "target_failure_counts"):
+            self.target_failure_counts = {}
+        if not hasattr(self, "temporarily_failed_targets"):
+            self.temporarily_failed_targets = {}
+        if increment_attempt:
+            target.attempts += 1
+            target.notes.append(reason)
+        self.target_failure_counts[target_id] = int(
+            getattr(self, "target_failure_counts", {}).get(target_id, 0)
+        ) + 1
+        self.temporarily_failed_targets[target_id] = {
+            "reason": str(reason),
+            "failed_s": now_s(),
+            "count": self.target_failure_counts[target_id],
+        }
+        # Undo legacy permanent failure state while preserving successful work.
+        if target.status == ScreenStatus.FAILED:
+            target.status = ScreenStatus.UNKNOWN
+        self.debug.event(
+            "target_navigation_failed",
+            screen_id=target_id,
+            reason=reason,
+            attempts=target.attempts,
+            temporary=True,
+            mission_failed=False,
+        )
+        self.debug.event(
+            "target_temporarily_failed",
+            target_id=target_id,
+            pose=(
+                None
+                if getattr(getattr(self, "state", None), "pose", None) is None
+                else self.state.pose.as_dict()
+            ),
+            reason=reason,
+            failure_count=self.target_failure_counts[target_id],
+            temporary_failed=sorted(self.temporarily_failed_targets),
+            remaining_time=round(self.time_left_s(), 1) if hasattr(self, "args") else None,
+        )
+
+    def release_temporary_target_failures(self, reason: str) -> List[int]:
+        released = sorted(getattr(self, "temporarily_failed_targets", {}))
+        for target_id in released:
+            target = self.map.screens.get(target_id)
+            if target is not None:
+                if target.status == ScreenStatus.FAILED:
+                    target.status = ScreenStatus.UNKNOWN
+                if not target.done():
+                    target.attempts = 0
+        self.temporarily_failed_targets.clear()
+        if released:
+            self.debug.event(
+                "target_retry_released",
+                target_ids=released,
+                reason=reason,
+                remaining_time=round(self.time_left_s(), 1),
+            )
+        return released
 
     def preserve_current_target(self, target: Screen, reason: str) -> None:
         goal = getattr(self, "current_target_goal", None)
@@ -621,29 +737,91 @@ class TaskManager:
         self.debug.event("mission_state", state=state.value)
 
     def finish_mission_without_available_targets(self) -> MissionState:
-        """Distinguish successful completion from exhausted failed targets."""
-        failed_ids = [
-            item.screen_id
-            for item in self.map.screens.values()
+        """Recover/release temporary failures; never terminate the mission."""
+        unfinished = [item for item in self.map.screens.values() if not item.done()]
+        if not unfinished:
+            self.set_mission_state(MissionState.MISSION_COMPLETE)
+            if not getattr(self, "mission_completion_announced", False):
+                self.mission_completion_announced = True
+                self.debug.event(
+                    "mission_complete",
+                    processed=self.map.processed_count(),
+                    changed=self.map.completed_count(),
+                    waiting_for_timeout=True,
+                )
+            return self.mission_state
+        temporary = sorted(getattr(self, "temporarily_failed_targets", {}))
+        legacy_failed = [
+            item.screen_id for item in unfinished
             if item.status == ScreenStatus.FAILED
         ]
-        if failed_ids:
-            self.set_mission_state(MissionState.MISSION_FAILED)
-            self.debug.event(
-                "mission_failed",
-                successful=self.map.processed_count(),
-                changed=self.map.completed_count(),
-                failed=len(failed_ids),
-                failed_ids=failed_ids,
-            )
-        else:
-            self.set_mission_state(MissionState.MISSION_COMPLETE)
-            self.debug.event(
-                "mission_complete",
-                processed=self.map.processed_count(),
-                changed=self.map.completed_count(),
-            )
+        self.debug.event(
+            "all_targets_temporarily_failed",
+            target_ids=sorted(item.screen_id for item in unfinished),
+            temporary_failed=temporary,
+            legacy_failed=legacy_failed,
+            remaining_time=round(self.time_left_s(), 1),
+        )
+        self.perform_global_recovery("all_targets_temporarily_failed")
+        self.release_temporary_target_failures("global_recovery_complete")
+        self.set_mission_state(MissionState.SELECT_NEAREST_TARGET)
         return self.mission_state
+
+    def perform_global_recovery(self, reason: str) -> bool:
+        """Run one bounded recovery cycle; callers keep the mission alive."""
+        self.global_recovery_cycles = int(getattr(self, "global_recovery_cycles", 0)) + 1
+        self.set_mission_state(MissionState.NAVIGATION_RECOVERY)
+        self.debug.event(
+            "global_recovery_started",
+            reason=reason,
+            cycle=self.global_recovery_cycles,
+            target_id=getattr(self, "current_target_screen_id", None),
+            pose=None if self.state.pose is None else self.state.pose.as_dict(),
+            temporary_failed=sorted(getattr(self, "temporarily_failed_targets", {})),
+            remaining_time=round(self.time_left_s(), 1),
+        )
+        self.debug.event("relocalization_started", reason="global_recovery:" + reason)
+        localized = bool(self.localize_scan(
+            reason="global_recovery:" + reason,
+            allow_pan_search=True,
+            allow_failure_escalation=False,
+        ))
+        self.debug.event(
+            "relocalization_success" if localized else "relocalization_failed",
+            reason="global_recovery:" + reason,
+            pose=None if self.state.pose is None else self.state.pose.as_dict(),
+        )
+        recovered = localized
+        pose = self.state.pose
+        if self.time_left_s() > 0 and pose is not None:
+            if self.near_wall_now(pose):
+                result = self.recover_from_near_wall("global_recovery:" + reason)
+                recovered = result in (
+                    NearWallRecoveryResult.RECOVERED,
+                    NearWallRecoveryResult.RETRY_WITH_NEW_POSE,
+                )
+            else:
+                recovered = bool(self.recover_via_indoor_waypoint(
+                    "global_recovery:" + reason
+                )) or recovered
+        elif self.time_left_s() > 0:
+            actions = self.config["localization"].get("startup_search_actions", [])
+            recovered = bool(self.run_localization_search_sequence(
+                reason="global_recovery_pose_missing:" + reason,
+                max_search_actions=len(actions),
+                runtime_safety=False,
+                no_tag_recovery=True,
+            ))
+        self.debug.event(
+            "global_recovery_finished",
+            reason=reason,
+            cycle=self.global_recovery_cycles,
+            success=bool(recovered),
+            pose=None if self.state.pose is None else self.state.pose.as_dict(),
+            mission_continues=self.time_left_s() > 0,
+            remaining_time=round(self.time_left_s(), 1),
+        )
+        return bool(recovered)
 
     def run_harvest_mode(self) -> bool:
         """Navigate directly to one nearest configured target and classify it."""
@@ -3989,8 +4167,13 @@ class TaskManager:
         if self.state.pose is None:
             return None
         pose = self.state.pose
+        temporary = set(getattr(self, "temporarily_failed_targets", {}))
         locked = self.map.screens.get(getattr(self, "current_target_screen_id", None))
-        if locked is not None and not locked.terminal():
+        if (
+            locked is not None
+            and not locked.terminal()
+            and int(locked.screen_id) not in temporary
+        ):
             self.last_target_plan = {
                 "selection_rule": "preserve_locked_target",
                 "screen_id": locked.screen_id,
@@ -3998,7 +4181,11 @@ class TaskManager:
             }
             return locked
         ranked = sorted(
-            (screen for screen in self.map.unfinished_screens() if not screen.terminal()),
+            (
+                screen
+                for screen in self.map.screens.values()
+                if not screen.done() and int(screen.screen_id) not in temporary
+            ),
             key=lambda screen: (
                 distance_xy(pose.xy(), screen.task_target_xy or screen.interaction_xy),
                 int(screen.screen_id),
@@ -5090,12 +5277,30 @@ class TaskManager:
         max_cycles = max(1, int(self.config["navigation"].get("recovery_max_action_cycles", 1)))
         times = min(max_cycles, max(1, int(times)))
         result = self.motion.run(key, times_override=times)
-        self.near_wall_recovery_actions = getattr(self, "near_wall_recovery_actions", 0) + int(
+        executed_cycles = int(
             getattr(result, "executed_times", result.times if result.ok else 0) or 0
         )
+        self.near_wall_recovery_actions = getattr(
+            self, "near_wall_recovery_actions", 0
+        ) + executed_cycles
         if not result.ok:
             self.last_navigation_failure_reason = "hardware_failure"
+            self.debug.event(
+                "recovery_action_rejected",
+                phase=phase,
+                action=key,
+                reason="hardware_action_failed",
+                executed=False,
+            )
             return NearWallRecoveryResult.HARDWARE_FAILURE
+        self.debug.event(
+            "recovery_action_executed",
+            phase=phase,
+            action=key,
+            executed=True,
+            actual_action_cycles=executed_cycles,
+            target_id=getattr(self, "current_target_screen_id", None),
+        )
         self.hardware.center_head()
         localized = bool(self.localize_scan())
         after = self.state.pose
@@ -5107,21 +5312,24 @@ class TaskManager:
             position_delta = distance_xy(before.xy(), after.xy())
             yaw_delta = angle_diff_deg(after.yaw_deg, before.yaw_deg)
             clearance_delta = float(after_clearance) - before_clearance
-        no_progress = (
-            not localized
-            or after is None
-            or (
+        # A failed observation is not proof that a physical action made no
+        # progress. Only a successfully re-localized, unchanged pose counts.
+        verified_no_progress = bool(
+            localized
+            and after is not None
+            and (
                 position_delta < 1.0
                 and abs(yaw_delta) < 1.0
                 and abs(clearance_delta) < 1.0
             )
         )
-        if no_progress:
+        if verified_no_progress:
             self.near_wall_recovery_no_progress_count = getattr(
                 self, "near_wall_recovery_no_progress_count", 0
             ) + 1
-        else:
+        elif localized and after is not None:
             self.near_wall_recovery_no_progress_count = 0
+            self.near_wall_recovery_rejection_count = 0
         self.debug.event(
             "near_wall_recovery_after",
             phase=phase,
@@ -5134,7 +5342,7 @@ class TaskManager:
             position_delta_cm=round(position_delta, 2),
             yaw_delta_deg=round(yaw_delta, 2),
             wall_distance_delta_cm=round(clearance_delta, 2),
-            no_progress=no_progress,
+            no_progress=verified_no_progress,
             no_progress_count=self.near_wall_recovery_no_progress_count,
             requested_action_cycles=times,
             actual_action_cycles=getattr(result, "executed_times", result.times if result.ok else 0),
@@ -5145,7 +5353,7 @@ class TaskManager:
             1,
             int(self.config["navigation"].get("near_wall_recovery_no_progress_threshold", 2)),
         )
-        if self.near_wall_recovery_no_progress_count >= threshold:
+        if verified_no_progress and self.near_wall_recovery_no_progress_count >= threshold:
             self.last_navigation_failure_reason = "near_wall_recovery_exhausted"
             self.debug.event(
                 "near_wall_recovery_no_progress",
@@ -5211,31 +5419,195 @@ class TaskManager:
         return candidates[0][3]
 
     def register_near_wall_recovery_stall(self, reason: str, action: str = "none") -> bool:
-        """Count a recovery episode where no safe action could make progress."""
-        self.near_wall_recovery_no_progress_count = getattr(
-            self, "near_wall_recovery_no_progress_count", 0
-        ) + 1
+        """Track planner vetoes separately from verified physical no-progress."""
+        self.near_wall_recovery_rejection_count = int(getattr(
+            self, "near_wall_recovery_rejection_count", 0
+        )) + 1
         threshold = max(1, int(
-            self.config["navigation"].get("near_wall_recovery_no_progress_threshold", 2)
+            self.config["navigation"].get("near_wall_recovery_rejection_threshold", 2)
         ))
         self.debug.event(
             "near_wall_recovery_stall",
             reason=reason,
             action=action,
-            count=self.near_wall_recovery_no_progress_count,
+            count=self.near_wall_recovery_rejection_count,
             threshold=threshold,
+            physical_no_progress_count=self.near_wall_recovery_no_progress_count,
             current_target_screen_id=getattr(self, "current_target_screen_id", None),
         )
-        if self.near_wall_recovery_no_progress_count >= threshold:
-            self.last_navigation_failure_reason = "near_wall_recovery_exhausted"
+        if self.near_wall_recovery_rejection_count >= threshold:
             self.debug.event(
-                "near_wall_recovery_aborted",
+                "recovery_decision",
                 reason=reason,
                 action=action,
-                count=self.near_wall_recovery_no_progress_count,
+                decision="forced_escape",
+                rejected_count=self.near_wall_recovery_rejection_count,
+                physical_no_progress_count=self.near_wall_recovery_no_progress_count,
             )
             return True
         return False
+
+    def execute_bounded_escape(self, reason: str) -> NearWallRecoveryResult:
+        """Use tiny configured turns when conservative normal recovery vetoes all moves."""
+        nav = self.config["navigation"]
+        if not bool(nav.get("forced_escape_enabled", True)):
+            return NearWallRecoveryResult.LOCALIZATION_REQUIRED
+        target_id = getattr(self, "current_target_screen_id", None)
+        self.debug.event(
+            "forced_escape_started",
+            reason=reason,
+            target_id=target_id,
+            pose=None if self.state.pose is None else self.state.pose.as_dict(),
+            rejected_count=int(getattr(self, "near_wall_recovery_rejection_count", 0)),
+        )
+        self.debug.event("relocalization_started", reason="forced_escape_head_scan")
+        localized = bool(self.localize_scan(
+            reason="forced_escape_head_scan",
+            allow_pan_search=True,
+            allow_failure_escalation=False,
+        ))
+        self.debug.event(
+            "relocalization_success" if localized else "relocalization_failed",
+            reason="forced_escape_head_scan",
+            target_id=target_id,
+        )
+        pose = self.state.pose
+        if localized and pose is not None and not self.near_wall_now(pose):
+            self.near_wall_recovery_rejection_count = 0
+            self.debug.event(
+                "forced_escape_finished",
+                success=True,
+                reason="head_scan_pose_cleared_near_wall",
+                target_id=target_id,
+            )
+            return NearWallRecoveryResult.RECOVERED
+        if pose is None:
+            self.debug.event(
+                "forced_escape_finished",
+                success=False,
+                reason="pose_unavailable_after_full_pan",
+                target_id=target_id,
+            )
+            return NearWallRecoveryResult.LOCALIZATION_REQUIRED
+        center_clearance = (
+            self.distance_to_nearest_boundary(pose)
+            if hasattr(self.map, "width_cm") and hasattr(self.map, "height_cm")
+            else float("inf")
+        )
+        minimum = max(0.0, float(nav.get("forced_escape_min_center_clearance_cm", 0.0)))
+        center_free = not hasattr(self.map, "is_free_xy") or self.map.is_free_xy(pose.xy())
+        if not center_free or center_clearance < minimum:
+            self.debug.event(
+                "recovery_action_rejected",
+                phase="forced_escape",
+                action=None,
+                executed=False,
+                reason="hard_center_safety_gate",
+                center_free=bool(center_free),
+                boundary_clearance_cm=round(center_clearance, 2),
+            )
+            self.debug.event(
+                "forced_escape_finished",
+                success=False,
+                reason="hard_center_safety_gate",
+                target_id=target_id,
+            )
+            return NearWallRecoveryResult.LOCALIZATION_REQUIRED
+        left_clearance = self.wall_clearance_cm(pose, pose.yaw_deg + 90.0)
+        right_clearance = self.wall_clearance_cm(pose, pose.yaw_deg - 90.0)
+        actions = (
+            ["turn_left_fast", "turn_right_fast"]
+            if left_clearance >= right_clearance
+            else ["turn_right_fast", "turn_left_fast"]
+        )
+        max_actions = max(1, min(2, int(nav.get("forced_escape_max_turn_actions", 2))))
+        any_executed = False
+        for index, action in enumerate(actions[:max_actions], 1):
+            self.debug.event(
+                "forced_escape_action",
+                index=index,
+                action=action,
+                target_id=target_id,
+                override="soft_rotation_sweep_only",
+                actual_action_cycles=1,
+            )
+            outcome = self.execute_near_wall_recovery_action(
+                action, "forced_escape", index, 1
+            )
+            any_executed = outcome != NearWallRecoveryResult.HARDWARE_FAILURE
+            if outcome == NearWallRecoveryResult.HARDWARE_FAILURE:
+                self.debug.event(
+                    "forced_escape_finished",
+                    success=False,
+                    reason="hardware_failure",
+                    target_id=target_id,
+                )
+                return outcome
+            if outcome == NearWallRecoveryResult.RECOVERED:
+                self.near_wall_recovery_rejection_count = 0
+                self.debug.event(
+                    "forced_escape_finished",
+                    success=True,
+                    reason="escaped_near_wall",
+                    target_id=target_id,
+                )
+                return outcome
+            if outcome == NearWallRecoveryResult.RETRY_WITH_NEW_POSE:
+                self.near_wall_recovery_rejection_count = 0
+                self.debug.event(
+                    "forced_escape_finished",
+                    success=True,
+                    reason="clearance_improved_replan",
+                    target_id=target_id,
+                )
+                return outcome
+            if outcome == NearWallRecoveryResult.LOCALIZATION_REQUIRED:
+                self.debug.event("relocalization_started", reason="forced_escape_after_action")
+                relocalized = bool(self.localize_scan(
+                    reason="forced_escape_after_action",
+                    allow_pan_search=True,
+                    allow_failure_escalation=False,
+                ))
+                self.debug.event(
+                    "relocalization_success" if relocalized else "relocalization_failed",
+                    reason="forced_escape_after_action",
+                    target_id=target_id,
+                )
+                if not relocalized:
+                    continue
+            elif outcome == NearWallRecoveryResult.STILL_NEAR_WALL:
+                # The action was physically verified and changed the pose.
+                # Replan from that new orientation instead of undoing it with
+                # the opposite turn in the same recovery episode.
+                self.near_wall_recovery_rejection_count = 0
+                self.debug.event(
+                    "forced_escape_finished",
+                    success=True,
+                    reason="bounded_turn_changed_pose_replan",
+                    target_id=target_id,
+                )
+                return NearWallRecoveryResult.RETRY_WITH_NEW_POSE
+            if self.state.pose is not None and not self.near_wall_now(self.state.pose):
+                self.near_wall_recovery_rejection_count = 0
+                self.debug.event(
+                    "forced_escape_finished",
+                    success=True,
+                    reason="fresh_pose_cleared_near_wall",
+                    target_id=target_id,
+                )
+                return NearWallRecoveryResult.RECOVERED
+        self.debug.event(
+            "forced_escape_finished",
+            success=False,
+            reason="bounded_actions_exhausted",
+            action_executed=any_executed,
+            target_id=target_id,
+        )
+        return (
+            NearWallRecoveryResult.STILL_NEAR_WALL
+            if any_executed and self.state.pose is not None
+            else NearWallRecoveryResult.LOCALIZATION_REQUIRED
+        )
 
     def register_navigation_stall(
         self,
@@ -5390,6 +5762,14 @@ class TaskManager:
                     executed=False,
                     reason="rear_path_unsafe",
                 )
+                self.debug.event(
+                    "recovery_action_rejected",
+                    phase="backoff",
+                    action="back_fast",
+                    executed=False,
+                    reason="rear_path_unsafe",
+                    target_id=getattr(self, "current_target_screen_id", None),
+                )
                 break
             self.debug.event("near_wall_backoff_attempt", attempt=attempt, step_cm=back_step)
             outcome = self.execute_near_wall_recovery_action("back_fast", "backoff", attempt, 1)
@@ -5415,6 +5795,14 @@ class TaskManager:
                     action=None,
                     executed=False,
                     reason="no_safe_lateral_path",
+                )
+                self.debug.event(
+                    "recovery_action_rejected",
+                    phase="lateral",
+                    action=None,
+                    executed=False,
+                    reason="no_safe_lateral_path",
+                    target_id=getattr(self, "current_target_screen_id", None),
                 )
                 break
             tried_directions.add(direction)
@@ -5445,31 +5833,56 @@ class TaskManager:
                     executed=False,
                     reason="rotation_sweep_blocked",
                 )
+                self.debug.event(
+                    "recovery_action_rejected",
+                    phase="small_turn_last_resort",
+                    action=key,
+                    executed=False,
+                    reason="rotation_sweep_blocked",
+                    target_id=getattr(self, "current_target_screen_id", None),
+                )
                 outcome = NearWallRecoveryResult.STILL_NEAR_WALL
             else:
                 outcome = self.execute_near_wall_recovery_action(key, "small_turn_last_resort", 1, 1)
             if outcome in (NearWallRecoveryResult.RECOVERED, NearWallRecoveryResult.HARDWARE_FAILURE, NearWallRecoveryResult.LOCALIZATION_REQUIRED):
                 return outcome
 
-        self.debug.event(
-            "near_wall_recovery_no_progress",
-            error="near_wall_recovery_exhausted",
-            reason=reason,
-            count=self.near_wall_recovery_no_progress_count,
-            pose=None if self.state.pose is None else self.state.pose.as_dict(),
-            near_wall_recovery_result=NearWallRecoveryResult.STILL_NEAR_WALL.value,
-            target_preserved=target_screen is not None,
-        )
         if int(getattr(self, "near_wall_recovery_actions", 0)) == actions_before:
             self.register_near_wall_recovery_stall(reason, "all_recovery_actions_rejected")
-        if self.near_wall_recovery_no_progress_count >= max(
+            forced = self.execute_bounded_escape(reason + ":all_actions_vetoed")
+            if forced != NearWallRecoveryResult.STILL_NEAR_WALL:
+                return forced
+            # A bounded physical action occurred; subsequent handling is based
+            # on its fresh localization, not on the preceding planner vetoes.
+            if int(getattr(self, "near_wall_recovery_actions", 0)) > actions_before:
+                return forced
+        physical_stalled = self.near_wall_recovery_no_progress_count >= max(
             1, int(nav.get("near_wall_recovery_no_progress_threshold", 2))
-        ):
+        )
+        if physical_stalled:
+            self.debug.event(
+                "near_wall_recovery_no_progress",
+                error="near_wall_recovery_exhausted",
+                reason=reason,
+                count=self.near_wall_recovery_no_progress_count,
+                rejected_count=int(getattr(self, "near_wall_recovery_rejection_count", 0)),
+                pose=None if self.state.pose is None else self.state.pose.as_dict(),
+                near_wall_recovery_result=NearWallRecoveryResult.STILL_NEAR_WALL.value,
+                target_preserved=target_screen is not None,
+            )
             self.last_navigation_failure_reason = "near_wall_recovery_exhausted"
             self.debug.event(
                 "near_wall_recovery_aborted",
                 reason=reason,
                 count=self.near_wall_recovery_no_progress_count,
+            )
+        else:
+            self.debug.event(
+                "recovery_decision",
+                reason=reason,
+                decision="continue_with_fresh_pose",
+                physical_no_progress_count=self.near_wall_recovery_no_progress_count,
+                rejected_count=int(getattr(self, "near_wall_recovery_rejection_count", 0)),
             )
         self.debug.event(
             "near_wall_recovery_continue_same_target",
@@ -5774,6 +6187,7 @@ class TaskManager:
         self.turn_navigation_abort = False
         self.last_navigation_failure_reason = ""
         self.near_wall_recovery_no_progress_count = 0
+        self.near_wall_recovery_rejection_count = 0
         self.near_wall_recovery_actions = 0
         self.navigation_stall_signature = None
         self.navigation_stall_count = 0
@@ -6344,6 +6758,13 @@ class TaskManager:
             "completed_count": self.map.completed_count(),
             "processed_count": self.map.processed_count(),
             "remaining_target_ids": [screen.screen_id for screen in self.map.unfinished_screens()],
+            "temporarily_failed_targets": {
+                str(target_id): dict(detail)
+                for target_id, detail in sorted(
+                    getattr(self, "temporarily_failed_targets", {}).items()
+                )
+            },
+            "target_failure_counts": dict(getattr(self, "target_failure_counts", {})),
             "mission_state": self.mission_state.value,
             "current_target_tag_id": self.current_target_screen_id,
             "current_target_screen_id": self.current_target_screen_id,
@@ -6410,7 +6831,11 @@ class TaskManager:
                 "plan_failure_signature": getattr(self, "plan_failure_signature", None),
                 "near_wall_recovery_actions": self.near_wall_recovery_actions,
                 "near_wall_recovery_no_progress": self.near_wall_recovery_no_progress_count,
+                "near_wall_recovery_rejections": int(getattr(
+                    self, "near_wall_recovery_rejection_count", 0
+                )),
                 "fatal_target_failures": self.fatal_target_failures,
+                "global_recovery_cycles": int(getattr(self, "global_recovery_cycles", 0)),
                 "active_waypoint": getattr(self, "active_recovery_waypoint", None),
             },
             "interaction_log_path": self.interaction_audit_path,
