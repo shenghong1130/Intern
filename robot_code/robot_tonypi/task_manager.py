@@ -2535,6 +2535,7 @@ class TaskManager:
             allow_goal_high_cost=True,
             target_screen=screen,
             target_goal=goal,
+            bypass_action_safety=True,
         )
 
     def execute_final_forward(self, screen: Screen) -> bool:
@@ -4083,6 +4084,7 @@ class TaskManager:
         pose: RobotPose,
         waypoint: Tuple[float, float],
         screen: Screen,
+        bypass_action_safety: bool = False,
     ) -> Optional[dict]:
         """Choose forward first, then lateral, with a shortened final step."""
         nav = self.config["navigation"]
@@ -4093,6 +4095,8 @@ class TaskManager:
         max_cost = float(nav.get("target_direct_non_target_max_cost", 60.0))
 
         def corridor_for(forward_cm=0.0, lateral_cm=0.0):
+            if bypass_action_safety:
+                return True
             end = self.translated_pose_xy(pose, forward_cm=forward_cm, lateral_cm=lateral_cm)
             return self.map.target_direct_corridor_clear(
                 pose.xy(), end, screen.screen_id, half_width, max_cost
@@ -4670,6 +4674,7 @@ class TaskManager:
         pose: RobotPose,
         waypoint: Tuple[float, float],
         allow_goal_high_cost: bool = False,
+        bypass_action_safety: bool = False,
     ) -> Optional[dict]:
         nav_cfg = self.config["navigation"]
         if not bool(nav_cfg.get("translation_prefer_enabled", True)):
@@ -4686,6 +4691,13 @@ class TaskManager:
         )
 
         def corridor_metrics_to(next_xy):
+            if bypass_action_safety:
+                return {
+                    "clear": True,
+                    "path_obstacle_cost": 0.0,
+                    "minimum_wall_clearance_cm": 9999.0,
+                    "safety_bypassed": True,
+                }
             if escape_mode:
                 return self.escape_corridor_metrics(pose.xy(), next_xy)
             return self.movement_corridor_metrics(pose.xy(), next_xy)
@@ -4779,8 +4791,10 @@ class TaskManager:
             planned = self.planned_forward_step_cm(requested)
             planned_xy = self.translated_pose_xy(pose, forward_cm=planned)
             forward_metrics = corridor_metrics_to(planned_xy)
-            forward_clear = bool(forward_metrics.get("clear")) if escape_mode else self.forward_clear_for_distance(
-                pose, planned, exact_goal_xy=waypoint if allow_goal_high_cost else None
+            forward_clear = bypass_action_safety or (
+                bool(forward_metrics.get("clear")) if escape_mode else self.forward_clear_for_distance(
+                    pose, planned, exact_goal_xy=waypoint if allow_goal_high_cost else None
+                )
             )
             if forward_clear:
                 travel = min(float(forward), planned)
@@ -4813,8 +4827,10 @@ class TaskManager:
                 <= float(self.config["navigation"].get("target_arrival_radius_cm", 4.0))
             )
             lateral_metrics = corridor_metrics_to(lateral_target)
-            lateral_clear = bool(lateral_metrics.get("clear")) if escape_mode else self.path_segments_clear(
-                [pose.xy(), lateral_target], allow_goal_high_cost=lateral_reaches_goal
+            lateral_clear = bypass_action_safety or (
+                bool(lateral_metrics.get("clear")) if escape_mode else self.path_segments_clear(
+                    [pose.xy(), lateral_target], allow_goal_high_cost=lateral_reaches_goal
+                )
             )
             if abs(planned) > 0.0 and lateral_clear:
                 next_xy = self.translated_pose_xy(pose, lateral_cm=planned)
@@ -4884,6 +4900,7 @@ class TaskManager:
         waypoint: Tuple[float, float],
         goal_dist_cm: float,
         context: dict,
+        bypass_action_safety: bool = False,
     ) -> str:
         pose_before_action = self.copy_pose(pose)
         detail = dict(context)
@@ -4906,7 +4923,7 @@ class TaskManager:
             key = "back_fast"
             step_cm = abs(float(self.config["motion"]["actions"][key].get("forward_cm", -2.5)))
             requested = self.motion.reverse_cycles_for_distance(float(action["distance_cm"]))
-            near_wall = self.near_wall_now(pose)
+            near_wall = False if bypass_action_safety else self.near_wall_now(pose)
             cycles, batch_reason = self.select_adaptive_action_batch(
                 "reverse",
                 requested,
@@ -4974,15 +4991,24 @@ class TaskManager:
             key = "strafe_left_fast" if float(action["distance_cm"]) > 0.0 else "strafe_right_fast"
             step_cm = abs(float(self.config["motion"]["actions"][key].get("lateral_cm", 4.0)))
             requested = self.motion.lateral_cycles_for_distance(float(action["distance_cm"]))
-            near_wall = self.near_wall_now(pose)
+            near_wall = False if bypass_action_safety else self.near_wall_now(pose)
             cycles, batch_reason = self.select_adaptive_action_batch(
                 "strafe", requested, step_cm, abs(float(action["distance_cm"])), goal_dist_cm,
                 near_wall=near_wall,
             )
             travel = math.copysign(cycles * step_cm, float(action["distance_cm"]))
             end_xy = self.translated_pose_xy(pose, lateral_cm=travel)
-            corridor = self.movement_corridor_metrics(pose.xy(), end_xy)
-            if not corridor["clear"]:
+            corridor = action.get("corridor_metrics") or (
+                {
+                    "clear": True,
+                    "path_obstacle_cost": 0.0,
+                    "minimum_wall_clearance_cm": 9999.0,
+                    "safety_bypassed": True,
+                }
+                if bypass_action_safety
+                else self.movement_corridor_metrics(pose.xy(), end_xy)
+            )
+            if not bypass_action_safety and not corridor["clear"]:
                 self.debug.event(
                     "translation_corridor_blocked",
                     selected_action="strafe",
@@ -5028,7 +5054,7 @@ class TaskManager:
             )
             return "moved"
 
-        if self.front_obstacle_visible():
+        if not bypass_action_safety and self.front_obstacle_visible():
             self.register_decision_stall(
                 pose,
                 waypoint,
@@ -5043,7 +5069,11 @@ class TaskManager:
         forward_dist = min(float(action["distance_cm"]), goal_dist_cm)
         planned_forward_cm = self.planned_forward_step_cm(forward_dist)
         map_check_min = float(self.config["navigation"].get("forward_map_check_min_cm", 16.0))
-        if planned_forward_cm >= map_check_min and not self.forward_clear_for_distance(pose, planned_forward_cm):
+        if (
+            not bypass_action_safety
+            and planned_forward_cm >= map_check_min
+            and not self.forward_clear_for_distance(pose, planned_forward_cm)
+        ):
             self.forward_map_block_count += 1
             self.register_decision_stall(
                 pose,
@@ -5085,7 +5115,7 @@ class TaskManager:
             visual_before = self.capture_visual_progress_frame()
         step_cm = abs(float(self.config["motion"]["actions"]["forward_fast"].get("forward_cm", 3.5)))
         requested = self.motion.forward_cycles_for_distance(forward_dist)
-        near_wall = self.near_wall_now(pose)
+        near_wall = False if bypass_action_safety else self.near_wall_now(pose)
         cycles, batch_reason = self.select_adaptive_action_batch(
             "forward", requested, step_cm, forward_dist, goal_dist_cm,
             near_wall=near_wall,
@@ -5100,12 +5130,24 @@ class TaskManager:
         self.clear_turn_progress_watchdog("successful_translation")
         self.set_pending_forward_progress(pose_before_forward, abs(float(result.model_forward_cm)))
         self.evaluate_visual_forward_progress(visual_before, abs(float(result.model_forward_cm)))
-        if self.collision_recovery_pending:
+        if self.collision_recovery_pending and not bypass_action_safety:
             reason = str(context.get("reason", "visual_forward_no_progress"))
             self.recover_toward_field_center(reason + ":visual_forward_no_progress", backoff=True)
             return "recovered"
-        action_corridor = action.get("corridor_metrics") or self.movement_corridor_metrics(
-            pose_before_forward.xy(), self.state.pose.xy() if self.state.pose is not None else waypoint
+        if bypass_action_safety:
+            self.collision_recovery_pending = False
+        action_corridor = action.get("corridor_metrics") or (
+            {
+                "clear": True,
+                "path_obstacle_cost": 0.0,
+                "minimum_wall_clearance_cm": 9999.0,
+                "safety_bypassed": True,
+            }
+            if bypass_action_safety
+            else self.movement_corridor_metrics(
+                pose_before_forward.xy(),
+                self.state.pose.xy() if self.state.pose is not None else waypoint,
+            )
         )
         tight_limit = float(self.config["navigation"].get(
             "relocalize_obstacle_tight_clearance_cm", 20.0
@@ -6892,6 +6934,7 @@ class TaskManager:
         allow_goal_high_cost: bool = False,
         target_screen: Optional[Screen] = None,
         target_goal: Optional[TargetGoal] = None,
+        bypass_action_safety: bool = False,
     ) -> bool:
         self.turn_navigation_abort = False
         self.last_navigation_failure_reason = ""
@@ -6917,7 +6960,7 @@ class TaskManager:
         ):
             self.last_navigation_failure_reason = "target_pose_mismatch"
             return False
-        if allow_goal_high_cost and (
+        if not bypass_action_safety and allow_goal_high_cost and (
             not self.map.in_bounds_xy(target_xy) or not self.map.is_free_xy(target_xy)
         ):
             self.last_navigation_failure_reason = "exact_target_not_physically_free"
@@ -7020,6 +7063,17 @@ class TaskManager:
                                 "target_arrival_yaw",
                             ):
                                 return False
+                        elif bypass_action_safety:
+                            before_pose = self.copy_pose(pose)
+                            target_diff = angle_diff_deg(float(target_yaw_deg), pose.yaw_deg)
+                            result = self.motion.turn_toward(target_diff)
+                            if result is not None and not self.monitor_turn_result(
+                                before_pose,
+                                float(target_yaw_deg),
+                                result,
+                                "task_target_arrival_yaw",
+                            ):
+                                return False
                         elif not self.turn_toward_yaw_boundary_aware(float(target_yaw_deg)):
                             return False
                         continue
@@ -7042,6 +7096,25 @@ class TaskManager:
                 self.debug.event("navigate_xy_arrived", target_xy=target_xy, distance_cm=round(dist, 1), **arrival)
                 return True
             direct_path = self.target_direct_approach_path(pose, target_screen, target_xy)
+            bypass_planned_path = None
+            if bypass_action_safety and not direct_path:
+                # Preserve the old planner whenever it can provide a route.
+                # For a task target only, a safety-only planning rejection is
+                # not allowed to leave the robot stationary: fall back to the
+                # same direct target vector used by target-direct approach.
+                bypass_planned_path = self.plan_navigation_path(
+                    pose,
+                    target_xy,
+                    allow_goal_high_cost=allow_goal_high_cost,
+                    target_screen=target_screen,
+                )
+                if not bypass_planned_path:
+                    direct_path = [pose.xy(), target_xy]
+                    self.debug.event(
+                        "task_target_safety_bypass",
+                        reason="no_safe_path",
+                        target_xy=target_xy,
+                    )
             direct_mode = bool(direct_path)
             current_navigation_mode = (
                 "target_direct"
@@ -7080,7 +7153,14 @@ class TaskManager:
                         self.last_navigation_failure_reason = "target_direct_visual_localization_required"
                     continue
             self.last_navigation_mode = current_navigation_mode
-            if self.collision_recovery_pending:
+            if self.collision_recovery_pending and bypass_action_safety:
+                self.collision_recovery_pending = False
+                self.debug.event(
+                    "task_target_safety_bypass",
+                    reason="collision_recovery_pending",
+                    target_xy=target_xy,
+                )
+            elif self.collision_recovery_pending:
                 if direct_mode:
                     self.collision_recovery_pending = False
                     self.debug.event("target_direct_recovery_suppressed", reason="collision_recovery_pending")
@@ -7088,7 +7168,8 @@ class TaskManager:
                     self.recover_toward_field_center(reason + ":forward_no_progress", backoff=True)
                     continue
             if (
-                not direct_mode
+                not bypass_action_safety
+                and not direct_mode
                 and self.near_wall_now(pose)
             ):
                 recovery_result = self.recover_from_near_wall(reason + ":near_wall_pre_forward")
@@ -7121,7 +7202,7 @@ class TaskManager:
                     self.set_mission_state(MissionState.TARGET_DIRECT_APPROACH)
                 path = direct_path
             else:
-                path = self.plan_navigation_path(
+                path = bypass_planned_path or self.plan_navigation_path(
                     pose,
                     target_xy,
                     allow_goal_high_cost=allow_goal_high_cost,
@@ -7280,7 +7361,12 @@ class TaskManager:
             self.publish_state(path=path)
             waypoint_is_exact_goal = allow_goal_high_cost and distance_xy(waypoint, target_xy) <= 0.1
             if direct_mode and target_screen is not None:
-                direct_action = self.choose_target_direct_action(pose, waypoint, target_screen)
+                direct_action = self.choose_target_direct_action(
+                    pose,
+                    waypoint,
+                    target_screen,
+                    bypass_action_safety=bypass_action_safety,
+                )
                 if direct_action is not None:
                     if not self.execute_target_direct_action(direct_action, target_screen, target_xy):
                         if not self.last_navigation_failure_reason:
@@ -7292,6 +7378,7 @@ class TaskManager:
                 pose,
                 waypoint,
                 allow_goal_high_cost=waypoint_is_exact_goal,
+                bypass_action_safety=bypass_action_safety,
             )
             if action is not None:
                 status = self.execute_translation_action(
@@ -7300,6 +7387,7 @@ class TaskManager:
                     waypoint,
                     dist,
                     {"reason": reason, "diff_yaw": round(diff, 1)},
+                    bypass_action_safety=bypass_action_safety,
                 )
                 if status == "recovered":
                     self.clear_navigation_noop()
@@ -7309,7 +7397,7 @@ class TaskManager:
                 self.clear_navigation_noop()
             else:
                 self.forward_map_block_count = 0
-                rotation_clear = not hasattr(self.map, "rotation_sweep_clear") or self.map.rotation_sweep_clear(
+                rotation_clear = bypass_action_safety or not hasattr(self.map, "rotation_sweep_clear") or self.map.rotation_sweep_clear(
                     pose.xy(),
                     float(self.config["navigation"].get("turn_sweep_radius_cm", 10.0)),
                     float(self.config["navigation"].get("normal_navigation_max_cost", 55.0)),
@@ -7338,7 +7426,14 @@ class TaskManager:
                     if self.last_navigation_failure_reason == "near_wall_recovery_exhausted":
                         return False
                     continue
-                if not self.turn_toward_yaw_boundary_aware(desired_yaw):
+                if bypass_action_safety:
+                    before_pose = self.copy_pose(pose)
+                    result = self.motion.turn_toward(diff)
+                    if result is not None and not self.monitor_turn_result(
+                        before_pose, desired_yaw, result, "task_target_turn"
+                    ):
+                        return False
+                elif not self.turn_toward_yaw_boundary_aware(desired_yaw):
                     return False
                 if abs(diff) <= float(self.config["navigation"].get("turn_tolerance_deg", 20.0)):
                     self.handle_navigation_noop(

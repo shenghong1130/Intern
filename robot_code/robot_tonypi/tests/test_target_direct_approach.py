@@ -95,6 +95,24 @@ class TargetDirectApproachTests(unittest.TestCase):
         self.assertIsNotNone(action)
         self.assertEqual(action["kind"], "forward")
 
+    def test_task_target_bypass_does_not_veto_selected_forward(self):
+        manager = self.manager()
+        pose = RobotPose(self.goal[0] - 7.0, self.goal[1], 0.0, Confidence.HIGH, "TEST", 1.0)
+        manager.map.target_direct_corridor_clear = lambda *args, **kwargs: False
+
+        self.assertIsNone(
+            manager.choose_target_direct_action(pose, self.goal, self.screen)
+        )
+        action = manager.choose_target_direct_action(
+            pose,
+            self.goal,
+            self.screen,
+            bypass_action_safety=True,
+        )
+
+        self.assertIsNotNone(action)
+        self.assertEqual(action["kind"], "forward")
+
     def test_short_rear_target_uses_reverse_not_turn(self):
         manager = self.manager()
         pose = RobotPose(self.goal[0] + 6.22, self.goal[1] - 0.98, 0.0, Confidence.HIGH, "TEST", 1.0)

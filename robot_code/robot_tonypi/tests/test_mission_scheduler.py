@@ -386,6 +386,7 @@ class MissionSchedulerTests(unittest.TestCase):
         self.assertEqual(calls[0][0][0], (25.0, -2.0))
         self.assertEqual(calls[0][1]["target_yaw_deg"], 180.0)
         self.assertTrue(calls[0][1]["allow_goal_high_cost"])
+        self.assertTrue(calls[0][1]["bypass_action_safety"])
 
     def test_only_bound_evidence_paths_call_classifier(self):
         source = (Path(__file__).resolve().parents[1] / "task_manager.py").read_text(encoding="utf-8")

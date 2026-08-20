@@ -891,6 +891,51 @@ class PlannerPreferenceTests(unittest.TestCase):
         self.assertEqual(len(recoveries), 1)
         self.assertIn("decision_stall", recoveries[0])
 
+    def test_task_target_strafe_bypass_executes_despite_blocked_corridor(self):
+        manager = self.translation_manager()
+        calls = []
+        manager.forward_map_block_count = 0
+        manager.near_wall_now = lambda pose: True
+        manager.movement_corridor_metrics = lambda *args, **kwargs: {
+            "clear": False,
+            "path_obstacle_cost": 80.0,
+            "minimum_wall_clearance_cm": 0.0,
+        }
+        manager.motion = SimpleNamespace(
+            lateral_cycles_for_distance=lambda distance: 1,
+            run=lambda key, times_override=1: calls.append((key, times_override))
+            or ActionResult(
+                key,
+                "strafe",
+                times_override,
+                0.0,
+                model_lateral_cm=4.0,
+                executed_times=times_override,
+            ),
+        )
+        manager.clear_turn_progress_watchdog = lambda reason: None
+        manager.post_action_relocalize = lambda *args, **kwargs: True
+        action = {
+            "kind": "strafe",
+            "distance_cm": 8.0,
+            "planned_cm": 4.0,
+            "progress_cm": 4.0,
+            "forward_cm": 0.0,
+            "lateral_cm": 8.0,
+        }
+
+        status = manager.execute_translation_action(
+            action,
+            manager.state.pose,
+            (150.0, 170.0),
+            20.0,
+            {"reason": "task_target"},
+            bypass_action_safety=True,
+        )
+
+        self.assertEqual(status, "moved")
+        self.assertEqual(calls, [("strafe_left_fast", 1)])
+
     def test_low_confidence_rejects_direct_reverse(self):
         manager = self.translation_manager(Confidence.LOW)
         action = manager.choose_translation_action(manager.state.pose, (100.0, 150.0))
