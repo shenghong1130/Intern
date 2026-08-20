@@ -3,119 +3,193 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>TonyPi 17 cm 直接任务决策树</title>
+  <title>TonyPi 当前完整决策树</title>
   <style>
-    :root{--bg:#0d1422;--card:#172238;--line:#59759d;--blue:#57a6ff;--green:#65d28a;--yellow:#ffd166;--red:#ff7b7b;--text:#e9f0fa;--muted:#a7b5c8}
-    *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:15px/1.55 system-ui,-apple-system,"Segoe UI",sans-serif}
-    main{max-width:1180px;margin:auto;padding:28px 18px 60px}h1{margin:0 0 8px;font-size:30px}h2{margin:34px 0 14px;color:#cfe4ff}h3{margin:0 0 8px}p{margin:7px 0}.lead,.muted{color:var(--muted)}code,pre{font-family:ui-monospace,SFMono-Regular,Consolas,monospace}code{color:#b9dcff}
-    .notice{border-left:5px solid var(--yellow);background:#302c20;padding:13px 16px;border-radius:6px;margin:18px 0}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px}.card{background:var(--card);border:1px solid #2d4262;border-radius:10px;padding:15px}
-    .flow{display:flex;align-items:stretch;gap:8px;overflow-x:auto;padding:6px 0 12px}.node{min-width:150px;padding:11px;border:2px solid var(--blue);border-radius:9px;background:#13253d;text-align:center}.node.decision{border-color:var(--yellow);background:#302c20}.node.good{border-color:var(--green);background:#173323}.node.bad{border-color:var(--red);background:#382020}.arrow{align-self:center;color:var(--line);font-size:24px;font-weight:bold}
-    .tree{border-left:2px solid var(--line);margin-left:14px;padding-left:20px}.branch{position:relative;margin:12px 0}.branch:before{content:"";position:absolute;left:-20px;top:13px;width:16px;border-top:2px solid var(--line)}
-    table{width:100%;border-collapse:collapse;background:var(--card)}th,td{padding:9px;border:1px solid #314865;text-align:left;vertical-align:top}th{background:#20304b}.ok{color:var(--green)}.stop{color:var(--red)}
+    :root{--bg:#0b1220;--panel:#131f33;--panel2:#192941;--line:#496888;--text:#e8f0fb;--muted:#9fb0c5;--blue:#55a7ff;--green:#56d58b;--orange:#ffbd5a;--red:#ff7474;--purple:#be8cff;--cyan:#55d9da}
+    *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:radial-gradient(circle at 80% 0,#142745 0,var(--bg) 34rem);color:var(--text);font:15px/1.55 system-ui,-apple-system,"Segoe UI","Microsoft YaHei",sans-serif}
+    header{border-bottom:4px solid var(--green);background:linear-gradient(135deg,#101d31,#172f50);padding:32px 20px 28px}header>div,main{max-width:1180px;margin:auto}main{padding:22px 18px 64px}
+    h1{margin:0 0 8px;font-size:clamp(26px,4vw,38px)}h2{margin:38px 0 14px;color:#d5e8ff;scroll-margin-top:18px}h3{margin:0 0 8px}p{margin:7px 0}a{color:#8bc5ff;text-decoration:none}a:hover{text-decoration:underline}code,.mono{font-family:ui-monospace,SFMono-Regular,Consolas,monospace}code{color:#b9dcff}
+    .lead{max-width:900px;color:#bdcadd;font-size:16px}.stamp{color:var(--muted);font-size:13px}.toc,.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(245px,1fr));gap:12px}.toc a,.card{display:block;background:rgba(19,31,51,.94);border:1px solid #2c4362;border-radius:11px;padding:14px}.toc a:hover{border-color:var(--blue);text-decoration:none;transform:translateY(-1px)}
+    .notice{margin:18px 0;padding:14px 16px;background:#30291c;border-left:5px solid var(--orange);border-radius:7px}.invariants{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:10px;margin:18px 0}.invariant{padding:13px;border:1px solid #356f58;border-radius:9px;background:#142d26}
+    .flow{display:flex;align-items:stretch;gap:8px;overflow-x:auto;padding:6px 2px 13px}.node{min-width:155px;padding:11px 12px;border:2px solid var(--blue);border-radius:10px;background:#122840;text-align:center;flex:0 0 auto}.node small{display:block;color:var(--muted);margin-top:3px}.node.decision{border-color:var(--orange);background:#30291c}.node.success{border-color:var(--green);background:#153224}.node.error{border-color:var(--red);background:#351e25}.node.recovery{border-color:var(--purple);background:#291f3b}.node.io{border-color:var(--cyan);background:#143139}.arrow{align-self:center;color:#7292b5;font-size:25px;font-weight:800;flex:0 0 auto}
+    .tree{margin:10px 0 18px 16px;padding-left:22px;border-left:2px solid var(--line)}.branch{position:relative;margin:12px 0}.branch:before{content:"";position:absolute;left:-22px;top:13px;width:17px;border-top:2px solid var(--line)}.branch>.label{display:inline-block;padding:5px 9px;border-radius:6px;background:var(--panel2)}.yes{color:var(--green)}.no{color:var(--red)}.guard{color:var(--orange)}
+    table{width:100%;border-collapse:collapse;background:var(--panel);margin:10px 0 18px}th,td{padding:9px 10px;border:1px solid #304966;text-align:left;vertical-align:top}th{background:#1d304b}.legend{display:flex;flex-wrap:wrap;gap:9px;margin-top:14px}.legend span{padding:4px 9px;border-radius:999px;border:1px solid currentColor}.foot{margin-top:42px;padding-top:15px;border-top:1px solid #29405d;color:var(--muted)}
+    @media(max-width:700px){header{padding-top:24px}.node{min-width:145px}th,td{padding:7px}}
   </style>
 </head>
-<body><main>
-  <h1>TonyPi 17 cm 直接任务决策树</h1>
-  <p class="lead">本页对应当前代码。地图、Tag 世界坐标、初始定位、屏幕检测、左上 Tag 绑定、FPGA 分类和 Worker 协议保持不变；定位成功后的任务层改为单一 17 cm 目标。</p>
-  <div class="notice"><b>核心边界：</b>没有 34 cm 安全接近点，也没有 15 cm 二次对准。到达 17 cm 后用一帧确认当前 Tag 与绑定屏幕，然后只前进一次 3 cm；前进后立即拍照、FPGA 分类，并按结果结束或换花。</div>
+<body>
+<header><div>
+  <h1>TonyPi 当前完整决策树</h1>
+  <p class="lead">依据当前 <code>robot_tonypi</code> 源码和最终合并配置整理：从启动定位、目标选择与导航，到 Tag/Screen 确认、FPGA、两次 NFC 上限、目标重获和任务终止。</p>
+  <p class="stamp">坐标约定：场地图左上角为 (0, 0)，世界 x 向下、y 向右；地图显示与导航共用同一坐标变换。</p>
+  <div class="legend"><span style="color:var(--blue)">流程/状态</span><span style="color:var(--orange)">判断/门控</span><span style="color:var(--green)">成功/完成</span><span style="color:var(--purple)">恢复</span><span style="color:var(--red)">失败/有界出口</span><span style="color:var(--cyan)">外部 I/O</span></div>
+</div></header>
+<main>
+  <section class="notice"><strong>业务边界：</strong>实体 Screen/Tag anchor 与机器人 task target 是不同点。导航目标为距对应面 <strong>20 cm</strong>、横向偏移 <strong>-1 cm</strong> 的 task target；确认确需换花后才执行既有 <strong>10 cm final forward</strong>。</section>
+  <section class="invariants" aria-label="关键不变量">
+    <div class="invariant"><strong>CHANGED 是终态</strong><br>NFC ACK 成功，或 ACK 失败后 FPGA 确认已是目标花，立即结束当前 Screen；不再校准、靠近或 Attempt2。</div>
+    <div class="invariant"><strong>定位成功 ≠ 当前目标重获</strong><br>错误 Tag 可以更新 RobotPose，但 required-target 搜索必须继续，直到当前目标 Tag 与同 ID Screen 绑定。</div>
+    <div class="invariant"><strong>Attempt2 有唯一入口</strong><br>仅 Attempt1 失败、retreat 后重获当前目标，且最新 FPGA 明确 <code>flower != target</code> 时允许。</div>
+    <div class="invariant"><strong>局部恢复有界</strong><br>NFC target reacquire 最多 3 轮；NFC 最多 2 次物理 Attempt，不会循环到全局 timeout。</div>
+  </section>
 
-  <h2>1. 主状态机</h2>
-  <div class="flow">
-    <div class="node">LOCALIZE<br>原初始定位</div><div class="arrow">→</div>
-    <div class="node">SELECT_NEAREST_TARGET<br>按 17 cm 点排序</div><div class="arrow">→</div>
-    <div class="node">BUILD_CARDINAL_TARGET_POSE<br>面中心、法向、yaw</div><div class="arrow">→</div>
-    <div class="node">NAVIGATE_TO_TARGET<br>直接到唯一目标</div><div class="arrow">→</div>
-    <div class="node good">ARRIVED_AT_TARGET<br>坐标和 yaw 到达</div>
+  <h2 id="contents">目录</h2>
+  <nav class="toc">
+    <a href="#main-flow"><strong>1. 全局任务主流程</strong><br><span class="stamp">启动、完成、timeout</span></a>
+    <a href="#localization"><strong>2. 定位与恢复</strong><br><span class="stamp">中心/全 pan/启动动作</span></a>
+    <a href="#target"><strong>3. 目标选择与锁定</strong><br><span class="stamp">TargetGoal 与几何</span></a>
+    <a href="#navigation"><strong>4. 导航与 recovery</strong><br><span class="stamp">规划、动作、临时失败</span></a>
+    <a href="#confirmation"><strong>5. 到点视觉确认</strong><br><span class="stamp">Tag、Screen、缓存、FPGA</span></a>
+    <a href="#nfc1"><strong>6. Final forward 与 Attempt1</strong><br><span class="stamp">授权与 15 秒 deadline</span></a>
+    <a href="#reacquire"><strong>7. Retry target reacquire</strong><br><span class="stamp">错误 Tag 与 bounded 搜索</span></a>
+    <a href="#nfc2"><strong>8. Attempt2 与统一出口</strong><br><span class="stamp">CHANGED / GAVE_UP</span></a>
+    <a href="#config"><strong>9. 当前关键参数</strong><br><span class="stamp">配置和动作模型</span></a>
+    <a href="#observability"><strong>10. 状态与调试输出</strong><br><span class="stamp">Dashboard / latest_state</span></a>
+  </nav>
+
+  <h2 id="main-flow">1. 全局任务主流程</h2>
+  <div class="flow"><div class="node">启动 main.py<small>mode=mission</small></div><div class="arrow">→</div><div class="node recovery">INITIAL_LOCALIZATION<small>直到有效 Pose 或 timeout</small></div><div class="arrow">→</div><div class="node">SELECT_NEAREST_TARGET</div><div class="arrow">→</div><div class="node">NAVIGATE_TO_TARGET</div><div class="arrow">→</div><div class="node">CONFIRM_TARGET_SCREEN</div><div class="arrow">→</div><div class="node io">FPGA / NFC</div><div class="arrow">→</div><div class="node success">MARK_TARGET_COMPLETE</div></div>
+  <div class="tree">
+    <div class="branch"><span class="label">仍有未完成且可选目标</span> → 按当前 Pose 重新执行 <code>SELECT_NEAREST_TARGET</code>。</div>
+    <div class="branch"><span class="label">所有目标完成</span> → <span class="yes">MISSION_COMPLETE</span>，保持安全等待；主循环仍受全局 deadline 管理。</div>
+    <div class="branch"><span class="label">所有未完成目标暂时失败</span> → <span class="guard">GLOBAL_RECOVERY</span> → 重新定位 → 释放临时失败 → 再次选择。</div>
+    <div class="branch"><span class="label">全局时间达到 570 s</span> → <span class="no">MISSION_TIMEOUT</span> → 安全停止。人工 <code>Ctrl+C</code> / emergency stop 随时有效。</div>
   </div>
-  <div class="flow">
-    <div class="node">CONFIRM_TARGET_SCREEN<br>单帧 Tag + 屏幕</div><div class="arrow">→</div>
-    <div class="node">FORWARD_3CM<br>专用动作一次</div><div class="arrow">→</div>
-    <div class="node">CAPTURE + CLASSIFY<br>拍照、FPGA 分类</div><div class="arrow">→</div>
-    <div class="node decision">目标花？</div><div class="arrow">→</div>
-    <div class="node good">ALREADY_TARGET<br>直接完成</div>
-    <div class="node">或 NEEDS_CHANGE</div><div class="arrow">→</div>
-    <div class="node good">EXECUTE_CHANGE<br>举手 + Worker</div>
+  <p class="stamp"><code>MISSION_FAILED</code> 仍是枚举值，但当前任务管理器不会把普通定位、规划、Screen 或 NFC 失败转换成该终止状态。</p>
+
+  <h2 id="localization">2. 启动、定位失败与恢复</h2>
+  <h3>2.1 初始定位与共享搜索序列</h3>
+  <div class="flow"><div class="node">FULL PAN<small>100 → 135 → 65 → 155 → 45</small></div><div class="arrow">→</div><div class="node decision">接受视觉 Pose？</div><div class="arrow">→</div><div class="node success">立即停止扫描<small>回中并更新 Pose</small></div></div>
+  <div class="tree">
+    <div class="branch"><span class="no">全 pan 失败</span> → 依次执行配置的启动搜索动作：<code>turn_left_fast ×4</code>，然后 <code>back_fast</code>。</div>
+    <div class="branch">每个身体动作后再执行同一套 full pan；任意角度得到接受的视觉 Pose 就停止剩余动作。</div>
+    <div class="branch">启动搜索最多 14 个 attempt；单轮失败回到上层恢复，不把“看到 Tag”直接当定位成功。</div>
+  </div>
+  <h3>2.2 三类定位结果</h3>
+  <table><thead><tr><th>结果</th><th>含义</th><th>状态更新</th></tr></thead><tbody>
+    <tr><td><code>accepted_visual_pose</code></td><td>检测、PnP、世界坐标和一致性门均通过，Pose 已写入。</td><td>清零动作累计、运动不确定度、连续失败和 large-turn pending。</td></tr>
+    <tr><td><code>no_tag</code></td><td>没有可用 Tag detection。</td><td>失败；保留 dead reckoning 累计，增加 no-tag/失败计数。</td></tr>
+    <tr><td><code>pose_unavailable_with_tags</code></td><td>看见 Tag，但所有候选都没有可接受 Pose。</td><td>仍是定位失败；不清运动不确定度。</td></tr>
+    <tr><td><code>capture_failed</code></td><td>相机帧不可用。</td><td>进入恢复，保留旧 Pose 不确定性。</td></tr>
+  </tbody></table>
+  <h3>2.3 自适应重定位与 no-tag</h3>
+  <div class="flow"><div class="node">动作累计</div><div class="arrow">→</div><div class="node decision">低置信度 / 大转向 / 高不确定度 / budget / 到点新鲜度？</div><div class="arrow">→</div><div class="node recovery">localize_scan</div><div class="arrow">→</div><div class="node decision">接受 Pose？</div></div>
+  <div class="tree">
+    <div class="branch"><span class="yes">是</span> → 重置运动累计；消费大转向一次性 pending；回到当前目标 replan。</div>
+    <div class="branch"><span class="no">否，且完全无 Tag 达到 2 次</span> → 在启用、满足姿态丢失/朝外/边界受困等条件且 4 s cooldown 允许时执行 no-tag recovery，目标保持。</div>
+    <div class="branch">扫描 center-first，任意角度成功就停止并回中。普通 scan 可在任意定位 Tag 成功时停止；NFC required-target 模式见第 7 节。</div>
   </div>
 
-  <h2>2. 唯一 17 cm 位姿</h2>
+  <h2 id="target">3. SELECT_NEAREST_TARGET、目标锁定与几何</h2>
+  <div class="flow"><div class="node decision">已有合法锁定目标？</div><div class="arrow">→</div><div class="node success">保留同一 TargetGoal</div><div class="arrow">→</div><div class="node">否则过滤候选</div><div class="arrow">→</div><div class="node">按当前 Pose 到 task target 距离排序</div><div class="arrow">→</div><div class="node success">锁定最近目标<small>同距按 ID</small></div></div>
   <div class="grid">
-    <div class="card"><h3>面判断</h3><p>Tag 四角固定 X 表示西/东面，固定 Y 表示南/北面；Tag 相对所属四方形中心的符号决定具体一面。法向严格量化为四个轴向。</p></div>
-    <div class="card"><h3>基础点</h3><pre>face_center = 整个建筑面的中心
-base_17 = face_center + normal × 17 cm</pre><p>Tag 只选择建筑面，不用单个 Tag 中心生成目标。</p></div>
-    <div class="card"><h3>身体目标</h3><pre>screen_left = (normal.y, -normal.x)
-lateral = sensor_left_offset
-          - left_hand_body_offset
-task_target = base_17
-            + screen_left × lateral</pre></div>
+    <div class="card"><h3>候选过滤</h3><p>跳过已完成、暂时失败和 NFC 已 GAVE_UP 的 Screen；配置排除 ID 为 <code>2, 6, 9, 20, 28</code>。</p></div>
+    <div class="card"><h3>原子 TargetGoal</h3><p><code>screen_id</code>、<code>tag_id</code>、anchor、goal、yaw、source、generation 一次更新，避免 ID 与坐标来自不同版本。</p></div>
+    <div class="card"><h3>唯一几何来源</h3><p>场地 <code>300 × 300 cm</code>；task target 距面 <code>20 cm</code>、横向偏移 <code>-1 cm</code>；anchor 是实体位置。</p></div>
+    <div class="card"><h3>朝向</h3><p>WEST <code>0°</code>、EAST <code>-180°</code>、SOUTH <code>90°</code>、NORTH <code>-90°</code>；goal 一致性容差 <code>0.5 cm</code>。</p></div>
   </div>
-  <table>
-    <tr><th>建筑面</th><th>外法向</th><th>17 cm 基础位置</th><th>最终身体 yaw</th></tr>
-    <tr><td>西面</td><td>(-1, 0)</td><td>(x_min - 17, center_y)</td><td>0°，朝 +X</td></tr>
-    <tr><td>东面</td><td>(+1, 0)</td><td>(x_max + 17, center_y)</td><td>-180°，朝 -X</td></tr>
-    <tr><td>南面</td><td>(0, -1)</td><td>(center_x, y_min - 17)</td><td>+90°，朝 +Y</td></tr>
-    <tr><td>北面</td><td>(0, +1)</td><td>(center_x, y_max + 17)</td><td>-90°，朝 -Y</td></tr>
-  </table>
 
-  <h2>3. 目标选择与导航</h2>
+  <h2 id="navigation">4. 目标导航、失败与 recovery</h2>
+  <h3>4.1 当前 task-target 路径</h3>
+  <div class="flow"><div class="node">navigate_to_screen</div><div class="arrow">→</div><div class="node">navigate_directly_to_target</div><div class="arrow">→</div><div class="node">navigate_to_xy<small>20 cm task goal</small></div><div class="arrow">→</div><div class="node decision">位置 ≤ 4 cm 且 yaw ≤ 10°？</div><div class="arrow">→</div><div class="node success">ARRIVED_AT_TARGET</div></div>
+  <p>task-target 调用使用 <code>allow_goal_high_cost=True</code> 和 <code>bypass_action_safety=True</code>。规划器仍优先给出路径和动作；选中 TURN/FORWARD/BACK/LATERAL 后，不再由 near-wall、corridor、footprint、center-free 或 forced-escape 的第二套执行前 veto 令动作变为 <code>executed=False</code>。无路径时保留直接动作 fallback。</p>
+  <h3>4.2 普通导航规划链</h3>
+  <div class="flow"><div class="node">目标一致性校验</div><div class="arrow">→</div><div class="node decision">direct corridor？</div><div class="arrow">→</div><div class="node">start projection / approach / staging</div><div class="arrow">→</div><div class="node">A* 与 action planner</div><div class="arrow">→</div><div class="node">执行动作</div><div class="arrow">→</div><div class="node recovery">重定位 / replan</div></div>
   <div class="tree">
-    <div class="branch"><b>选择目标：</b>只考虑非终止目标；用最新 pose 到 <code>task_target_xy</code> 的欧氏距离排序，距离相同按 <code>screen_id/tag_id</code> 升序。</div>
-    <div class="branch"><b>锁定：</b>导航途中看到其他 Tag 只更新几何绑定，不切换目标、不分类。</div>
-    <div class="branch"><b>普通导航：</b>40 cm 范围外保留 action planner、A*、障碍膨胀和全部代价。</div>
-    <div class="branch"><b>近目标直达：</b>40 cm 范围内先检查窄通道；只忽略当前锁定目标建筑产生的膨胀代价，真实占用、其他建筑和动态障碍仍然阻断。通道清晰时优先直走、再侧移，并用小步收尾。</div>
-    <div class="branch"><b>动作偏好：</b>提高转向固定代价、角度代价、连续转向和反向转回惩罚；直走/侧移不可行或避让真实障碍时仍允许转弯。</div>
-    <div class="branch"><b>代价保留：</b>静态/动态障碍、膨胀、cost、A*、action planner、碰撞和近墙恢复继续工作。</div>
-    <div class="branch"><b>近墙例外：</b>只在当前目标锁定、处于最后接近范围且窄通道确认无真实障碍时抑制普通近墙恢复；其他导航继续使用原保护。</div>
-    <div class="branch"><span class="stop">路径无法安全到达：</span>按现有目标重试机制记录失败，本轮不拍摄、不前进 3 cm、不换花。</div>
+    <div class="branch">普通导航最小 clearance 为 <code>25 cm</code>；anchor 可位于建筑/软 inflation 内，机器人走 task/approach goal，而不是实体 anchor。</div>
+    <div class="branch">相同 planner 输入连续失败达到 3 次 → 替代 approach/staging → interior recovery waypoint，避免无动作原地重规划。</div>
+    <div class="branch">一般 near-wall recovery 为 backoff、lateral、小转向，必要时 forced escape；真实动作后重新定位。</div>
+    <div class="branch"><span class="no">导航仍失败</span> → 当前目标暂时失败 → 轮换目标；全部暂时失败时 global recovery + release，任务不退出。</div>
   </div>
+  <h3>4.3 自适应重定位预算</h3>
+  <table><thead><tr><th>阶段</th><th>HIGH / MEDIUM / LOW 动作预算</th><th>不确定度上限</th></tr></thead><tbody>
+    <tr><td>normal</td><td>6 / 4 / 1</td><td>6.0</td></tr><tr><td>staging</td><td>5 / 3 / 1</td><td>5.0</td></tr><tr><td>recovery</td><td>4 / 3 / 1</td><td>4.5</td></tr><tr><td>target_direct</td><td>3 / 2 / 1</td><td>3.5</td></tr>
+  </tbody></table>
+  <p>不确定度成本：forward <code>0.6</code>、reverse <code>0.9</code>、strafe <code>1.0</code>、turn <code>1.8</code>、large turn <code>2.6</code>。到达判定前视觉 Pose ≤ <code>3 s</code>；进入 target-direct 前 ≤ <code>4 s</code>。</p>
 
-  <h2>4. 到达后的单帧几何确认</h2>
-  <div class="flow"><div class="node">静止拍摄一次</div><div class="arrow">→</div><div class="node decision">当前 Tag 存在？</div><div class="arrow">→</div><div class="node decision">屏幕框存在？</div><div class="arrow">→</div><div class="node decision">左上绑定到同一 ID？</div><div class="arrow">→</div><div class="node good">允许前进 3 cm</div></div>
+  <h2 id="confirmation">5. 到点 Tag + Screen 确认与 FPGA 分支</h2>
+  <div class="flow"><div class="node success">ARRIVED_AT_TARGET</div><div class="arrow">→</div><div class="node">确认目标 Tag<small>pan 100 / 130 / 70</small></div><div class="arrow">→</div><div class="node decision">实时看到 target Tag？</div><div class="arrow">→</div><div class="node">Tag↔Screen 同 ID 绑定</div><div class="arrow">→</div><div class="node io">15 s 缓存或 fresh FPGA</div></div>
   <div class="tree">
-    <div class="branch">Tag 必须在 1～36 内，且 <code>tag_id == current_target_screen_id</code>。</div>
-    <div class="branch">屏幕候选必须使用现有 <code>ScreenDetector</code> 左上 Tag 绑定，并满足 <code>candidate.screen_id == candidate.tag.tag_id == current target</code>。</div>
-    <div class="branch">该阶段不分类、不等待多帧稳定结果，只保存属于当前目标的 <code>TargetVisualConfirmation</code>。</div>
-    <div class="branch"><span class="stop">缺 Tag、缺屏幕或绑定错误：</span>禁止 3 cm 动作、FPGA 和 Worker 事务。</div>
+    <div class="branch"><span class="no">当前 Tag 未确认</span> → 有界 target visibility recovery（最多 2 次）；不能仅凭旧缓存授权 NFC。</div>
+    <div class="branch">采用同 screen/tag、最新、置信度 ≥ <code>0.20</code>、年龄 ≤ <code>15 s</code> 的结果；失败分类不覆盖较早有效缓存。</div>
+    <div class="branch">classifier 每 Screen 最短间隔 <code>1 s</code>。HTTP 不可用 → <code>TARGET_CLASSIFICATION_WAIT</code>；无效 → <code>TARGET_CLASSIFICATION_DEGRADED</code>；均保留目标与 mission。</div>
+    <div class="branch">fresh fallback 最多 3 帧、间隔 <code>0.5 s</code>；不可确定走有界出口，不把服务异常当 Tag 消失。</div>
   </div>
+  <div class="flow"><div class="node decision">flower == target？</div><div class="arrow">→</div><div class="node success">ALREADY_TARGET</div><div class="arrow">→</div><div class="node success">MARK_TARGET_COMPLETE<small>不 forward、不 NFC</small></div></div>
+  <div class="flow"><div class="node decision">flower != target</div><div class="arrow">→</div><div class="node">VisualAuthorization</div><div class="arrow">→</div><div class="node">FINAL_FORWARD_10CM</div><div class="arrow">→</div><div class="node io">NFC Attempt1</div></div>
 
-  <h2>5. 单次 3 cm 与后置分类</h2>
-  <table>
-    <tr><th>结果</th><th>行为</th><th>禁止行为</th></tr>
-    <tr><td>3 cm 动作失败</td><td>当前尝试失败</td><td>不拍照分类、不请求 Worker</td></tr>
-    <tr><td class="ok">前进后 flower == target_flower</td><td>标记 <code>ALREADY_TARGET</code>，重新选择最近目标</td><td>不举手、不请求 Worker</td></tr>
-    <tr><td>前进后有效非目标花</td><td>创建 <code>VisualAuthorization</code>，标记 <code>NEEDS_CHANGE</code></td><td>FPGA 失败或低置信度不得换花</td></tr>
-  </table>
-  <p>专用动作配置使用 <code>go_forward_one_small_step</code>、<code>times=1</code>、模型位移 3.0 cm。它不复用含停车余量和循环次数的普通 <code>move_forward()</code>。</p>
-
-  <h2>6. 前进后的原子换花事务</h2>
-  <div class="flow"><div class="node">FORWARD_3CM 成功</div><div class="arrow">→</div><div class="node">stand</div><div class="arrow">→</div><div class="node">lift_left_hand<br>stand=False</div><div class="arrow">→</div><div class="node">复查同一视觉授权</div><div class="arrow">→</div><div class="node">send_request</div><div class="arrow">→</div><div class="node good">finally: stand</div></div>
-  <div class="notice">3 cm 动作之后只允许一次用于 FPGA 分类的目标屏幕拍摄，不得调用定位、姿态对准、转向、横移、后退或第二次前进。分类成功后交互客户端保留两次授权检查、举手、Worker 响应解析、审计日志与最终站立。</div>
-
-  <h2>7. 安全模式、失败与调试</h2>
+  <h2 id="nfc1">6. Final forward、NFC Attempt1 与 deadline</h2>
   <div class="grid">
-    <div class="card"><h3>dry-run</h3><p>不操作相机、动作或 Worker；日志记录计划中的 17 cm 坐标、yaw、目标视觉绑定条件和 3 cm 专用动作。</p></div>
-    <div class="card"><h3>skip-change</h3><p>真实定位、导航和 FPGA 识别；不执行 3 cm 动作，不举手，不发送 Worker 请求。</p></div>
-    <div class="card"><h3>失败</h3><p>视觉或动作失败进入现有目标重试。超过上限才终止失败；所有目标失败进入 <code>MISSION_FAILED</code>，不冒充完成。</p></div>
-    <div class="card"><h3>Dashboard</h3><p>显示唯一 17 cm 目标、目标 yaw、到达标志、实时 Tag/屏幕绑定、FPGA 结果、视觉授权、3 cm 动作与 Worker 响应。地图不再画黄色 34 cm 点。</p></div>
+    <div class="card"><h3>物理接近</h3><p>10 cm final forward 为 <code>go_forward_one_step ×2</code>；只在 FPGA 明确当前花不是目标花时执行。</p></div>
+    <div class="card"><h3>授权</h3><p>NFC 前检查目标、绑定、分类、到达和授权；流程为 <code>stand → lift_left_hand → recheck → send_request → finally stand</code>。</p></div>
+    <div class="card"><h3>单次 deadline</h3><p>每个 Attempt 使用新 seq，<code>retries=0</code>；scan/Attempt hard deadline 均为 <code>15 s</code>，完整响应等待 <code>1 s</code>。</p></div>
+    <div class="card"><h3>响应匹配</h3><p>seq 与 worker/screen 必须匹配；timeout、invalid response、可恢复 I²C 异常进入上层物理 retry。</p></div>
+  </div>
+  <div class="flow"><div class="node io">Attempt1 请求</div><div class="arrow">→</div><div class="node decision">ACK success？</div><div class="arrow">→</div><div class="node success">CHANGED<small>立即终止 Screen</small></div><div class="arrow">→</div><div class="node">post-interaction retreat</div><div class="arrow">→</div><div class="node success">MARK_TARGET_COMPLETE</div></div>
+  <div class="tree">
+    <div class="branch"><span class="no">Attempt1 fail / timeout</span> → stand → 后退 10 cm → full relocalize → 重获当前目标，而不是原地重发。</div>
+    <div class="branch">retreat 使用 <code>back_fast</code>，模型单次 <code>2.5 cm</code>，10 cm 为 4 cycle；本 episode 只做一次。</div>
+    <div class="branch"><strong>ACK success 后绝不执行 target recalibration、retry reapproach 或 Attempt2。</strong></div>
   </div>
 
-  <h2>8. 代码对应</h2>
-  <table>
-    <tr><th>函数/模块</th><th>职责</th></tr>
-    <tr><td><code>configure_cardinal_task_targets()</code></td><td>从只读 Tag 四角与建筑边界建立唯一 17 cm 身体目标。</td></tr>
-    <tr><td><code>choose_nearest_screen()</code></td><td>按最新 pose 到 17 cm 目标排序并按 ID 破平局。</td></tr>
-    <tr><td><code>target_direct_approach_path()</code></td><td>近目标时在普通规划器之前验证窄直达通道。</td></tr>
-    <tr><td><code>confirm_target_tag_and_screen()</code></td><td>17 cm 处用单帧确认当前 Tag 与绑定屏幕。</td></tr>
-    <tr><td><code>execute_final_forward()</code></td><td>专用 3 cm 动作，强制单次执行。</td></tr>
-    <tr><td><code>classify_after_final_forward()</code></td><td>3 cm 后拍摄、调用 FPGA 并创建视觉授权。</td></tr>
-    <tr><td><code>visual_authorization_check()</code></td><td>验证快照属于当前锁定目标和稳定的非目标花。</td></tr>
-    <tr><td><code>RobotInteractionClient.change_flower()</code></td><td>原子举手、Worker 请求、响应处理与 finally 站立。</td></tr>
-  </table>
-  <h2>Current target/recovery invariants (2026-08)</h2>
+  <h2 id="reacquire">7. Reacquire current target：定位与目标重获分离</h2>
+  <div class="flow"><div class="node recovery">reacquire cycle 1..3</div><div class="arrow">→</div><div class="node">required-target full pan</div><div class="arrow">→</div><div class="node decision">看到哪个 Tag？</div></div>
   <div class="tree">
-    <div class="branch"><b>Atomic target:</b> <code>TargetGoal</code> owns screen_id, tag_id, anchor_xy, goal_xy, desired_yaw and generation_id. Motion and arrival both validate it against <code>map.screens</code>.</div>
-    <div class="branch"><b>Tag vs classifier:</b> a live <code>TargetTagConfirmation</code> is retained independently. Classifier connection/timeout/5xx errors enter <code>TARGET_CLASSIFICATION_WAIT</code>; they never mean that the Tag disappeared and never set <code>MISSION_FAILED</code>.</div>
-    <div class="branch"><b>Pan observation:</b> the frame captured at the successful pan is consumed for binding/classification before recentering. Retries return to that pan.</div>
-    <div class="branch"><b>Interior recovery:</b> candidates are sampled only inside the configured inward field margin, require obstacle clearance and a safe body-axis L path, preserve current yaw, and resume the original TargetGoal generation.</div>
-    <div class="branch"><b>Dashboard:</b> target anchor, actual navigation goal, recovery waypoint and planned path have separate markers using the same world-to-map transform.</div>
+    <div class="branch"><span class="label">只看到其他 Tag</span> → 可更新 RobotPose → <span class="guard">target_reacquired=False</span> → 不停止 pan，继续剩余角度。</div>
+    <div class="branch"><span class="label">目标 Tag 但无同 ID Screen binding/fresh classification</span> → 目标尚未重获，继续有界搜索。</div>
+    <div class="branch"><span class="label">目标 Tag + 同 ID Screen 绑定</span> → <span class="yes">target_reacquired=True</span> → 停止专用扫描并读取该 Screen FPGA。</div>
+    <div class="branch"><span class="no">3 轮仍未重获</span> → <code>TARGET_REACQUIRE_FAILED</code> → GAVE_UP 当前交互 → 离开并选择下一个目标。</div>
   </div>
-</main></body></html>
+  <div class="notice"><strong>例：</strong>目标 Screen24，pan=100 看到 Tag15。Tag15 可更新 Pose，但不能结束 required-target 搜索；继续扫描，直到 Tag24+Screen24 或 3 轮耗尽。</div>
+  <h3>7.1 Attempt1 失败后的 current-target FPGA</h3>
+  <div class="flow"><div class="node success">目标已重获</div><div class="arrow">→</div><div class="node io">FPGA current screen</div><div class="arrow">→</div><div class="node decision">最新 flower？</div></div>
+  <div class="tree">
+    <div class="branch"><span class="yes">flower == target</span> → <strong>CHANGED</strong>（ACK 丢失但视觉确认已换好）→ 立即 leave/complete/next；禁止 retry/recalibration。</div>
+    <div class="branch"><span class="no">flower != target</span> → 唯一 Attempt2 入口：重新解析锁定 goal → 导航回 20 cm → yaw 对准 → 确认目标 Tag → final forward 10 cm。</div>
+    <div class="branch"><span class="guard">unknown / wrong screen</span> → wrong screen 忽略，继续当前有界 reacquire cycle；3 轮内仍没有当前目标的新鲜有效分类则 TARGET_REACQUIRE_FAILED → GAVE_UP。不能借错误 Screen 完成当前目标。</div>
+  </div>
+
+  <h2 id="nfc2">8. NFC Attempt2、retreat 与统一出口</h2>
+  <div class="flow"><div class="node">重新校准当前目标</div><div class="arrow">→</div><div class="node">回 20 cm + yaw + Tag</div><div class="arrow">→</div><div class="node">FINAL_FORWARD_10CM</div><div class="arrow">→</div><div class="node io">NFC Attempt2<small>绝对最后一次</small></div><div class="arrow">→</div><div class="node decision">ACK success？</div></div>
+  <div class="tree"><div class="branch"><span class="yes">成功</span> → CHANGED → post-interaction retreat → MARK_TARGET_COMPLETE → SELECT_NEAREST_TARGET。</div><div class="branch"><span class="no">失败 / timeout</span> → GAVE_UP → 不再立即选择该 Screen → leave → 其他目标。没有 Attempt3。</div></div>
+  <h3>8.1 所有交互终态</h3>
+  <table><thead><tr><th>状态</th><th>来源</th><th>后续</th></tr></thead><tbody>
+    <tr><td class="yes">ALREADY_TARGET</td><td>FPGA 明确当前花就是目标花。</td><td>不 final forward、不 NFC；完成并 next。</td></tr>
+    <tr><td class="yes">CHANGED</td><td>NFC ACK 成功，或 ACK 失败后当前目标 FPGA 确认已换好。</td><td>终止交互；若仍在 close pose 则 retreat，再完成/next。</td></tr>
+    <tr><td class="guard">TARGET_CLASSIFICATION_WAIT / DEGRADED</td><td>初次目标分类服务不可用或结果无效。</td><td>保留当前目标并按配置间隔重试；不清 Tag 确认、不进入 NFC，也不结束 mission。</td></tr>
+    <tr><td class="no">FAILED / GAVE_UP</td><td>Attempt2 失败，或 target reacquire 3 轮耗尽。</td><td>Screen 标记 FAILED 并加入本进程 NFC give-up 集合；离开并继续，mission 不退出。</td></tr>
+  </tbody></table>
+  <p>post-interaction retreat：恢复站立，按需后退 10 cm，再 full-pan relocalize。物理后退只执行一次；定位失败进入既有恢复，不重复盲退。</p>
+
+  <h2 id="config">9. 当前关键配置与动作模型</h2>
+  <table><thead><tr><th>类别</th><th>当前值</th><th>用途</th></tr></thead><tbody>
+    <tr><td>场地 / grid</td><td>300 × 300 cm / 5 cm</td><td>世界坐标、栅格和 Dashboard。</td></tr>
+    <tr><td>task target</td><td>20 cm；lateral -1 cm</td><td>Screen 前任务位姿。</td></tr>
+    <tr><td>final forward</td><td>10 cm</td><td>仅 NEEDS_CHANGE 后进入 NFC close pose。</td></tr>
+    <tr><td>到达容差</td><td>4 cm / 10°</td><td>位置和最终 yaw。</td></tr>
+    <tr><td>direct approach</td><td>40 cm</td><td>近目标直接接近范围。</td></tr>
+    <tr><td>定位 pan</td><td>100, 135, 65, 155, 45</td><td>full scan，center-first。</td></tr>
+    <tr><td>目标确认 pan</td><td>100, 130, 70</td><td>当前目标 Tag 确认。</td></tr>
+    <tr><td>no-tag</td><td>2 次；cooldown 4 s</td><td>运行中完全无 Tag 恢复门。</td></tr>
+    <tr><td>视觉缓存</td><td>TTL 15 s；confidence ≥ 0.20</td><td>同 screen/tag 最新有效分类。</td></tr>
+    <tr><td>NFC</td><td>最多 2 Attempt；每次 15 s；retries=0</td><td>物理重试必须 retreat/reacquire/reapproach。</td></tr>
+    <tr><td>target reacquire</td><td>最多 3 cycles</td><td>Attempt1 失败后的专用搜索。</td></tr>
+    <tr><td>mission</td><td>570 s</td><td>唯一正常自动终止 deadline。</td></tr>
+  </tbody></table>
+  <table><thead><tr><th>动作</th><th>模型</th><th>说明</th></tr></thead><tbody>
+    <tr><td>forward fast / micro</td><td>3.5 / 2.0 cm</td><td>按阶段和剩余距离选择。</td></tr><tr><td>back_fast</td><td>-2.5 cm</td><td>10 cm retreat 使用 4 cycle。</td></tr><tr><td>strafe left / right</td><td>+4.0 / -3.0 cm</td><td>body-frame lateral。</td></tr><tr><td>large left / right</td><td>+15° / -18°</td><td>设置一次性 relocalization pending。</td></tr><tr><td>turn fast</td><td>约 ±7.5°</td><td>小角度调整；右 micro 模型 -11.25°。</td></tr>
+  </tbody></table>
+
+  <h2 id="observability">10. Debug Dashboard 与可追踪状态</h2>
+  <div class="grid">
+    <div class="card"><h3>地图</h3><p>同时画 RobotPose、target anchor、navigation goal、staging、recovery waypoint 与 path；anchor 和 goal 不混为一个 marker。</p></div>
+    <div class="card"><h3>目标生命周期</h3><p>日志含 target selected/resolved/validated、screen/tag/generation、robot/anchor/goal/yaw。</p></div>
+    <div class="card"><h3>定位</h3><p>记录结果、Tag rejection、运动累计 reset 原因，以及 localization-only 与 target_reacquired 的区别。</p></div>
+    <div class="card"><h3>交互</h3><p>记录 Attempt、seq、elapsed、timeout、retreat、reacquire cycle、visual decision、CHANGED/GAVE_UP。</p></div>
+  </div>
+  <p>默认调试根目录 <code>/home/pi/TonyPi/debug_runs</code>，维护 <code>latest_state.json</code>、<code>latest_map.jpg</code>、<code>latest_annotated.jpg</code> 及事件日志。</p>
+  <div class="notice"><strong>终止规则：</strong>普通子系统失败只触发恢复、replan、目标轮换或 GAVE_UP，不自动结束 Mission。自动停止由全局 timeout 触发；人工 Ctrl+C / emergency stop 始终保留。</div>
+  <p class="foot">本页是当前代码的维护视图。参数最终以 <code>config.py</code> 与 <code>config/competition_config.json</code> 合并后的运行值为准。</p>
+</main>
+</body>
+</html>

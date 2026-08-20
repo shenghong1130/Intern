@@ -43,6 +43,33 @@ Running on http://192.168.31.81:8080
 
 服务运行期间必须保持该终端开启。
 
+## 当前接口约定
+
+服务只提供一个分类接口：
+
+```text
+POST /predict
+Content-Type: multipart/form-data
+表单字段：image
+```
+
+服务会把上传图像转换为 `28 × 28` RGB 输入并送入当前 FPGA Overlay。成功响应同时包含 API 花名、中文花名、类别序号和置信度，主要字段为：
+
+```json
+{
+  "flower": "yinghua",
+  "flower_api": "yinghua",
+  "flower_cn": "樱花",
+  "predicted_class": "yinghua",
+  "class_index": 0,
+  "confidence": 0.95
+}
+```
+
+缺少 `image` 字段或图像无法解码时，服务返回 `400`。当前 Flask 服务以 `threaded=False` 串行处理请求，端口固定为 `8080`。
+
+TonyPi 的分类客户端默认请求地址为 `http://192.168.31.81:8080/predict`，HTTP 超时由机器人端配置控制；服务不可达、超时、`5xx`、`408` 或 `429` 都会被机器人任务层视为可恢复的分类服务异常，不等于目标 Tag 或 Screen 不存在。
+
 ## 关闭服务
 
 ### 1. 服务正在当前终端前台运行

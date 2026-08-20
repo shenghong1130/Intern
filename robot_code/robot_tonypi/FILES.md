@@ -1,333 +1,257 @@
 # robot_tonypi 文件说明
 
-本文解释 `robot_tonypi` 目录内所有源文件、配置、测试和动作资源。使用步骤见 [README.md](README.md)，任务决策树见 [robot_decision_tree.html](robot_decision_tree.html)。
+本文按当前源码说明目录职责和调用关系。运行方法见 [README.md](README.md)，完整决策树见 [robot_decision_tree.html](robot_decision_tree.html)。
 
-## 1. 总体调用关系
+## 1. 当前调用关系
 
 ```text
 main.py
-└─ config.py：加载配置
-└─ task_manager.py：组织完整任务
-   ├─ hardware.py：相机、舵机和动作组硬件接口
-   ├─ motion.py：动作选择、次数计算、推算位姿
-   ├─ localizer.py + load_pos.py：AprilTag 世界定位
-   ├─ vision.py：途中几何检测/左上 Tag 绑定，以及到达后的目标裁剪
-   ├─ classifier.py：调用 FPGA 花朵分类服务
-   ├─ map_model.py：Screen 几何、障碍地图和 A*
-   ├─ interaction_logic.py：四向 17 cm 目标几何和识别状态更新
-   ├─ interaction_client.py：举左手和 Worker 原子事务
-   ├─ debug.py：日志、图片、地图和 8090 Dashboard
-   └─ models.py / utils.py：共享数据结构和工具函数
+├─ config.py + config/competition_config.json
+├─ task_manager.py
+│  ├─ models.py / utils.py
+│  ├─ load_pos.py → localizer.py
+│  ├─ map_model.py
+│  ├─ motion.py → hardware.py → robotall / TonyPi ActionGroups
+│  ├─ vision.py → classifier.py → Kria /predict
+│  ├─ interaction_logic.py
+│  ├─ interaction_client.py → robotall.send_request
+│  └─ debug.py
+└─ finally: TaskManager.close()
 ```
 
-## 2. 顶层文档和包文件
+## 2. 顶层文档
 
 ### `README.md`
 
-面向机器人使用者的操作手册。内容按执行顺序组织：环境检查、动作组检查、Worker 映射、测试、定位、识别、安全导航、正式换花、Dashboard 和故障处理。
+面向操作员的当前运行手册。包含部署目录、真实参数、运行模式、定位/导航/交互流程、Debug 和现场检查清单。
 
 ### `robot_decision_tree.html`
 
-面向调试和评审的可视化决策树。它描述程序从定位、配置任务点直接导航、目标视觉授权、一次 10 cm 前进到举手、Worker 响应和重试的真实分支。
+从当前源码重新生成的完整可视化决策树。它区分普通定位和 NFC 当前目标重获，展示目标锁、规划、恢复、FPGA、两次 NFC 尝试、后退、完成和 timeout。
 
 ### `FILES.md`
 
-当前文件。用于解释目录中每个文件的职责以及模块间调用关系。
+当前文件索引。
 
 ### `CLAUDE.md`
 
-面向代码维护工具的仓库约束。它强调识别与实体换花必须分离、禁止恢复旧 HTTP ApiClient，并记录 `AprilTag ID == screen_id == worker_id` 等开发约定。
+面向维护工具的当前约束，记录不能破坏的数据一致性、不变量和测试入口。
 
-### `__init__.py`
-
-把目录声明为 Python 包，并保存包版本。因为存在这个文件，推荐从 `/home/pi` 使用：
-
-```bash
-python3 -m robot_tonypi.main ...
-```
-
-## 3. 启动、配置与共享基础
-
-这一部分定义程序如何启动、如何加载现场参数，以及所有业务模块共同使用的数据结构和工具。
+## 3. 启动与配置
 
 ### `main.py`
 
-命令行入口，主要负责：
-
 - 定义 `mission`、`localize`、`harvest` 三种模式；
-- 读取目标花、FPGA 地址、机器人注册信息和 Debug 参数；
-- 校验目标花名称；
-- 加载配置并创建 `TaskManager`；
-- 把任务返回值转换成进程退出码。
-
-它不直接执行视觉、导航或换花业务。
+- 检查目标花名；
+- 读取 JSON 覆盖配置；
+- 创建并运行 `TaskManager`；
+- 正常返回码为 0，运行返回 False 时为 2，`Ctrl+C` 为 130。
 
 ### `config.py`
 
-保存 Python `DEFAULT_CONFIG`，并把 JSON 配置覆盖到默认值上。配置包含：
+定义 `DEFAULT_CONFIG` 和递归覆盖加载。关键默认域：
 
-- TonyPi SDK、动作组、相机标定和日志路径；
-- 相机和头部舵机参数；
-- 地图、导航和动作模型参数；
-- AprilTag 定位和屏幕视觉阈值；
-- 配置任务目标、专用 10 cm 动作、左手横向补偿和 Worker 参数；
-- 任务时限、障碍检测和 Debug 设置。
-
-`default_config_path()` 返回 `config/competition_config.json`。
+- `paths`、`camera`、`map`、`localization`；
+- `vision`、`navigation`、`motion`；
+- `interaction`、`mission`、`obstacle`、`debug`。
 
 ### `config/competition_config.json`
 
-现场优先调整的配置覆盖文件。它会覆盖 `config.py` 中同名字段。比赛编号直接使用 `worker_id = screen_id = tag_id`，无需手工 Worker 映射。
+正式现场覆盖。当前覆盖相机标定、障碍代价、动作模型、任务目标几何、NFC timeout、恢复和测试排除 Screen。最终运行值必须以 `load_config(default_config_path())` 的合并结果为准。
 
 ### `models.py`
 
-所有模块共享的数据模型：
+共享状态和数据结构：
 
-- `Confidence`：定位置信度；
-- `MissionState`：定位、最近目标选择、四向配置目标构造、直接导航、视觉确认、分类、10 cm 前进、交互和完成等任务状态；
-- `ScreenStatus`：`UNKNOWN`、`NEEDS_CHANGE`、`INTERACTING`、`CHANGED` 等目标处理状态；
-- `RobotPose`：机器人世界坐标、yaw、来源和时间；
-- `Screen`：屏幕中心、normal、唯一 17 cm 任务目标、reader 点和 worker_id；
-- `TagDetection`：AprilTag 检测结果；
-- `ScreenCandidate`：视觉屏幕候选；
-- `ClassificationResult`：FPGA 分类结果；
-- `VisualAuthorization`：锁定目标的 Tag/屏幕绑定、FPGA 结果、置信度和拍摄时间；
-- `InteractionAuthorizationCheck`：交互客户端复用的视觉/人工授权检查结果容器；
-- `WorkerChangeResult`：Worker 请求结果；
-- `ActionResult`：动作执行及推算位移。
+- `Confidence`：HIGH/MEDIUM/LOW/UNKNOWN；
+- `ScreenStatus`：UNKNOWN、NEEDS_CHANGE、INTERACTING、CHANGED、ALREADY_TARGET、FAILED；
+- `MissionState`：定位、目标选择、导航、确认、分类、NFC、retreat、complete/timeout/blocked 等可观测状态；
+- `TargetGoal`：原子化 screen/tag/anchor/goal/yaw/generation；
+- `TargetTagConfirmation`、`TargetVisualConfirmation`、`VisualAuthorization`；
+- `RecentBoundFlowerObservation`：每个 Screen 最新有效 Tag↔Screen 分类证据；
+- `WorkerChangeResult`、`InteractionAuthorizationCheck`、动作结果等。
+
+`Screen.done()` 当前只把 `CHANGED` 和 `ALREADY_TARGET` 视为已处理；普通 `FAILED` 不是永久导航黑名单。NFC GAVE_UP 由 `TaskManager.nfc_gave_up_screen_ids` 单独排除。
 
 ### `utils.py`
 
-小型通用工具，包括单调时间、角度归一化、角度差、二维距离、数值裁剪、目录创建、JSON 读写和配置递归合并。
+角度归一化、距离、时间、JSON 和目录工具。
 
 ## 4. 主状态机
 
 ### `task_manager.py`
 
-中央调度器，也是项目最大的业务文件和完整任务流程入口。主要职责：
+项目的业务编排中心，主要职责如下。
 
-1. 创建地图、相机、AprilTag、视觉、FPGA、动作、交互和 Debug 组件；
-2. 执行初始定位，然后按最新 pose 到各 17 cm 任务位姿的距离选择最近未处理目标；
-3. 从 Tag 四角固定 X/Y 平面生成四向 normal、建筑面中心、17 cm 点和标准 yaw；
-4. 锁定目标后远距离使用完整障碍代价导航；进入 40 cm 范围时优先检查只豁免当前目标膨胀代价的窄直达通道；
-5. 到达后要求单帧同时包含当前 Tag 和绑定到它的屏幕，然后执行一次专用 10 cm 前进；
-6. 前进后立即重新拍摄、裁剪并调用 FPGA，将非目标花标记为 `NEEDS_CHANGE`，将目标花标记为 `ALREADY_TARGET`；
-7. 执行 A* 导航、障碍和边界恢复，不插入 passby/观察识别停靠；
-8. 10 cm 前进只执行一次；此后除分类所需的一次拍摄外，不再定位或执行导航调整；
-9. 使用已锁定的视觉授权调用 `RobotInteractionClient`；
-10. 发布 Dashboard 状态并写交互审计日志；
-11. 退出时关闭硬件、相机和日志。
+#### 目标生命周期
 
-真正的 `send_request` 不在这个文件中直接出现；它只能通过交互客户端调用。
+- `configure_cardinal_task_targets()`：从建筑面生成 `20 cm / -1 cm` task target；
+- `resolve_target_goal()`、`lock_target_goal()`、`validate_target_goal()`：原子化目标身份与坐标，防止 stale screen/goal；
+- `choose_nearest_screen()`：保留未失败的当前锁，否则按当前 Pose 到 task target 的欧氏距离排序，同距按 ID；
+- `run_mission()`：临时失败轮换、全局恢复、交互后退、完成等待和 timeout。
 
-## 5. 硬件适配
+#### 定位
 
-### `hardware.py`
+- `initial_localize()`；
+- `run_localization_search_sequence()`：启动与恢复共用“完整 pan → 身体搜索动作 → 完整 pan”；
+- `localize_scan()`：普通模式在任意有效视觉 Pose 后停止；指定 `required_target_screen_id` 时必须等到该目标 Tag↔Screen 绑定；
+- `accept_visual_localization()`：只有接受视觉 Pose 才清零动作计数与运动不确定度；
+- `record_localization_failure()`：区分 `no_tag`、`pose_unavailable_with_tags` 和 `capture_failed`。
 
-提供两个硬件适配类：
+#### 途中视觉和目标确认
 
-- `RealtimeCamera`：通过 `hiwonder.Camera` 打开相机，使用后台线程持续保存最新帧，拍摄时丢弃转头后的旧帧；
-- `TonyPiHardware`：初始化控制板、头部舵机、IMU 和 Hiwonder 动作组控制器。
+- `observe_transit_bindings()`、`process_bound_screen_candidate()`：从定位/导航帧提取合法绑定并写 15 秒缓存，不改变 ScreenStatus；
+- `confirm_target_tag_now()`：最多看 `[100,130,70]`，只确认当前目标 Tag；
+- `bounded_fresh_target_observation()`：当前目标新鲜分类最多 3 帧；
+- `confirm_target_tag_and_screen()`：实时 Tag + 同 ID 绑定分类；
+- `confirm_target_with_visibility_recovery()`：分类服务不可用时保持目标和 mission，目标不可见时最多 2 轮局部恢复。
 
-它还负责：
+#### 导航
 
-- 将头部角度换算成 PWM；
-- 检查 `.d6a` 动作组是否存在；
-- 执行单一或组合动作组；
-- 在左手交互事务期间禁止普通导航动作。
+- `plan_navigation_path()`：direct、start projection、approach/staging、A*、动作空间规划；
+- `navigate_to_xy()`：自适应重定位、动作选择、到达前新鲜视觉 Pose、最终 yaw；
+- `navigate_to_screen()` → `navigate_directly_to_target()`：当前 task target 设置 `allow_goal_high_cost=True` 和 `bypass_action_safety=True`；
+- `choose_translation_action()`：前进、短距离正后方倒退和平移；
+- `adaptive_relocalization_decision()`：动作预算、置信度、不确定度、阶段和大转向触发；
+- `register_plan_failure()`：相同输入 3 次失败后升级，不等到 80 步才处理。
 
-## 6. 定位模块
+#### 恢复
 
-### `localizer.py`
+- `recover_from_near_wall()`：后退、左右平移、小转向；
+- `execute_bounded_escape()`：普通恢复全被 veto 时，从不安全起点选择更安全的小动作；
+- `recover_via_indoor_waypoint()`：在内缩区域选可达、安全、尽量保 yaw 的 waypoint；
+- `perform_global_recovery()`：重新定位，必要时 near-wall 或 interior recovery；
+- `register_temporary_target_failure()`、`release_temporary_target_failures()`：失败目标轮换和释放。
 
-包含 AprilTag 检测和机器人位姿估计：
+#### FPGA 与 NFC
 
-- `AprilTagDetector` 支持可用的 AprilTag Python 后端；
-- 读取相机内参和畸变参数；
-- 通过屏幕 Tag 的世界角点和 OpenCV PnP 求机器人 pose；
-- 按 Tag 面积、画面边缘和场地范围做质量过滤；
-- 支持估算其他 Tag 在世界坐标中的位置，用于动态障碍。
-
-### `load_pos.py`
-
-保存比赛场地 AprilTag 的三维世界角点坐标。`MapModel` 和 `Localizer` 都依赖这些数据。若使用外部坐标文件，可通过 `--load-pos` 覆盖。
-
-## 7. 花朵视觉、分类与 FPGA
-
-### `vision.py`
-
-负责花朵屏幕视觉候选：
-
-1. 灰度、模糊、边缘检测和轮廓提取；
-2. 筛选凸四边形、面积、宽高比和边长比例；
-3. 排除 AprilTag 落在屏幕四边形内部的错误候选；
-4. 将候选与其左上附近、且位于屏幕图像中心左侧的 1～36 号 AprilTag 绑定；
-5. 使用 tag_id 作为 screen_id，并保留地图有效性检查；
-6. 只有到达当前锁定目标时才透视变换为 28×28 分类图；途中调用使用 `extract_crops=False`；
-7. 绘制候选框和 Tag 标注。
-
-屏幕左侧 Tag 绑定与实体换花的左侧读卡区是两个独立概念。
-
-### `classifier.py`
-
-FPGA 分类服务客户端。它把 28×28 屏幕裁剪编码为 JPEG，通过 HTTP POST 发给 `--classifier-url`，并把返回花名、中文名、置信度和类别编号封装成 `ClassificationResult`。
-
-### `fpga_server_api_ready.py`
-
-运行在 PYNQ/FPGA 端，而不是 TonyPi 树莓派主控端。它加载 FPGA Overlay，接收 28×28 图片，执行 DMA 推理，并以 HTTP JSON 返回分类结果。运行该文件需要 PYNQ、模型 bit/hwh 文件和 FPGA 环境。
-
-## 8. 地图模块
-
-### `map_model.py`
-
-构造 300×300 cm 场地模型并负责路径规划：
-
-- 根据 Tag 世界坐标生成 Screen；
-- 计算建筑面中心、四向 normal、唯一 17 cm target、reader point 和目标 yaw；
-- 建立建筑物障碍、软膨胀 cost 和动态机器人障碍；
-- 提供网格 A*、路径平滑和直线可通行检查，并只为当前精确任务终点提供受限高代价终点例外；
-- 提供考虑机器人转向/横移宏动作的 action-level A*；
-- 统计未完成 Screen 和实际换花成功数。
-
-## 9. 动作执行模块
-
-### `motion.py`
-
-包含：
-
-- `MotionController`：根据目标角度或距离选择左转、右转、前进、横移及动作次数；
-- `RobotState`：动作完成后按配置的 `forward_cm`、`lateral_cm`、`yaw_deg` 更新推算位姿。
-
-连续动作会让 pose 置信度从 HIGH 降到 MEDIUM/LOW，随后触发 AprilTag 重定位。
-
-## 10. 交互与 Worker 请求
+- `latest_valid_bound_flower_observation()`：15 秒、同 ID、binding、置信度检查；
+- `adopt_cached_target_observation()`：实时当前 Tag 存在后把缓存变成授权；
+- `execute_final_forward()`：仅 NEEDS_CHANGE 时执行一次 `interaction_forward_10cm`，并设置 retreat pending；
+- `process_screen_interaction()`：最多两次 NFC 物理尝试；
+- `restore_nfc_physical_contact()`：Attempt1 失败后后退、定位、最多 3 轮重新寻找当前目标；
+- `recalibrate_target_for_nfc_retry()`：只有当前目标重新分类仍不是 target 才重新导航/确认/final forward；
+- `nfc_change_is_terminal()`：CHANGED 后禁止任何 retry；
+- `give_up_nfc_change()`：两次失败或目标重获耗尽后结束该 Screen，mission 继续。
 
 ### `interaction_logic.py`
 
-不依赖相机、NumPy、硬件或网络的纯逻辑层：
+无硬件纯逻辑：
 
-- 根据不可变 Tag 四角和所属四方形中心判断西/东/南/北面，并将 normal 量化为四个轴向之一；
-- 构造 Tag 所在四方形面中心正前方 17 cm 基础点，以及保留左侧 reader/手臂切向补偿后的机器人身体目标点；
-- 视觉识别只更新 `ALREADY_TARGET` 或 `NEEDS_CHANGE`；
-- 根据 Worker 结果设置 `CHANGED` 或恢复为 `NEEDS_CHANGE`。
+- 从 Tag 平面确定 WEST/EAST/SOUTH/NORTH；
+- 从建筑边界中心生成 reader、task target 和 cardinal yaw；
+- 保存分类但不执行交互；
+- 只有 Worker `success=True` 才写 `CHANGED`。
 
-因为安全规则集中在纯函数中，可以在没有机器人硬件时测试。
+## 5. 定位与地图
 
-### `interaction_client.py`
+### `load_pos.py`
 
-封装唯一的实体换花事务：
+保存 AprilTag 世界四角坐标。1–36 是 Screen Tag，37 以上可用于定位/障碍语义。此文件是地图事实源，不应因文档或 Dashboard 显示需求改坐标。
 
-```text
-当前锁定目标的视觉授权
-→ robotall.act('stand')
-→ robotall.act('lift_left_hand', stand=False)
-→ 再次检查同一视觉授权
-→ robotall.send_request(...)
-→ finally robotall.act('stand')
-```
+### `localizer.py`
 
-支持 `--dry-run` 和 `--skip-change` 模拟。只有 `result['ok']` 为真才返回成功；异常和失败都执行站立收尾。
+- AprilTag detector 适配；
+- 面积、边缘、世界坐标存在性、PnP、向量/旋转合法性、场地范围质量检查；
+- 同一帧逐个尝试 Tag，一个失败不会阻止后续 Tag；
+- 输出结构化 rejection detail 和 frame summary。
 
-## 11. Debug
+### `map_model.py`
 
-### `debug.py`
+- 300×300 cm、5 cm 栅格；
+- 根据 Screen 建筑矩形生成硬障碍、软 inflation 和 cost；
+- 动态障碍、footprint、clearance、直线/旋转 corridor；
+- 普通 A* 和带 yaw/action 的动作空间 A*；
+- 当前目标建筑的软 inflation 仅在受限 final approach 中可被忽略，其他建筑和硬占用仍生效。
 
-`DebugReporter` 负责：
+Debug 显示由 `_map_pt(xy) -> (y, x)` 转换，因此左上为 `(0,0)`、x 向下、y 向右。
 
-- 输出结构化事件；
-- 保存相机标注图和屏幕裁剪；
-- 保存 `latest_state.json`；
-- 绘制机器人、实际路线、唯一 17 cm task target 和 reader 的场地图；
-- 启动内置 HTTP Server，默认端口 8090；
-- 在网页显示 pose、目标面/外法向、配置目标位姿、Tag/屏幕视觉授权、10 cm 动作、投票、Screen 状态和 Worker 响应。
+## 6. 视觉与分类
 
-Debug 目录默认在 `/home/pi/TonyPi/debug_runs/<timestamp>/`。
+### `vision.py`
 
-## 12. 测试、动作组与辅助资源
+检测 Screen 四边形、做几何/白色比例过滤、把 Screen 与其左上附近的 1–36 Tag 绑定，并生成 `28×28` crop。绑定只接受 `candidate.screen_id == candidate.tag.tag_id`。
 
-测试命令、安全边界和详细操作步骤统一见 [`tests/README.md`](tests/README.md)。本节只说明各文件用途。
+### `classifier.py`
 
-### `tests/README.md`
+把 crop 编码成 JPEG，以 multipart `image` POST 到 FPGA `/predict`，默认 HTTP timeout 4 秒。连接异常、5xx、408、429 被标记为可恢复 service unavailable；无合法花名/JSON 属于 invalid response。
 
-测试目录的统一使用手册，包含全部自动化测试、独立实机相机/FPGA/换花测试和编译检查的运行方法。
+### `fpga_flower_server/fpga_server_api_ready.py`
 
-### `tests/test_calibrate_motion.py`
+运行在 Kria/PYNQ：加载 bit/hwh、DMA 和 12 类模型；串行处理 `/predict`，返回 API 花名、中文花名、类别编号和 confidence。服务说明见 [fpga_flower_server/README.md](fpga_flower_server/README.md)。
 
-验证人工动作标定工具的方向符号、次数归一化、median 推荐、large turn sequence、推荐配置生成和写回前备份。它只使用临时文件，不执行真实动作或修改项目正式配置。
+## 7. 动作和硬件
 
-### `tests/test_interaction_flow.py`
+### `motion.py`
 
-验证以下交互纯逻辑：
+- `RobotState`：视觉 Pose、dead reckoning、动作计数和运动不确定度；
+- `MotionController`：执行配置动作、按真实完成周期更新模型；
+- 失败或部分动作不会虚报全部 requested cycles。
 
-- 四向建筑面和唯一 17 cm 目标几何；
-- 正确事务顺序和 notebook 参数；
-- `ok=False` 和异常不能标记成功；
-- `finally` 必须 stand；
-- 途中几何绑定不调用分类器或换花；
-- 定位扫描和途中几何绑定不能旁路分类或换花。
+### `hardware.py`
 
-其中动作和 `send_request` 都由假函数记录，因此不会举手、执行真实动作组、访问 Worker、网络或 FPGA。
-
-### `tests/test_mission_scheduler.py`
-
-验证任务调度和导航保护的局部逻辑：地图/Tag 参考值、17 cm 最近目标选择、旧两阶段函数已删除、直接导航参数、视觉授权锁、分类调用边界、初始定位配置、CLI 安全语义、转向 watchdog、近墙“后退→侧移→小转”恢复、恢复无进展终止、目标重试及 `MISSION_FAILED` 判定。它使用假地图、假 pose 和轻量 `TaskManager` 对象，不初始化真实硬件。
-
-### `tests/test_target_standoff_flow.py`
-
-验证新流程核心边界：单一配置目标和横向补偿、当前目标 Tag 与 15 秒绑定分类证据、需要换花时单次 10 cm、分类失败/已是目标花分支、动作失败阻止 Worker，以及授权不能跨目标复用。全部硬件、FPGA 和 Worker 调用均为假对象。
-
-### `tests/test_target_direct_approach.py`
-
-验证当前目标的近距离窄通道：只忽略锁定目标建筑的膨胀代价，其他建筑、动态障碍和真实占用仍阻断；同时检查 40 cm 范围、锁定目标、小步收尾、直走优先和连续/反向转弯惩罚。测试不初始化硬件。
-
-### `tests/test_vision_tag_binding.py`
-
-测试花朵屏幕左侧 AprilTag 绑定：
-
-- 左侧合法 Tag 可以绑定；
-- 屏幕右侧 Tag 被拒绝；
-- 多个合法 Tag 选择距离左上角最近者；
-- 超过距离阈值拒绝；
-- 37+ Tag 不能作为 screen_id。
-
-它直接构造 NumPy 四边形和 `TagDetection` 数据，不读取相机帧或运行真实 AprilTag 检测器。
-
-### `tests/test_capture_fpga_change.py`
-
-独立实机集成测试。假设操作者已经把机器人放在目标点并正对屏幕，复用正式相机、AprilTag、屏幕裁剪、FPGA 分类和 `RobotInteractionClient`，测试“拍照 → 指定 Screen 裁剪 → 分类 → 可选换花”。它不执行定位、导航或姿态调整；默认禁止真实换花，只有显式执行开关和人工二次确认才允许举手及请求 Worker。
+相机后台读取、云台、ActionGroup 执行、动作序列、stop/close。动作完成前检查动作组是否存在；交互期间阻止普通动作并保持 stand 清理。
 
 ### `action_groups/*.d6a`
 
-仓库附带的自定义左右小步转身动作组：
+仓库附带的自定义转向动作组。实际运行目录仍是 `/home/pi/TonyPi/ActionGroups/`。
+
+### `calibrate_motion.py`
+
+人工标定现有动作模型。只运行指定动作并记录操作者测量；写配置前创建备份。
+
+## 8. NFC
+
+### `interaction_client.py`
+
+严格顺序：
 
 ```text
-turn_left_small_step_s70.d6a
-turn_left_small_step_s75.d6a
-turn_left_small_step_s80.d6a
-turn_left_small_step_s85.d6a
-turn_right_small_step_s70.d6a
-turn_right_small_step_s75.d6a
-turn_right_small_step_s80.d6a
-turn_right_small_step_s85.d6a
+授权检查
+→ stand
+→ lift_left_hand(stand=False)
+→ 再次授权检查
+→ 生成新 seq
+→ send_request(retries=0, scan_timeout≤15s, overall_timeout≤15s)
+→ finally stand
 ```
 
-不同后缀代表不同速度版本。当前比赛配置使用 `s80`。这些是二进制动作资源，不是 Python 源码。TonyPi SDK 默认从 `/home/pi/TonyPi/ActionGroups/` 加载，所以仓库内文件需要按部署要求安装到 SDK 动作组目录。
+每次物理 Attempt 使用新 seq，底层继续校验 worker_id/seq；同一物理位置不会由底层自动重试。
 
-### `deploy.py`
+## 9. Debug
 
-历史 Paramiko/SFTP 部署脚本。文件内仍带旧机器人 IP、旧密码和旧目录 `/home/pi/TonyPi/competition_tonypi`，与当前 `/home/pi/robot_tonypi` 部署方式不一致。
+### `debug.py`
 
-因此当前不要直接运行它。实际同步应显式确认机器人 IP、目标路径和是否删除远端文件，再使用受控的 SSH/rsync 流程。
+事件 JSONL、latest_state、标注图、地图、crop 和 8090 Dashboard。地图同时显示 Screen anchor、TargetGoal、当前导航 goal、recovery waypoint 和 path。
 
-## 13. 每个文件运行在哪里
+## 10. 测试和辅助脚本
 
-| 文件类别 | 运行位置 |
+### 自动化测试
+
+- `test_calibrate_motion.py`：动作标定纯逻辑；
+- `test_interaction_flow.py`：几何、授权、NFC deadline/seq/异常；
+- `test_mission_scheduler.py`：目标选择、状态机、near-wall/forced escape、timeout；
+- `test_navigation_adaptive.py`：动作批次、自适应定位、no-tag、倒退/平移、task safety bypass；
+- `test_navigation_path_fallback.py`：clearance、approach/staging、规划失败升级；
+- `test_recovery_target_consistency.py`：TargetGoal 原子一致和 interior recovery；
+- `test_target_direct_approach.py`：当前目标软 cost 例外和直接动作；
+- `test_target_standoff_flow.py`：目标确认、缓存、final forward、NFC 两次尝试和目标重获；
+- `test_vision_tag_binding.py`：Tag↔Screen 绑定和 15 秒缓存。
+
+详细命令见 [tests/README.md](tests/README.md)。
+
+### 独立实机脚本
+
+- `tests/test_capture_fpga_change.py`：人工放置后测试相机、FPGA 和可选 NFC；
+- `tests/test_capture_15_frames.py`：交互式连续拍照；
+- `deploy.py`：历史 Paramiko 脚本，仍含旧 IP、旧密码和旧路径 `/home/pi/TonyPi/competition_tonypi`，不适用于当前 `/home/pi/robot_tonypi` 部署。
+
+## 11. 文件运行位置
+
+| 内容 | 运行位置 |
 |---|---|
-| `main.py`、`task_manager.py`、相机/定位/导航/交互模块 | TonyPi 树莓派 |
-| `config/competition_config.json` | TonyPi 树莓派读取 |
-| `fpga_server_api_ready.py` | PYNQ FPGA 板 |
-| `action_groups/*.d6a` | 安装到 TonyPi SDK 动作目录后由 SDK 执行 |
-| 五个带 `unittest.TestCase` 的自动化测试模块 | 开发电脑或 TonyPi，不触发真实硬件 |
-| `tests/test_capture_fpga_change.py` | TonyPi 实机；按参数使用相机、FPGA，并可在双重确认后换花 |
-| `robot_decision_tree.html` | 任意浏览器离线查看 |
-| `README.md`、`FILES.md` | 使用者和维护者阅读 |
+| `robot_tonypi/*.py` | TonyPi Raspberry Pi |
+| `fpga_flower_server/fpga_server_api_ready.py` | Kria/PYNQ |
+| `action_groups/*.d6a` | 复制到 TonyPi ActionGroups 后由机器人执行 |
+| 单元测试 | 开发机或 TonyPi，均不应触发硬件 |
+| `test_capture_*` | 明确由操作者在真机手动启动 |

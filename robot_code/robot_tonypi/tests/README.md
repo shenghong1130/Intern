@@ -1,253 +1,194 @@
 # TonyPi 测试使用说明
 
-本目录同时包含不接触真实硬件的自动化单元测试，以及需要 TonyPi、相机和 FPGA 的独立实机集成测试。运行命令时应位于包含 `robot_tonypi` 目录的上级目录：
+本目录包含 9 个离线 `unittest` 模块和 2 个需要人工启动的实机脚本。命令应从包含 `robot_tonypi` 包的 `robot_code` 目录执行。
+
+机器人：
 
 ```bash
 cd /home/pi
 ```
 
-开发机上的对应目录是：
+本仓库 Windows 工作区：
 
-```bash
-cd /home/robot/robot_code/Intern/robot_code
+```powershell
+cd D:\我\大学\Intern\robot_code
 ```
 
-## 1. 运行全部自动化测试
+## 1. 运行全部离线测试
 
 ```bash
 python3 -m unittest discover -s robot_tonypi/tests -p 'test_*.py' -v
 ```
 
-这些自动化测试不会打开真实相机、执行 TonyPi 动作组、访问 FPGA 或发送 Worker 请求。`test_capture_fpga_change.py` 和 `test_capture_15_frames.py` 虽然符合 `test_*.py` 命名，但它们没有 `unittest.TestCase`，因此 discover 只会导入，不会自动启动实机流程。
+`test_capture_fpga_change.py` 和 `test_capture_15_frames.py` 虽然匹配文件名，但没有 `unittest.TestCase`，discover 只导入它们，不会自动驱动硬件。
 
-## 2. `test_calibrate_motion.py`
+## 2. `test_calibrate_motion.py`（7 项）
 
-验证人工动作标定工具的纯数据处理，包括：
-
-- 前进、后退、左右横移和左右转向的符号；
-- `--times` 测量值归一化；
-- median 推荐值；
-- large turn 的实际 sequence 描述保持不变；
-- 只为已测动作生成推荐配置；
-- `--write-config` 写回前创建备份，并只修改对应运动字段。
-
-测试使用临时目录，不执行真实动作，也不修改项目正式配置。
-
-单独运行：
+检查动作标定工具的符号、times 归一化、median、large-turn sequence、推荐字段和写配置备份。使用临时目录，不修改正式配置。
 
 ```bash
 python3 -m unittest robot_tonypi.tests.test_calibrate_motion -v
 ```
 
-## 3. `test_interaction_flow.py`
+## 3. `test_interaction_flow.py`（15 项）
 
-验证交互纯逻辑和 `RobotInteractionClient` 的事务保护，包括：
+检查：
 
-- 四种 Tag 平面、四向法线、配置距离唯一目标和身体横向补偿；
-- `stand → lift_left_hand(stand=False) → send_request → finally stand` 顺序；
-- 举手后的第二次安全门；
-- Worker `ok=False` 或异常不能标记成功；
-- `--dry-run`、`--skip-change` 不调用真实动作和 Worker；
-- 定位扫描和途中绑定不能旁路调用分类或换花。
-
-动作和 `send_request` 均由测试假函数代替，不访问真实硬件、网络或 FPGA。
-
-单独运行：
+- 四向建筑面和 task target 几何；
+- `stand → lift_left_hand → send_request → finally stand`；
+- 举手前后两次授权门；
+- 每次 NFC Attempt 使用新 seq；
+- 成功不重试、旧 seq 响应不能匹配新请求；
+- 单次物理 Attempt 的 15 秒 hard deadline 和 `retries=0`；
+- Worker `ok=False`、异常和 skip/dry-run 语义；
+- 途中绑定可分类，但不能触发交互。
 
 ```bash
 python3 -m unittest robot_tonypi.tests.test_interaction_flow -v
 ```
 
-## 4. `test_mission_scheduler.py`
+## 4. `test_mission_scheduler.py`（38 项）
 
-验证任务调度和导航保护的局部逻辑，包括：
+检查：
 
-- 地图与 Tag 参考坐标未改变；
-- 按配置任务目标选择最近 Screen，并按 ID 稳定破平局；
-- 每处理一个目标后使用最新 pose 重新排序；
-- 旧两阶段函数和状态不再存在；
-- 导航直接使用唯一配置坐标、四向 yaw 和高代价终点参数；
-- 分类器只能由到达当前锁定目标的入口调用；
-- 视觉授权要求目标锁匹配且已经到达；
-- 初始定位配置和 `--dry-run`/`--skip-change` 参数语义保持不变；
-- 转向 watchdog 的进展、±180° wrap、stale pose、反方向转向和连续失败中止。
-
-测试使用假地图、假 pose 和通过 `TaskManager.__new__` 创建的轻量对象，不初始化真实 `TaskManager` 硬件组件。
-
-单独运行：
+- Tag/Screen/Worker 同 ID、地图参考坐标和 TargetGoal；
+- 最近 task target 选择、同距 ID 破平局、完成后按新 Pose 重排；
+- classifier/authorization 必须锁定且已到达；
+- 已是目标花不执行物理交互；
+- turn progress、scan-after-turn 和 stale pose；
+- near-wall 的 backoff/lateral/small-turn 顺序；
+- planner veto 与真实 no-progress 分离；
+- forced escape 可从高 cost 起点选择更安全 endpoint；
+- 导航失败临时轮换、全部临时失败后的 global recovery/release；
+- 全局 timeout 是自动终止状态。
 
 ```bash
 python3 -m unittest robot_tonypi.tests.test_mission_scheduler -v
 ```
 
-## 5. `test_target_standoff_flow.py`
+## 5. `test_navigation_adaptive.py`（72 项）
 
-验证当前直接任务流程：
+当前覆盖最广的导航单元测试：
 
-- 所有别名字段都指向带横向补偿的唯一配置目标；
-- 当前精确终点可作为高代价终点，但建筑实体和普通目标不获得例外；
-- 正确目标 Tag 与绑定屏幕共同出现后才允许专用 10 cm 动作；
-- 缺 Tag、缺屏幕或绑定错误时不前进；10 cm 后 FPGA 失败不生成视觉授权；
-- 专用 10 cm 动作恰好一次，随后才分类；已是目标花时不调用 Worker；
-- 10 cm 动作失败时不调用 Worker，旧授权不能跨目标复用。
-
-测试使用假画面、假分类器、假动作和假 Worker，不访问真实硬件或网络。
-
-单独运行：
+- 实际/请求动作周期、partial failure 和 dead reckoning；
+- 不同动作的不确定度、自适应批次和 phase-specific relocalization budget；
+- 大转向只触发一次定位，新的大转向可再次触发；
+- 普通 pan 在首个 Pose 成功时停止；required-target 模式忽略错误 Tag 并继续；
+- no-tag 和 `pose_unavailable_with_tags` 计数、full pan、startup-equivalent body recovery；
+- 失败定位保留运动累计，接受视觉 Pose 才清零；
+- 多 Tag 中前一个失败不能阻止后一个成功；
+- 短距离正后方 reverse、平移、task-target safety bypass；
+- 执行层重复 veto 的 decision-stall 防线。
 
 ```bash
-python3 -m unittest robot_tonypi.tests.test_target_standoff_flow -v
+python3 -m unittest robot_tonypi.tests.test_navigation_adaptive -v
 ```
 
-## 6. `test_target_direct_approach.py`
+## 6. `test_navigation_path_fallback.py`（19 项）
 
-验证锁定目标 40 cm 范围内的窄通道直达、当前目标膨胀代价豁免、其他障碍保持生效、较短末步、直走优先及转向惩罚。只创建地图和轻量任务对象，不调用真实硬件。
+检查普通导航 `25 cm` clearance、Screen 4/17/18/35 复现场景、target-owned soft cost 例外、无关障碍、blocked anchor、staging 真实作为规划终点、替代 approach、start/map/goal failure signature、interior recovery 和 ARRIVED 前新鲜视觉 Pose。
 
-单独运行：
+```bash
+python3 -m unittest robot_tonypi.tests.test_navigation_path_fallback -v
+```
+
+## 7. `test_recovery_target_consistency.py`（5 项）
+
+检查所有配置 Screen 的 TargetGoal 原子一致性、Screen26 的 goal/anchor 区别、stale goal 拒绝、边缘 interior waypoint，以及保 yaw 的 strafe/reverse recovery。
+
+```bash
+python3 -m unittest robot_tonypi.tests.test_recovery_target_consistency -v
+```
+
+## 8. `test_target_direct_approach.py`（10 项）
+
+检查 40 cm 内的 target-direct corridor、只忽略当前目标建筑软 inflation、硬障碍/其他建筑仍生效、短末步、forward 优先、短后方 reverse、转向成本，以及 task-target 选中动作不会被二次 safety veto。
 
 ```bash
 python3 -m unittest robot_tonypi.tests.test_target_direct_approach -v
 ```
 
-## 7. `test_vision_tag_binding.py`
+## 9. `test_target_standoff_flow.py`（37 项）
 
-验证花朵屏幕与左上方 AprilTag 的绑定规则：
+检查完整到点交互状态机：
 
-- 合法左侧 Tag 可以绑定；
-- 右侧 Tag 被拒绝；
-- 多个合法 Tag 选择距离屏幕左上角最近者；
-- 超过距离阈值的 Tag 被拒绝；
-- 37 以上的 Tag 不能作为 `screen_id`。
+- `20 cm / -1 cm` 唯一 task target；
+- 当前 Tag 与同 ID Screen 绑定后才授权；
+- classifier offline 保留 live Tag 和 mission；
+- pan 找到目标后先消费帧再回中；
+- 目标确认和可见性恢复有界；
+- `ALREADY_TARGET` 跳过 final forward；
+- NEEDS_CHANGE 只执行一次 final forward；
+- NFC Attempt1 成功、失败后 retreat/relocalize/reacquire；
+- 其他 Screen 分类不能用于当前目标；
+- 其他 Tag 定位成功不代表当前目标重获；
+- 当前目标重新 FPGA 为 target 时直接 CHANGED，不进入 Attempt2；
+- 明确仍非 target 时才 recalibrate/reapproach/Attempt2；
+- 两次失败或 3 轮目标重获耗尽后 GAVE_UP，绝无 Attempt3；
+- interaction retreat 只后退一次，定位失败不会重复物理后退。
 
-测试只构造 NumPy 四边形与 `TagDetection` 数据，不读取相机，也不运行真实 AprilTag 检测器。
+```bash
+python3 -m unittest robot_tonypi.tests.test_target_standoff_flow -v
+```
 
-单独运行：
+## 10. `test_vision_tag_binding.py`（12 项）
+
+检查左上 Tag↔Screen 绑定、错误侧/过远/非 1–36 ID 拒绝、最新有效缓存、失败不覆盖成功、1 秒分类 rate limit、15 秒 TTL、错误 Screen 拒绝，以及到点必须实时看到当前 Tag 才能采用缓存。
 
 ```bash
 python3 -m unittest robot_tonypi.tests.test_vision_tag_binding -v
 ```
 
-## 7. `test_capture_fpga_change.py`：独立实机集成测试
+## 11. `test_capture_fpga_change.py`：人工实机集成测试
 
-这个脚本不属于正式任务状态机。它假设操作者已经把机器人放在正确目标点并正对屏幕，不执行定位、导航或姿态调整，只测试：
-
-```text
-相机拍照
-→ 检测屏幕并绑定左上 AprilTag
-→ 取得指定 screen_id 的 28×28 裁剪
-→ FPGA 分类
-→ 已是目标花则结束
-→ 否则按安全开关模拟或真实执行 Worker 换花事务
-```
-
-它会保存：
+这个脚本不属于正式任务状态机。操作者必须先把机器人放在正确目标点并正对 Screen。它不做定位和导航，只做：
 
 ```text
-capture_fpga_change_runs/<timestamp>/
-├── raw.jpg
-├── annotated.jpg
-└── screen_<id>_crop_28x28.png
+相机 → Tag/Screen 绑定 → 28×28 crop → FPGA
+→ 已是目标则结束
+→ 否则按开关模拟或真实执行 NFC
 ```
 
-### 7.1 无硬件检查
-
-只检查参数、配置加载和安全清理，不打开相机、不访问 FPGA、不举手、不请求 Worker：
+### 11.1 无硬件
 
 ```bash
 python3 -u -m robot_tonypi.tests.test_capture_fpga_change \
-  --screen-id 2 \
-  --target-flower hehua \
-  --dry-run
+  --screen-id 2 --target-flower hehua --dry-run
 ```
 
-### 7.2 相机和 FPGA 模拟换花测试
-
-使用真实相机和 FPGA 完成识别，但不真实举手、不发送 NFC/Worker 请求：
+### 11.2 真实相机和 FPGA，模拟 NFC
 
 ```bash
 python3 -u -m robot_tonypi.tests.test_capture_fpga_change \
-  --screen-id 2 \
-  --target-flower hehua \
+  --screen-id 2 --target-flower hehua \
   --classifier-url http://192.168.31.81:8080/predict \
   --skip-change
 ```
 
-即使省略 `--skip-change`，只要没有 `--execute`，脚本也会强制模拟交互。显式写出 `--skip-change` 更便于现场确认当前是安全测试。
-
-### 7.3 真实执行换花
-
-执行前必须满足：
-
-- 机器人已由操作者放在正确目标点并正对屏幕；
-- FPGA 服务可访问；
-- 已确认视觉绑定到正确的 `screen_id`；程序会把相同编号直接作为 `worker_id`；
-- Team、Robot ID 和 Secret 正确；
-- 操作者理解这里使用的是人工确认门，不是真实 AprilTag 定位安全门。
-
-命令：
+### 11.3 真实 NFC
 
 ```bash
 python3 -u -m robot_tonypi.tests.test_capture_fpga_change \
-  --screen-id 2 \
-  --target-flower hehua \
+  --screen-id 2 --target-flower hehua \
   --classifier-url http://192.168.31.81:8080/predict \
-  --team red \
-  --robot-id red-1 \
-  --robot-secret 1234 \
+  --team red --robot-id red-1 --robot-secret 1234 \
   --execute
 ```
 
-识别成功且需要换花时，程序会打印 `screen_id`、`worker_id`、`from_flower`、`to_flower` 和 confidence。只有操作者再次准确输入：
+只有视觉和分类通过后，操作者再次输入 `EXECUTE 2` 才会发起真实事务。
 
-```text
-EXECUTE 2
-```
-
-才会通过 `RobotInteractionClient` 真实执行：
-
-```text
-stand
-→ lift_left_hand(stand=False)
-→ send_request
-→ finally stand
-```
-
-以下任一情况都会禁止真实交互：指定 Screen 未检测到、FPGA 失败、置信度不足、识别结果已经是目标花、未提供 `--execute` 或二次确认不匹配。
-
-## 8. `test_capture_15_frames.py`：连续拍照 15 张
-
-该脚本只测试真实相机，不执行机器人动作、不访问 FPGA、NFC 或 Worker。第 1 张会立即拍摄；每张保存完成后，必须由操作者按 Enter 确认才会拍摄下一张。输入 `q` 后按 Enter 可以安全提前结束。完成第 15 张后自动写入清单并退出。
-
-在机器人上运行：
+## 12. `test_capture_15_frames.py`：人工相机采集
 
 ```bash
-cd /home/pi
 python3 -u -m robot_tonypi.tests.test_capture_15_frames
 ```
 
-默认输出目录：
+第 1 张立即拍摄；之后每次按 Enter 拍下一张，输入 `q` 提前结束。默认写入 `/home/pi/capture_15_frames_runs/<timestamp>/`。
 
-```text
-/home/pi/capture_15_frames_runs/<timestamp>/
-├── frame_01.jpg
-├── ...
-├── frame_15.jpg
-└── manifest.json
-```
-
-可以指定一个尚不存在的输出目录：
-
-```bash
-python3 -u -m robot_tonypi.tests.test_capture_15_frames \
-  --output-dir /home/pi/camera_check_01
-```
-
-如果中途取帧或保存失败，脚本会报错退出，并在退出前释放相机。
-
-## 9. 编译检查
+## 13. 语法检查与注意事项
 
 ```bash
 python3 -m compileall -q robot_tonypi
 ```
 
-该命令只检查 Python 文件能否编译，不代替真实相机、FPGA、动作组或 Worker 集成测试。
+自动化测试不会证明以下真机参数正确：动作实际位移、相机内参、Tag 世界坐标、NFC 耦合距离、FPGA 网络稳定性、20 cm task target 和 10 cm final forward。正式运行前仍需现场验证。
