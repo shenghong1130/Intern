@@ -575,6 +575,9 @@ class TargetStandoffFlowTests(unittest.TestCase):
         )
         self.assertIn(("motion", "back_fast", 4), manager.sequence)
         self.assertNotIn(("motion", "interaction_forward_10cm", 1), manager.sequence)
+        self.assertNotIn(("lock_target", target.screen_id), manager.sequence)
+        self.assertNotIn(("navigate_target", target.screen_id), manager.sequence)
+        self.assertNotIn(("confirm_tag", target.screen_id), manager.sequence)
         self.assertEqual(target.status, ScreenStatus.CHANGED)
         self.assertEqual(manager.visual_authorization.flower, manager.target_flower)
         checks = [
@@ -582,6 +585,39 @@ class TargetStandoffFlowTests(unittest.TestCase):
             if name == "nfc_retry_visual_check"
         ]
         self.assertEqual(checks[-1]["decision"], "already_changed_skip_retry")
+
+    def test_changed_status_after_retry_recovery_blocks_attempt_two(self):
+        manager, target = self.interaction_manager()
+        calls = []
+
+        def change_flower(**kwargs):
+            calls.append(kwargs["attempt"])
+            return WorkerChangeResult(
+                False,
+                worker_id=1,
+                response={"seq": 35},
+                error="nfc_timeout",
+            )
+
+        def restore_contact(*args, **kwargs):
+            target.status = ScreenStatus.CHANGED
+            return "reapproached"
+
+        manager.interaction = SimpleNamespace(change_flower=change_flower)
+        manager.restore_nfc_physical_contact = restore_contact
+        manager.recalibrate_target_for_nfc_retry = lambda *args, **kwargs: self.fail(
+            "CHANGED must not enter target recalibration"
+        )
+
+        self.assertTrue(manager.process_screen_interaction(target))
+        self.assertEqual(calls, [1])
+        self.assertEqual(target.status, ScreenStatus.CHANGED)
+        terminal = [
+            data for name, data in manager.debug.events
+            if name == "nfc_change_terminal_success"
+        ]
+        self.assertTrue(terminal)
+        self.assertEqual(terminal[-1]["source"], "status_after_retry_recovery")
 
     def test_retry_visual_check_ignores_other_screen_classification(self):
         manager, target = self.interaction_manager()

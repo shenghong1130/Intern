@@ -2705,6 +2705,35 @@ class TaskManager:
             "last_failure_reason": str(last_failure_reason or ""),
         }
 
+    def nfc_change_is_terminal(
+        self,
+        screen: Screen,
+        *,
+        attempt: int,
+        source: str,
+        seq=None,
+    ) -> bool:
+        """Make CHANGED an unconditional exit from the current NFC flow."""
+        if screen.status != ScreenStatus.CHANGED:
+            return False
+        self.update_nfc_interaction_status(
+            screen,
+            attempt,
+            "SUCCESS",
+            last_failure_reason="",
+            seq=seq,
+        )
+        self.debug.event(
+            "nfc_change_terminal_success",
+            screen_id=screen.screen_id,
+            attempt=int(attempt),
+            seq=seq,
+            source=source,
+            next_action="retreat_then_mark_target_complete",
+            retry_allowed=False,
+        )
+        return True
+
     def restore_nfc_physical_contact(
         self,
         screen: Screen,
@@ -2726,6 +2755,13 @@ class TaskManager:
             reason=failure_reason,
             target_preserved=True,
         )
+        if self.nfc_change_is_terminal(
+            screen,
+            attempt=completed_attempt,
+            source="status_before_retry_recovery",
+            seq=seq,
+        ):
+            return "already_changed"
         physical_retreat_done = False
         while self.time_left_s() > 0.0:
             self.update_nfc_interaction_status(
@@ -2852,6 +2888,20 @@ class TaskManager:
                     last_failure_reason="ack_missing_change_verified_visually",
                     seq=seq,
                 )
+                self.nfc_change_is_terminal(
+                    screen,
+                    attempt=completed_attempt,
+                    source="fpga_confirmed_after_nfc_failure",
+                    seq=seq,
+                )
+                return "already_changed"
+
+            if self.nfc_change_is_terminal(
+                screen,
+                attempt=completed_attempt,
+                source="status_before_retry_reapproach",
+                seq=seq,
+            ):
                 return "already_changed"
 
             self.update_nfc_interaction_status(
@@ -2974,6 +3024,12 @@ class TaskManager:
         )
 
     def process_screen_interaction(self, screen: Screen) -> bool:
+        if self.nfc_change_is_terminal(
+            screen,
+            attempt=max(1, int(screen.attempts)),
+            source="status_before_interaction",
+        ):
+            return True
         worker_id = self.worker_id_for_screen(screen)
         if not screen.last_classification or screen.last_classification == self.target_flower:
             self.debug.event("interaction_skipped", screen_id=screen.screen_id, reason="flower_not_changeable")
@@ -3082,6 +3138,12 @@ class TaskManager:
                     seq=seq,
                 )
                 self.debug.event("interaction_changed", **record)
+                self.nfc_change_is_terminal(
+                    screen,
+                    attempt=attempt,
+                    source="nfc_ack_success",
+                    seq=seq,
+                )
                 return bool(changed)
 
             failure_reason = result.error or "nfc_invalid_response"
@@ -3113,10 +3175,22 @@ class TaskManager:
                 seq=seq,
                 failure_reason=failure_reason,
             )
-            if retry_outcome == "already_changed":
+            if retry_outcome == "already_changed" or self.nfc_change_is_terminal(
+                screen,
+                attempt=attempt,
+                source="status_after_retry_recovery",
+                seq=seq,
+            ):
                 return True
             if retry_outcome != "reapproached":
                 break
+            if self.nfc_change_is_terminal(
+                screen,
+                attempt=attempt,
+                source="status_before_attempt_2",
+                seq=seq,
+            ):
+                return True
             attempt += 1
 
         screen.status = ScreenStatus.NEEDS_CHANGE
