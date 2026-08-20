@@ -358,6 +358,52 @@ class LocalizationScanBudgetTests(unittest.TestCase):
         self.assertTrue(manager.localize_scan(allow_pan_search=True))
         self.assertEqual(pans, [100.0, 135.0])
 
+    def test_required_target_search_continues_after_other_tag_localizes(self):
+        pose = RobotPose(10, 10, 0, Confidence.HIGH, "VISION", now_s())
+        manager, pans = self.manager([pose, pose, pose])
+        tags_by_pan = {
+            100: [SimpleNamespace(tag_id=15, area=800.0)],
+            135: [SimpleNamespace(tag_id=15, area=800.0)],
+            65: [SimpleNamespace(tag_id=24, area=800.0)],
+        }
+        manager.capture_with_tags = lambda pan: (
+            pans.append(pan) or object(), tags_by_pan[int(pan)]
+        )
+        manager.localizer.tag_area = lambda tag: float(tag.area)
+        manager.update_dynamic_obstacles = lambda *args, **kwargs: None
+
+        def observe(frame, tags, annotated, pan, reason):
+            manager.last_transit_binding_screen_ids = {
+                int(tag.tag_id) for tag in tags
+            }
+            return annotated
+
+        manager.observe_transit_bindings = observe
+
+        self.assertTrue(manager.localize_scan(
+            reason="nfc_retry_visual_check",
+            allow_pan_search=True,
+            required_target_screen_id=24,
+        ))
+        self.assertEqual(pans, [100.0, 135.0, 65.0])
+        stopped = [
+            data for name, data in manager.debug.events
+            if name == "pan_search_stopped_on_success"
+        ]
+        self.assertEqual(stopped[-1]["successful_pan"], 65.0)
+        self.assertEqual(stopped[-1]["stop_condition"], "required_target_reacquired")
+
+    def test_normal_localization_still_stops_on_any_valid_tag(self):
+        pose = RobotPose(10, 10, 0, Confidence.HIGH, "VISION", now_s())
+        manager, pans = self.manager([pose, pose])
+        tag = SimpleNamespace(tag_id=15, area=800.0)
+        manager.capture_with_tags = lambda pan: (pans.append(pan) or object(), [tag])
+        manager.localizer.tag_area = lambda item: float(item.area)
+        manager.update_dynamic_obstacles = lambda *args, **kwargs: None
+
+        self.assertTrue(manager.localize_scan(reason="navigation"))
+        self.assertEqual(pans, [100.0])
+
     def test_scan_recenters_head_after_off_center_success(self):
         pose = RobotPose(10, 10, 0, Confidence.HIGH, "VISION", now_s())
         manager, _ = self.manager([None, None, pose])

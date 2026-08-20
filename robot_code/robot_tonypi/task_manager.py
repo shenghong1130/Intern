@@ -1311,20 +1311,28 @@ class TaskManager:
         allow_pan_search: bool = False,
         pan_angles: Optional[List[float]] = None,
         allow_failure_escalation: bool = True,
+        required_target_screen_id: Optional[int] = None,
     ) -> bool:
-        """Scan all configured head pans and accept the first valid visual pose."""
+        """Localize normally, or keep scanning until one required target is bound."""
         saw_any_tag = False
         captured_frame = False
+        accepted_any_pose = False
         last_scan_pan = None
+        required_target_id = (
+            None
+            if required_target_screen_id is None
+            else int(required_target_screen_id)
+        )
         center = float(self.config["camera"].get("head_center_angle", 100.0))
         requested_pans = list(
             pan_angles
             if pan_angles is not None
             else self.config["localization"].get("scan_pan_angles", [center])
         )
-        scan_pans = self.boundary_safe_pan_angles(
-            requested_pans,
-            reason=reason,
+        scan_pans = (
+            self.unique_pan_angles(requested_pans)
+            if required_target_id is not None
+            else self.boundary_safe_pan_angles(requested_pans, reason=reason)
         )
         self.debug.event(
             "localize_scan_started",
@@ -1343,6 +1351,7 @@ class TaskManager:
                     self.update_dynamic_obstacles(tags, pan=pan)
                 pose, annotated = self.localizer.estimate_from_frame(frame, tags, head_pan_angle=pan, annotate=True)
                 if pose is not None:
+                    accepted_any_pose = True
                     prior_pose = None if self.state.pose is None else self.copy_pose(self.state.pose)
                     localization_detail = self.assess_visual_localization(pose, tags, prior_pose)
                     if localization_detail.get("visual_odometry_conflict"):
@@ -1372,11 +1381,41 @@ class TaskManager:
                     self.evaluate_pending_progress(pose)
                     self.debug.event("pose_update", **pose.as_dict(), head_pan_angle=pan, **localization_detail)
                     self.debug.save_image("latest_annotated.jpg", annotated, force=True)
+                    if required_target_id is not None:
+                        detected_ids = [int(tag.tag_id) for tag in tags]
+                        bound_ids = set(getattr(
+                            self, "last_transit_binding_screen_ids", set()
+                        ))
+                        target_bound = required_target_id in bound_ids
+                        self.debug.event(
+                            "nfc_retry_localization_only",
+                            target_screen_id=required_target_id,
+                            localization_tag_ids=detected_ids,
+                            localization_success=True,
+                            target_seen=required_target_id in detected_ids,
+                            target_bound=target_bound,
+                            target_reacquired=target_bound,
+                            pan=float(pan),
+                        )
+                        if not target_bound:
+                            continue
+                        self.debug.event(
+                            "nfc_retry_target_reacquired",
+                            target_screen_id=required_target_id,
+                            pan=float(pan),
+                            localization_tag_ids=detected_ids,
+                            binding_screen_ids=sorted(bound_ids),
+                        )
                     self.debug.event(
                         "pan_search_stopped_on_success",
                         reason=reason,
                         successful_pan=float(pan),
                         visited_through=float(pan),
+                        stop_condition=(
+                            "required_target_reacquired"
+                            if required_target_id is not None
+                            else "accepted_visual_pose"
+                        ),
                     )
                     self.publish_state()
                     return True
@@ -1387,6 +1426,48 @@ class TaskManager:
                 )
                 annotated = self.observe_transit_bindings(frame, tags, annotated, pan, reason)
                 self.debug.save_image("latest_annotated.jpg", annotated, force=True)
+                if required_target_id is not None:
+                    detected_ids = [int(tag.tag_id) for tag in tags]
+                    bound_ids = set(getattr(
+                        self, "last_transit_binding_screen_ids", set()
+                    ))
+                    target_bound = required_target_id in bound_ids
+                    self.debug.event(
+                        "nfc_retry_localization_only",
+                        target_screen_id=required_target_id,
+                        localization_tag_ids=detected_ids,
+                        localization_success=False,
+                        target_seen=required_target_id in detected_ids,
+                        target_bound=target_bound,
+                        target_reacquired=target_bound,
+                        pan=float(pan),
+                    )
+                    if target_bound:
+                        self.debug.event(
+                            "nfc_retry_target_reacquired",
+                            target_screen_id=required_target_id,
+                            pan=float(pan),
+                            localization_tag_ids=detected_ids,
+                            binding_screen_ids=sorted(bound_ids),
+                        )
+                        self.debug.event(
+                            "pan_search_stopped_on_success",
+                            reason=reason,
+                            successful_pan=float(pan),
+                            visited_through=float(pan),
+                            stop_condition="required_target_reacquired",
+                        )
+                        self.publish_state()
+                        return True
+            if required_target_id is not None and accepted_any_pose:
+                self.debug.event(
+                    "nfc_retry_target_not_seen",
+                    target_screen_id=required_target_id,
+                    pan_angles=scan_pans,
+                    localization_success=True,
+                    target_reacquired=False,
+                )
+                return False
             if saw_any_tag:
                 attempt_result = "pose_unavailable_with_tags"
             elif captured_frame:
@@ -1558,6 +1639,7 @@ class TaskManager:
 
     def observe_transit_bindings(self, frame, tags, annotated, pan: float, reason: str):
         """Enrich an existing navigation frame with bound-screen classifications."""
+        self.last_transit_binding_screen_ids = set()
         try:
             candidates = self.screen_detector.detect(frame, tags, self.state.pose, extract_crops=True)
             annotated = self.screen_detector.annotate(annotated, candidates, tags)
@@ -1588,6 +1670,7 @@ class TaskManager:
                 "quad": [[round(float(x), 1), round(float(y), 1)] for x, y in cand.quad],
             }
             self.process_bound_screen_candidate(cand, pan=pan, reason=reason, captured_s=timestamp)
+        self.last_transit_binding_screen_ids = {int(screen_id) for screen_id in seen}
         for screen in self.map.screens.values():
             if screen.screen_id not in seen:
                 screen.transit_visible = False
@@ -2762,58 +2845,58 @@ class TaskManager:
             seq=seq,
         ):
             return "already_changed"
-        physical_retreat_done = False
-        while self.time_left_s() > 0.0:
-            self.update_nfc_interaction_status(
-                screen,
-                retry_attempt,
-                "RETRY_RETREAT",
-                last_failure_reason=failure_reason,
-                seq=seq,
-            )
-            if not physical_retreat_done:
-                self.debug.event(
-                    "nfc_retry_retreat",
-                    screen_id=screen.screen_id,
-                    attempt=retry_attempt,
-                    seq=seq,
-                    elapsed_s=0.0,
-                    reason=failure_reason,
-                    retreat_cm=float(
-                        self.config["interaction"].get(
-                            "post_interaction_retreat_cm", 10.0
-                        )
-                    ),
+        max_cycles = max(1, int(self.config["interaction"].get(
+            "nfc_retry_target_reacquire_max_cycles", 3
+        )))
+        self.debug.event(
+            "nfc_retry_target_reacquire_started",
+            screen_id=screen.screen_id,
+            target_screen_id=screen.screen_id,
+            attempt=retry_attempt,
+            max_cycles=max_cycles,
+            seq=seq,
+        )
+        self.update_nfc_interaction_status(
+            screen,
+            retry_attempt,
+            "RETRY_RETREAT",
+            last_failure_reason=failure_reason,
+            seq=seq,
+        )
+        self.debug.event(
+            "nfc_retry_retreat",
+            screen_id=screen.screen_id,
+            attempt=retry_attempt,
+            seq=seq,
+            elapsed_s=0.0,
+            reason=failure_reason,
+            retreat_cm=float(
+                self.config["interaction"].get(
+                    "post_interaction_retreat_cm", 10.0
                 )
-                retreated = self.complete_post_interaction_retreat(
-                    screen,
-                    reason="nfc_retry",
-                )
-                physical_retreat_done = bool(retreated)
-            else:
-                retreated = self.localize_scan(
-                    reason="nfc_retry_visual_check",
-                    allow_pan_search=True,
-                    allow_failure_escalation=False,
-                )
-            self.debug.event(
-                "nfc_retry_relocalize",
-                screen_id=screen.screen_id,
-                attempt=retry_attempt,
-                seq=seq,
-                elapsed_s=0.0,
-                success=bool(retreated),
-                reason=("accepted_visual_pose" if retreated else "retry_pending"),
-                target_preserved=True,
-            )
-            if not retreated:
-                self.mission_retry_pause("recovery_retry_interval_s")
-                continue
+            ),
+        )
+        retreated = self.complete_post_interaction_retreat(
+            screen,
+            reason="nfc_retry",
+        )
+        self.debug.event(
+            "nfc_retry_relocalize",
+            screen_id=screen.screen_id,
+            attempt=retry_attempt,
+            seq=seq,
+            elapsed_s=0.0,
+            localization_success=bool(retreated),
+            target_reacquired=False,
+            reason=("accepted_visual_pose" if retreated else "retreat_localization_failed"),
+            target_preserved=True,
+        )
 
+        def latest_fresh_target_observation():
             observation = getattr(
                 self, "recent_bound_flower_observations", {}
             ).get(int(screen.screen_id))
-            valid_observation = bool(
+            if not bool(
                 observation is not None
                 and int(observation.screen_id) == int(screen.screen_id)
                 and int(observation.tag_id) == int(screen.screen_id)
@@ -2822,7 +2905,52 @@ class TaskManager:
                 and float(observation.confidence) >= float(
                     self.config["vision"].get("min_confidence", 0.2)
                 )
-            )
+            ):
+                return None
+            return observation
+
+        for reacquire_cycle in range(1, max_cycles + 1):
+            if self.time_left_s() <= 0.0:
+                return "mission_timeout"
+            observation = latest_fresh_target_observation()
+            target_reacquired = observation is not None
+            if not target_reacquired:
+                self.update_nfc_interaction_status(
+                    screen,
+                    retry_attempt,
+                    "RETRY_VISUAL_CHECK",
+                    last_failure_reason="current_target_not_reacquired",
+                    seq=seq,
+                )
+                target_reacquired = bool(self.localize_scan(
+                    reason="nfc_retry_visual_check",
+                    allow_pan_search=True,
+                    allow_failure_escalation=False,
+                    required_target_screen_id=screen.screen_id,
+                ))
+                observation = latest_fresh_target_observation()
+                self.debug.event(
+                    "nfc_retry_relocalize",
+                    screen_id=screen.screen_id,
+                    attempt=retry_attempt,
+                    cycle=reacquire_cycle,
+                    max_cycles=max_cycles,
+                    seq=seq,
+                    elapsed_s=0.0,
+                    localization_success=(
+                        getattr(self, "last_localization_attempt_result", "")
+                        == "accepted_visual_pose"
+                    ),
+                    target_reacquired=bool(target_reacquired),
+                    reason=(
+                        "current_target_reacquired"
+                        if target_reacquired
+                        else "current_target_not_seen"
+                    ),
+                    target_preserved=True,
+                )
+
+            valid_observation = observation is not None
             if not valid_observation:
                 self.update_nfc_interaction_status(
                     screen,
@@ -2838,9 +2966,21 @@ class TaskManager:
                     attempt=retry_attempt,
                     flower=None,
                     target_flower=self.target_flower,
-                    decision="wait_for_fresh_target_classification",
+                    cycle=reacquire_cycle,
+                    max_cycles=max_cycles,
+                    target_reacquired=bool(target_reacquired),
+                    decision="current_target_not_reacquired",
                 )
-                self.mission_retry_pause("recovery_retry_interval_s")
+                self.debug.event(
+                    "nfc_retry_target_not_seen",
+                    target_screen_id=screen.screen_id,
+                    attempt=retry_attempt,
+                    cycle=reacquire_cycle,
+                    max_cycles=max_cycles,
+                    target_reacquired=False,
+                )
+                if reacquire_cycle < max_cycles:
+                    self.mission_retry_pause("recovery_retry_interval_s")
                 continue
 
             adopted = self.adopt_cached_target_observation(
@@ -2935,7 +3075,24 @@ class TaskManager:
                 reason="nfc_retry_reapproach_failed",
             )
             self.mission_retry_pause("recovery_retry_interval_s")
-        return "mission_timeout"
+        self.update_nfc_interaction_status(
+            screen,
+            retry_attempt,
+            "TARGET_REACQUIRE_FAILED",
+            last_failure_reason="current_target_reacquire_exhausted",
+            seq=seq,
+        )
+        self.debug.event(
+            "nfc_retry_target_reacquire_exhausted",
+            screen_id=screen.screen_id,
+            target_screen_id=screen.screen_id,
+            attempt=retry_attempt,
+            cycles=max_cycles,
+            seq=seq,
+            target_preserved=True,
+            next_action="give_up_current_interaction",
+        )
+        return "target_reacquire_failed"
 
     def recalibrate_target_for_nfc_retry(
         self,
@@ -3182,6 +3339,13 @@ class TaskManager:
                 seq=seq,
             ):
                 return True
+            if retry_outcome == "target_reacquire_failed":
+                self.give_up_nfc_change(
+                    screen,
+                    attempts=attempt,
+                    reason="current_target_reacquire_exhausted",
+                )
+                return False
             if retry_outcome != "reapproached":
                 break
             if self.nfc_change_is_terminal(

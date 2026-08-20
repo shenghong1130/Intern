@@ -540,11 +540,19 @@ class TargetStandoffFlowTests(unittest.TestCase):
         manager.post_interaction_retreat_blocked = False
         manager.post_interaction_screen_id = target.screen_id
 
+        localization_calls = []
+
         def localize_scan(**kwargs):
-            manager.recent_bound_flower_observations[target.screen_id] = (
+            localization_calls.append(kwargs)
+            observed_screen = (
+                target.screen_id
+                if kwargs.get("required_target_screen_id") == target.screen_id
+                else 15
+            )
+            manager.recent_bound_flower_observations[observed_screen] = (
                 RecentBoundFlowerObservation(
-                    target.screen_id,
-                    target.screen_id,
+                    observed_screen,
+                    observed_screen,
                     True,
                     manager.target_flower,
                     0.98,
@@ -578,6 +586,13 @@ class TargetStandoffFlowTests(unittest.TestCase):
         self.assertNotIn(("lock_target", target.screen_id), manager.sequence)
         self.assertNotIn(("navigate_target", target.screen_id), manager.sequence)
         self.assertNotIn(("confirm_tag", target.screen_id), manager.sequence)
+        self.assertEqual(
+            [
+                call.get("required_target_screen_id")
+                for call in localization_calls
+            ],
+            [None, target.screen_id],
+        )
         self.assertEqual(target.status, ScreenStatus.CHANGED)
         self.assertEqual(manager.visual_authorization.flower, manager.target_flower)
         checks = [
@@ -662,6 +677,64 @@ class TargetStandoffFlowTests(unittest.TestCase):
             [item for item in manager.sequence if item[0] == "change"],
             [("change", 1), ("change", 2)],
         )
+
+    def test_only_wrong_target_tags_exhausts_bounded_reacquire(self):
+        manager, target = self.interaction_manager()
+        manager.config["interaction"]["nfc_retry_target_reacquire_max_cycles"] = 3
+        manager.post_interaction_retreat_pending = True
+        manager.post_interaction_retreat_completed = False
+        manager.post_interaction_retreat_blocked = False
+        manager.post_interaction_screen_id = target.screen_id
+        localization_calls = []
+
+        def localize_scan(**kwargs):
+            localization_calls.append(kwargs)
+            manager.recent_bound_flower_observations[15] = (
+                RecentBoundFlowerObservation(
+                    15,
+                    15,
+                    True,
+                    manager.target_flower,
+                    0.99,
+                    now_s() + 1.0,
+                    100.0,
+                    "wrong_target",
+                )
+            )
+            return kwargs.get("required_target_screen_id") is None
+
+        manager.localize_scan = localize_scan
+
+        def change_flower(**kwargs):
+            manager.sequence.append(("change", kwargs["attempt"]))
+            return WorkerChangeResult(
+                False,
+                worker_id=1,
+                response={"seq": 50},
+                error="nfc_timeout",
+            )
+
+        manager.interaction = SimpleNamespace(change_flower=change_flower)
+
+        self.assertFalse(manager.process_screen_interaction(target))
+        required_calls = [
+            call for call in localization_calls
+            if call.get("required_target_screen_id") == target.screen_id
+        ]
+        self.assertEqual(len(required_calls), 3)
+        self.assertEqual(
+            [item for item in manager.sequence if item[0] == "change"],
+            [("change", 1)],
+        )
+        self.assertEqual(target.status, ScreenStatus.FAILED)
+        self.assertTrue(manager.nfc_interaction_gave_up)
+        self.assertNotEqual(target.status, ScreenStatus.CHANGED)
+        exhausted = [
+            data for name, data in manager.debug.events
+            if name == "nfc_retry_target_reacquire_exhausted"
+        ]
+        self.assertEqual(len(exhausted), 1)
+        self.assertEqual(exhausted[0]["cycles"], 3)
 
     def test_nfc_gave_up_screen_is_not_selected_again(self):
         manager, target = self.interaction_manager()

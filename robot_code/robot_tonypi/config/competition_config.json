@@ -347,6 +347,7 @@
     "post_interaction_retreat_cm": 10.0,
     "post_interaction_retreat_action": "back_fast",
     "post_interaction_retry_interval_s": 1.0,
+    "nfc_retry_target_reacquire_max_cycles": 3,
     "target_confirmation_max_retries": 3,
     "target_confirmation_retry_interval_s": 0.5,
     "classifier_retry_interval_s": 1.0,
