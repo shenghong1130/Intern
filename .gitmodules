@@ -1,0 +1,3 @@
+[submodule "FPGA_code"]
+	path = FPGA_code
+	url = https://github.com/shenghong1130/FPGA_KV260.git
