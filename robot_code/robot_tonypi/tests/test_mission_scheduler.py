@@ -240,6 +240,7 @@ class MissionSchedulerTests(unittest.TestCase):
         self.assertTrue(result["accepted"])
         self.assertIs(manager.state.pose, visual_b)
         self.assertEqual(captures, [100.0, 100.0])
+        self.assertAlmostEqual(result["actual_delta"], 62.0)
         self.assertIn("visual_pose_jump_confirmed", [name for name, _ in events])
 
     def test_wrong_direction_turn_is_rejected(self):

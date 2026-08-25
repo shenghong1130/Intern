@@ -2731,32 +2731,6 @@ class TaskManager:
         localized = pose is not None
         outcome["localized"] = localized
         if pose is not None:
-            progress = None
-            if watchdog_scan:
-                progress = evaluate_turn_progress(
-                    before_pose,
-                    pose,
-                    float(action_result.model_yaw_deg),
-                    target_yaw,
-                )
-                outcome.update(progress)
-                if progress["suspect_stale_pose"]:
-                    self.debug.event("suspect_stale_pose_after_turn", reason=reason, action_key=action_key, **progress)
-                if progress["direction_conflict"]:
-                    self.debug.event("turn_direction_conflict", reason=reason, action_key=action_key, **progress)
-                if progress["turn_no_progress"]:
-                    self.debug.event("turn_no_progress", reason=reason, action_key=action_key, **progress)
-            if progress is not None and progress["reject_visual_pose"]:
-                self.debug.event(
-                    "scan_after_turn_pose_conflict_observed",
-                    reason=reason,
-                    action_key=action_key,
-                    dead_reckoning_pose=(
-                        None if self.state.pose is None else self.state.pose.as_dict()
-                    ),
-                    visual_pose=pose.as_dict(),
-                    **progress
-                )
             prior_pose = (
                 None if self.state.pose is None else self.copy_pose(self.state.pose)
             )
@@ -2770,6 +2744,48 @@ class TaskManager:
             if acceptance["accepted"]:
                 pose = acceptance["pose"]
                 localization_detail = acceptance["localization_detail"]
+                if watchdog_scan:
+                    progress = evaluate_turn_progress(
+                        before_pose,
+                        pose,
+                        float(action_result.model_yaw_deg),
+                        target_yaw,
+                    )
+                    outcome.update(progress)
+                    if progress["suspect_stale_pose"]:
+                        self.debug.event(
+                            "suspect_stale_pose_after_turn",
+                            reason=reason,
+                            action_key=action_key,
+                            **progress
+                        )
+                    if progress["direction_conflict"]:
+                        self.debug.event(
+                            "turn_direction_conflict",
+                            reason=reason,
+                            action_key=action_key,
+                            **progress
+                        )
+                    if progress["turn_no_progress"]:
+                        self.debug.event(
+                            "turn_no_progress",
+                            reason=reason,
+                            action_key=action_key,
+                            **progress
+                        )
+                    if progress["reject_visual_pose"]:
+                        self.debug.event(
+                            "scan_after_turn_pose_conflict_observed",
+                            reason=reason,
+                            action_key=action_key,
+                            dead_reckoning_pose=(
+                                None
+                                if prior_pose is None
+                                else prior_pose.as_dict()
+                            ),
+                            visual_pose=pose.as_dict(),
+                            **progress
+                        )
                 if acceptance.get("frame") is not None:
                     frame = acceptance["frame"]
                     tags = acceptance.get("tags", [])
