@@ -183,6 +183,65 @@ class MissionSchedulerTests(unittest.TestCase):
             "accepted_visual_pose",
         )
 
+    def test_scan_after_turn_uses_suspect_visual_confirmation_gate(self):
+        manager = TaskManager.__new__(TaskManager)
+        before = RobotPose(10, 10, 0, Confidence.HIGH, "BEFORE", 1)
+        dead_reckoning = RobotPose(
+            10, 10, 15, Confidence.HIGH, "DEAD_RECKONING", 2
+        )
+        visual_a = RobotPose(50, 40, 60, Confidence.HIGH, "VISION", 3)
+        visual_b = RobotPose(52, 42, 62, Confidence.HIGH, "VISION", 4)
+        queue = [visual_a, visual_b]
+        tag = SimpleNamespace(tag_id=1, area=800.0, center=(320.0, 220.0))
+        captures = []
+        events = []
+        manager.args = SimpleNamespace(dry_run=False)
+        manager.config = load_config(None)
+        manager.config["vision"]["scan_after_turn_min_interval_s"] = 0
+        manager.time_left_s = lambda: 100
+        manager.last_scan_after_turn_s = 0
+        manager.capture_with_tags = lambda center: (
+            captures.append(center) or SimpleNamespace(), [tag]
+        )
+        manager.localizer = SimpleNamespace(
+            estimate_from_frame=lambda *args, **kwargs: (
+                queue.pop(0), SimpleNamespace()
+            ),
+            tag_area=lambda item: float(item.area),
+        )
+        manager.state = SimpleNamespace(
+            pose=dead_reckoning,
+            actions_since_localize=1,
+            motion_uncertainty=1.8,
+            set_pose=lambda pose: setattr(manager.state, "pose", pose),
+        )
+        manager.debug = SimpleNamespace(
+            event=lambda name, **data: events.append((name, data)),
+            save_image=lambda *args, **kwargs: None,
+        )
+        manager.observe_transit_bindings = (
+            lambda frame, tags, annotated, center, reason: annotated
+        )
+        manager.transit_bindings = {}
+        manager.publish_state = lambda *args, **kwargs: None
+        manager.last_localize_success_s = 0
+        manager.consecutive_localize_failures = 0
+        manager.consecutive_no_tag_scans = 0
+        manager.evaluate_pending_progress = lambda pose: None
+
+        result = manager.scan_after_turn(
+            "test",
+            "turn_left_large",
+            SimpleNamespace(model_yaw_deg=15.0),
+            before_pose=before,
+            target_yaw=60.0,
+        )
+
+        self.assertTrue(result["accepted"])
+        self.assertIs(manager.state.pose, visual_b)
+        self.assertEqual(captures, [100.0, 100.0])
+        self.assertIn("visual_pose_jump_confirmed", [name for name, _ in events])
+
     def test_wrong_direction_turn_is_rejected(self):
         result = evaluate_turn_progress(
             RobotPose(10, 10, 20, Confidence.HIGH, "BEFORE", 1),

@@ -1164,7 +1164,7 @@ class TaskManager:
         return False
 
     def assess_visual_localization(self, pose: RobotPose, tags, prior_pose: Optional[RobotPose]) -> dict:
-        """Describe Tag quality and odometry disagreement for diagnostics only."""
+        """Describe Tag quality and disagreement with the currently trusted pose."""
         valid_areas = []
         min_id = int(self.config["localization"].get("allowed_min_id", 1))
         max_id = int(self.config["localization"].get("allowed_max_id", 36))
@@ -1188,7 +1188,7 @@ class TaskManager:
         position_conflict_cm = 0.0
         yaw_conflict_deg = 0.0
         conflict = False
-        if prior_pose is not None and prior_pose.source == "DEAD_RECKONING":
+        if prior_pose is not None:
             position_conflict_cm = distance_xy(prior_pose.xy(), pose.xy())
             yaw_conflict_deg = abs(angle_diff_deg(pose.yaw_deg, prior_pose.yaw_deg))
             conflict = (
@@ -1205,6 +1205,219 @@ class TaskManager:
             "visual_odometry_position_delta_cm": round(position_conflict_cm, 2),
             "visual_odometry_yaw_delta_deg": round(yaw_conflict_deg, 2),
             "visual_odometry_conflict": conflict,
+        }
+
+    def capture_visual_pose_once(self, pan: float, reason: str) -> dict:
+        """Capture and estimate one visual pose without moving or mutating RobotState."""
+        frame, tags = self.capture_with_tags(pan)
+        if frame is None:
+            return {
+                "pose": None,
+                "frame": None,
+                "tags": [],
+                "annotated": None,
+                "result": "capture_failed",
+            }
+        pose, annotated = self.localizer.estimate_from_frame(
+            frame,
+            tags,
+            head_pan_angle=pan,
+            annotate=True,
+        )
+        return {
+            "pose": pose,
+            "frame": frame,
+            "tags": tags,
+            "annotated": annotated,
+            "result": (
+                "pose_available"
+                if pose is not None
+                else ("pose_unavailable_with_tags" if tags else "no_tag")
+            ),
+            "reason": reason,
+        }
+
+    def evaluate_and_accept_visual_pose(
+        self,
+        pose: RobotPose,
+        tags,
+        pan: float,
+        reason: str,
+        prior_pose: Optional[RobotPose],
+    ) -> dict:
+        """Atomically accept a normal pose or confirm a suspect visual jump."""
+        detail = self.assess_visual_localization(pose, tags, prior_pose)
+        enabled = bool(self.config["navigation"].get(
+            "localization_suspect_confirmation_enabled", True
+        ))
+        if not detail.get("visual_odometry_conflict") or not enabled:
+            self.accept_visual_localization(pose, reason)
+            return {
+                "accepted": True,
+                "pose": pose,
+                "tags": tags,
+                "frame": None,
+                "annotated": None,
+                "localization_detail": detail,
+                "decision": "accepted_normal_visual_pose",
+            }
+
+        suspect_pose = pose
+        self.debug.event(
+            "visual_dead_reckoning_conflict_observed",
+            reason=reason,
+            position_conflict_cm=detail["visual_odometry_position_delta_cm"],
+            yaw_conflict_deg=detail["visual_odometry_yaw_delta_deg"],
+            dead_reckoning_pose=(
+                None if prior_pose is None else prior_pose.as_dict()
+            ),
+            visual_pose=suspect_pose.as_dict(),
+        )
+        self.debug.event(
+            "visual_pose_suspect",
+            reason=reason,
+            prior_pose=None if prior_pose is None else prior_pose.as_dict(),
+            suspect_visual_pose=suspect_pose.as_dict(),
+            position_conflict_cm=detail["visual_odometry_position_delta_cm"],
+            yaw_conflict_deg=detail["visual_odometry_yaw_delta_deg"],
+            localization_quality=detail["localization_quality"],
+            localization_tag_count=detail["localization_tag_count"],
+            localization_best_tag_area_px=detail[
+                "localization_best_tag_area_px"
+            ],
+            pan=float(pan),
+        )
+        attempts = max(1, int(self.config["navigation"].get(
+            "localization_suspect_confirmation_attempts", 1
+        )))
+        max_position_delta = float(self.config["navigation"].get(
+            "localization_suspect_confirmation_distance_cm", 10.0
+        ))
+        max_yaw_delta = float(self.config["navigation"].get(
+            "localization_suspect_confirmation_yaw_deg", 15.0
+        ))
+        self.debug.event(
+            "visual_pose_confirmation_started",
+            reason=reason,
+            pan=float(pan),
+            suspect_pose=suspect_pose.as_dict(),
+            attempts=attempts,
+        )
+
+        last_confirmation = None
+        last_decision = "confirmation_pose_unavailable"
+        for attempt in range(1, attempts + 1):
+            confirmation = self.capture_visual_pose_once(
+                pan, reason + ":suspect_confirmation"
+            )
+            last_confirmation = confirmation
+            confirmation_pose = confirmation.get("pose")
+            confirmation_position_delta = None
+            confirmation_yaw_delta = None
+            accepted_pose = None
+            confirmation_detail = None
+            if confirmation_pose is None:
+                decision = "confirmation_pose_unavailable"
+            else:
+                confirmation_position_delta = distance_xy(
+                    suspect_pose.xy(), confirmation_pose.xy()
+                )
+                confirmation_yaw_delta = abs(angle_diff_deg(
+                    confirmation_pose.yaw_deg, suspect_pose.yaw_deg
+                ))
+                if (
+                    confirmation_position_delta <= max_position_delta
+                    and confirmation_yaw_delta <= max_yaw_delta
+                ):
+                    confirmation_detail = self.assess_visual_localization(
+                        confirmation_pose, confirmation.get("tags", []), prior_pose
+                    )
+                    decision = "confirmed_visual_jump"
+                    accepted_pose = confirmation_pose
+                else:
+                    confirmation_detail = self.assess_visual_localization(
+                        confirmation_pose, confirmation.get("tags", []), prior_pose
+                    )
+                    if not confirmation_detail.get("visual_odometry_conflict"):
+                        decision = "confirmation_pose_matches_prior"
+                        accepted_pose = confirmation_pose
+                    else:
+                        decision = "rejected_inconsistent_visual_pose"
+            last_decision = decision
+            self.debug.event(
+                "visual_pose_confirmation_result",
+                reason=reason,
+                attempt=attempt,
+                success=accepted_pose is not None,
+                suspect_pose=suspect_pose.as_dict(),
+                confirmation_pose=(
+                    None if confirmation_pose is None else confirmation_pose.as_dict()
+                ),
+                confirmation_position_delta_cm=(
+                    None
+                    if confirmation_position_delta is None
+                    else round(float(confirmation_position_delta), 2)
+                ),
+                confirmation_yaw_delta_deg=(
+                    None
+                    if confirmation_yaw_delta is None
+                    else round(float(confirmation_yaw_delta), 2)
+                ),
+                decision=decision,
+                pose_installed=accepted_pose is not None,
+            )
+            if accepted_pose is not None:
+                self.accept_visual_localization(accepted_pose, reason)
+                if decision == "confirmed_visual_jump":
+                    self.debug.event(
+                        "visual_pose_jump_confirmed",
+                        reason=reason,
+                        suspect_pose=suspect_pose.as_dict(),
+                        confirmed_pose=accepted_pose.as_dict(),
+                        pose_installed=True,
+                    )
+                else:
+                    self.debug.event(
+                        "visual_pose_jump_rejected",
+                        reason=reason,
+                        decision=decision,
+                        suspect_pose=suspect_pose.as_dict(),
+                        confirmation_pose=accepted_pose.as_dict(),
+                        suspect_pose_installed=False,
+                        confirmation_pose_installed=True,
+                    )
+                return {
+                    "accepted": True,
+                    "pose": accepted_pose,
+                    "tags": confirmation.get("tags", []),
+                    "frame": confirmation.get("frame"),
+                    "annotated": confirmation.get("annotated"),
+                    "localization_detail": confirmation_detail,
+                    "decision": decision,
+                }
+
+        self.debug.event(
+            "visual_pose_jump_rejected",
+            reason=reason,
+            decision=last_decision,
+            suspect_pose=suspect_pose.as_dict(),
+            confirmation_pose=(
+                None
+                if last_confirmation is None or last_confirmation.get("pose") is None
+                else last_confirmation["pose"].as_dict()
+            ),
+            suspect_pose_installed=False,
+            confirmation_pose_installed=False,
+            prior_pose_retained=True,
+        )
+        return {
+            "accepted": False,
+            "pose": None,
+            "tags": tags,
+            "frame": None,
+            "annotated": None,
+            "localization_detail": detail,
+            "decision": last_decision,
         }
 
     def emit_localization_diagnostics(
@@ -1317,6 +1530,7 @@ class TaskManager:
         saw_any_tag = False
         captured_frame = False
         accepted_any_pose = False
+        rejected_suspect_pose = False
         last_scan_pan = None
         required_target_id = (
             None
@@ -1351,29 +1565,79 @@ class TaskManager:
                     self.update_dynamic_obstacles(tags, pan=pan)
                 pose, annotated = self.localizer.estimate_from_frame(frame, tags, head_pan_angle=pan, annotate=True)
                 if pose is not None:
-                    accepted_any_pose = True
                     prior_pose = None if self.state.pose is None else self.copy_pose(self.state.pose)
-                    localization_detail = self.assess_visual_localization(pose, tags, prior_pose)
-                    if localization_detail.get("visual_odometry_conflict"):
-                        self.debug.event(
-                            "visual_dead_reckoning_conflict_observed",
-                            reason=reason,
-                            position_conflict_cm=localization_detail[
-                                "visual_odometry_position_delta_cm"
-                            ],
-                            yaw_conflict_deg=localization_detail[
-                                "visual_odometry_yaw_delta_deg"
-                            ],
-                            dead_reckoning_pose=(
-                                None if prior_pose is None else prior_pose.as_dict()
-                            ),
-                            visual_pose=pose.as_dict(),
-                        )
-                    self.emit_localization_diagnostics(
-                        tags, pan, reason, True
+                    acceptance = self.evaluate_and_accept_visual_pose(
+                        pose, tags, pan, reason, prior_pose
                     )
-                    self.accept_visual_localization(pose, reason)
-                    annotated = self.observe_transit_bindings(frame, tags, annotated, pan, reason)
+                    if not acceptance["accepted"]:
+                        rejected_suspect_pose = True
+                        self.emit_localization_diagnostics(
+                            tags,
+                            pan,
+                            reason,
+                            False,
+                            additional_rejection={
+                                "stage": "temporal_consistency",
+                                "reason": acceptance["decision"],
+                            },
+                        )
+                        annotated = self.observe_transit_bindings(
+                            frame, tags, annotated, pan, reason
+                        )
+                        self.debug.save_image(
+                            "latest_annotated.jpg", annotated, force=True
+                        )
+                        if required_target_id is not None:
+                            detected_ids = [int(tag.tag_id) for tag in tags]
+                            bound_ids = set(getattr(
+                                self, "last_transit_binding_screen_ids", set()
+                            ))
+                            target_bound = required_target_id in bound_ids
+                            self.debug.event(
+                                "nfc_retry_localization_only",
+                                target_screen_id=required_target_id,
+                                localization_tag_ids=detected_ids,
+                                localization_success=False,
+                                target_seen=required_target_id in detected_ids,
+                                target_bound=target_bound,
+                                target_reacquired=target_bound,
+                                pan=float(pan),
+                            )
+                            if target_bound:
+                                self.debug.event(
+                                    "nfc_retry_target_reacquired",
+                                    target_screen_id=required_target_id,
+                                    pan=float(pan),
+                                    localization_tag_ids=detected_ids,
+                                    binding_screen_ids=sorted(bound_ids),
+                                )
+                                self.publish_state()
+                                return True
+                        continue
+                    accepted_any_pose = True
+                    pose = acceptance["pose"]
+                    localization_detail = acceptance["localization_detail"]
+                    if acceptance.get("frame") is None:
+                        accepted_frame = frame
+                        accepted_tags = tags
+                        accepted_annotated = annotated
+                    else:
+                        accepted_frame = acceptance["frame"]
+                        accepted_tags = acceptance.get("tags", [])
+                        accepted_annotated = acceptance.get("annotated")
+                        if accepted_tags:
+                            saw_any_tag = True
+                            self.update_dynamic_obstacles(accepted_tags, pan=pan)
+                    self.emit_localization_diagnostics(
+                        accepted_tags, pan, reason, True
+                    )
+                    annotated = self.observe_transit_bindings(
+                        accepted_frame,
+                        accepted_tags,
+                        accepted_annotated,
+                        pan,
+                        reason,
+                    )
                     if reset_turn_watchdog:
                         self.clear_turn_progress_watchdog("normal_relocalize")
                     self.consecutive_localize_failures = 0
@@ -1382,7 +1646,7 @@ class TaskManager:
                     self.debug.event("pose_update", **pose.as_dict(), head_pan_angle=pan, **localization_detail)
                     self.debug.save_image("latest_annotated.jpg", annotated, force=True)
                     if required_target_id is not None:
-                        detected_ids = [int(tag.tag_id) for tag in tags]
+                        detected_ids = [int(tag.tag_id) for tag in accepted_tags]
                         bound_ids = set(getattr(
                             self, "last_transit_binding_screen_ids", set()
                         ))
@@ -1468,7 +1732,9 @@ class TaskManager:
                     target_reacquired=False,
                 )
                 return False
-            if saw_any_tag:
+            if rejected_suspect_pose:
+                attempt_result = "suspect_visual_pose_rejected"
+            elif saw_any_tag:
                 attempt_result = "pose_unavailable_with_tags"
             elif captured_frame:
                 attempt_result = "no_tag"
@@ -2491,22 +2757,53 @@ class TaskManager:
                     visual_pose=pose.as_dict(),
                     **progress
                 )
-            localization_detail = self.assess_visual_localization(pose, tags, before_pose)
-            self.emit_localization_diagnostics(
-                tags, center, "scan_after_turn:" + reason, True
+            prior_pose = (
+                None if self.state.pose is None else self.copy_pose(self.state.pose)
             )
-            self.accept_visual_localization(pose, "scan_after_turn:" + reason)
-            outcome["accepted"] = True
-            self.consecutive_localize_failures = 0
-            self.consecutive_no_tag_scans = 0
-            self.evaluate_pending_progress(pose)
-            self.debug.event(
-                "pose_update",
-                **pose.as_dict(),
-                head_pan_angle=center,
-                reason="scan_after_turn",
-                **localization_detail
+            acceptance = self.evaluate_and_accept_visual_pose(
+                pose,
+                tags,
+                center,
+                "scan_after_turn:" + reason,
+                prior_pose,
             )
+            if acceptance["accepted"]:
+                pose = acceptance["pose"]
+                localization_detail = acceptance["localization_detail"]
+                if acceptance.get("frame") is not None:
+                    frame = acceptance["frame"]
+                    tags = acceptance.get("tags", [])
+                    annotated = acceptance.get("annotated")
+                self.emit_localization_diagnostics(
+                    tags, center, "scan_after_turn:" + reason, True
+                )
+                outcome["accepted"] = True
+                self.consecutive_localize_failures = 0
+                self.consecutive_no_tag_scans = 0
+                self.evaluate_pending_progress(pose)
+                self.debug.event(
+                    "pose_update",
+                    **pose.as_dict(),
+                    head_pan_angle=center,
+                    reason="scan_after_turn",
+                    **localization_detail
+                )
+            else:
+                self.emit_localization_diagnostics(
+                    tags,
+                    center,
+                    "scan_after_turn:" + reason,
+                    False,
+                    additional_rejection={
+                        "stage": "temporal_consistency",
+                        "reason": acceptance["decision"],
+                    },
+                )
+                self.record_localization_failure(
+                    "suspect_visual_pose_rejected",
+                    saw_any_tag=bool(tags),
+                    reason="scan_after_turn:" + reason,
+                )
         else:
             attempt_result = (
                 "pose_unavailable_with_tags" if tags else "no_tag"

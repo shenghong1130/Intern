@@ -300,7 +300,7 @@ class AdaptiveBatchTests(unittest.TestCase):
         self.assertEqual(next_decision["decision"], "relocalize_now")
         self.assertEqual(next_decision["reason"], "large_turn")
 
-    def test_visual_odometry_conflict_is_diagnostic_only(self):
+    def test_visual_pose_conflict_is_detected_for_temporal_gate(self):
         manager = adaptive_manager()
         manager.localizer = SimpleNamespace(tag_area=lambda tag: tag.area)
         manager.last_localization_tag_count = 0
@@ -321,6 +321,7 @@ class AdaptiveBatchTests(unittest.TestCase):
 class LocalizationScanBudgetTests(unittest.TestCase):
     def manager(self, outcomes):
         manager = adaptive_manager()
+        manager.state.pose = None
         manager.args = SimpleNamespace(dry_run=False)
         manager.hardware = SimpleNamespace(center_head=lambda: None)
         manager.publish_state = lambda *args, **kwargs: None
@@ -586,6 +587,9 @@ class LocalizationStateResetTests(unittest.TestCase):
     def scan_manager(self, outcomes, tags=None):
         helper = LocalizationScanBudgetTests()
         manager, pans = helper.manager(outcomes)
+        manager.state.set_pose(RobotPose(
+            150.0, 150.0, 0.0, Confidence.HIGH, "VISION", now_s()
+        ))
         if tags is not None:
             manager.capture_with_tags = lambda pan: (
                 pans.append(pan) or object(), tags
@@ -607,17 +611,20 @@ class LocalizationStateResetTests(unittest.TestCase):
         names = [name for name, _ in manager.debug.events]
         self.assertNotIn("localization_state_reset", names)
 
-    def test_conflicting_visual_pose_is_accepted_and_resets_dead_reckoning(self):
+    def test_confirmed_visual_jump_is_accepted_and_resets_dead_reckoning(self):
         visual = RobotPose(
             190.0, 150.0, 45.0, Confidence.HIGH, "VISION_TAG_1", now_s()
         )
+        confirmed = RobotPose(
+            193.0, 152.0, 48.0, Confidence.HIGH, "VISION_TAG_1", now_s()
+        )
         tag = SimpleNamespace(tag_id=1, area=800.0)
-        manager, _ = self.scan_manager([visual], tags=[tag])
+        manager, _ = self.scan_manager([visual, confirmed], tags=[tag])
         manager.state.pose.source = "DEAD_RECKONING"
         manager.state.actions_since_localize = 4
         manager.state.motion_uncertainty = 3.5
         self.assertTrue(manager.localize_scan(allow_failure_escalation=False))
-        self.assertIs(manager.state.pose, visual)
+        self.assertIs(manager.state.pose, confirmed)
         self.assertEqual(manager.state.actions_since_localize, 0)
         self.assertEqual(manager.state.motion_uncertainty, 0.0)
         self.assertEqual(
@@ -626,6 +633,7 @@ class LocalizationStateResetTests(unittest.TestCase):
         )
         names = [name for name, _ in manager.debug.events]
         self.assertIn("visual_dead_reckoning_conflict_observed", names)
+        self.assertIn("visual_pose_jump_confirmed", names)
 
     def test_pose_unavailable_with_tags_preserves_motion_accounting(self):
         tag = SimpleNamespace(tag_id=26, area=800.0, center=(320, 220))
@@ -679,6 +687,179 @@ class LocalizationStateResetTests(unittest.TestCase):
         self.assertTrue(manager.localize_scan(allow_pan_search=True))
         self.assertEqual(pans, [100.0, 135.0])
         self.assertEqual(manager.last_localization_attempt_result, "accepted_visual_pose")
+
+
+class SuspectVisualPoseConfirmationTests(unittest.TestCase):
+    @staticmethod
+    def pose(x, y, yaw, confidence=Confidence.HIGH):
+        return RobotPose(x, y, yaw, confidence, "VISION_TAG_1", now_s())
+
+    def manager(self, outcomes, prior=None, tags=None):
+        helper = LocalizationScanBudgetTests()
+        manager, pans = helper.manager(outcomes)
+        manager.state.pose = prior
+        manager.state.actions_since_localize = 0
+        manager.state.motion_uncertainty = 0.0
+        if tags is None:
+            tags = [SimpleNamespace(tag_id=1, area=800.0, center=(320.0, 220.0))]
+        manager.capture_with_tags = lambda pan: (
+            pans.append(pan) or object(), tags
+        )
+        manager.localizer.tag_area = lambda tag: float(tag.area)
+        manager.update_dynamic_obstacles = lambda *args, **kwargs: None
+        return manager, pans
+
+    def localize_once(self, manager):
+        return manager.localize_scan(
+            pan_angles=[100.0],
+            allow_failure_escalation=False,
+        )
+
+    def test_normal_visual_pose_is_accepted_without_confirmation(self):
+        prior = self.pose(150.0, 150.0, 0.0)
+        visual = self.pose(155.0, 152.0, 4.0)
+        manager, pans = self.manager([visual], prior=prior)
+        self.assertTrue(self.localize_once(manager))
+        self.assertIs(manager.state.pose, visual)
+        self.assertEqual(pans, [100.0])
+        self.assertNotIn(
+            "visual_pose_confirmation_started",
+            [name for name, _ in manager.debug.events],
+        )
+
+    def test_outlier_is_rejected_when_confirmation_matches_prior(self):
+        prior = self.pose(150.0, 150.0, 0.0)
+        visual_a = self.pose(190.0, 150.0, 0.0)
+        visual_b = self.pose(153.0, 151.0, 2.0)
+        manager, pans = self.manager([visual_a, visual_b], prior=prior)
+        self.assertTrue(self.localize_once(manager))
+        self.assertIs(manager.state.pose, visual_b)
+        self.assertNotEqual(manager.state.pose.xy(), visual_a.xy())
+        self.assertEqual(pans, [100.0, 100.0])
+        result = next(
+            data for name, data in manager.debug.events
+            if name == "visual_pose_confirmation_result"
+        )
+        self.assertEqual(result["decision"], "confirmation_pose_matches_prior")
+
+    def test_consistent_large_visual_jump_accepts_confirmation_pose(self):
+        prior = self.pose(150.0, 150.0, 0.0)
+        visual_a = self.pose(190.0, 180.0, 30.0)
+        visual_b = self.pose(193.0, 182.0, 33.0)
+        manager, _ = self.manager([visual_a, visual_b], prior=prior)
+        capture = manager.capture_with_tags
+        installed_during_captures = []
+        manager.capture_with_tags = lambda pan: (
+            installed_during_captures.append(manager.state.pose) or capture(pan)
+        )
+        self.assertTrue(self.localize_once(manager))
+        self.assertIs(manager.state.pose, visual_b)
+        self.assertEqual(installed_during_captures, [prior, prior])
+        names = [name for name, _ in manager.debug.events]
+        self.assertIn("visual_pose_jump_confirmed", names)
+
+    def test_two_inconsistent_visual_outliers_retain_prior(self):
+        prior = self.pose(150.0, 150.0, 0.0)
+        visual_a = self.pose(190.0, 180.0, 30.0)
+        visual_b = self.pose(220.0, 100.0, -50.0)
+        manager, _ = self.manager([visual_a, visual_b], prior=prior)
+        self.assertFalse(self.localize_once(manager))
+        self.assertIs(manager.state.pose, prior)
+        result = next(
+            data for name, data in manager.debug.events
+            if name == "visual_pose_confirmation_result"
+        )
+        self.assertEqual(result["decision"], "rejected_inconsistent_visual_pose")
+
+    def test_yaw_only_jump_requires_confirmation(self):
+        prior = self.pose(150.0, 150.0, 0.0)
+        manager, _ = self.manager(
+            [self.pose(152.0, 151.0, 50.0), None], prior=prior
+        )
+        self.assertFalse(self.localize_once(manager))
+        suspect = next(
+            data for name, data in manager.debug.events
+            if name == "visual_pose_suspect"
+        )
+        self.assertGreater(suspect["yaw_conflict_deg"], 25.0)
+
+    def test_position_only_jump_requires_confirmation(self):
+        prior = self.pose(150.0, 150.0, 0.0)
+        manager, _ = self.manager(
+            [self.pose(175.0, 150.0, 5.0), None], prior=prior
+        )
+        self.assertFalse(self.localize_once(manager))
+        suspect = next(
+            data for name, data in manager.debug.events
+            if name == "visual_pose_suspect"
+        )
+        self.assertGreater(suspect["position_conflict_cm"], 15.0)
+
+    def test_first_visual_pose_without_prior_is_accepted(self):
+        visual = self.pose(190.0, 180.0, 30.0)
+        manager, pans = self.manager([visual], prior=None)
+        self.assertTrue(self.localize_once(manager))
+        self.assertIs(manager.state.pose, visual)
+        self.assertEqual(pans, [100.0])
+
+    def test_medium_single_tag_jump_requires_confirmation(self):
+        prior = self.pose(150.0, 150.0, 0.0)
+        tags = [SimpleNamespace(tag_id=1, area=400.0, center=(320.0, 220.0))]
+        visual_a = self.pose(190.0, 150.0, 0.0)
+        visual_b = self.pose(193.0, 151.0, 2.0)
+        manager, _ = self.manager(
+            [visual_a, visual_b], prior=prior, tags=tags
+        )
+        self.assertTrue(self.localize_once(manager))
+        suspect = next(
+            data for name, data in manager.debug.events
+            if name == "visual_pose_suspect"
+        )
+        self.assertEqual(suspect["localization_quality"], "MEDIUM")
+        self.assertEqual(suspect["localization_tag_count"], 1)
+        self.assertIs(manager.state.pose, visual_b)
+
+    def test_high_quality_jump_still_requires_confirmation(self):
+        prior = self.pose(150.0, 150.0, 0.0)
+        tags = [
+            SimpleNamespace(tag_id=1, area=800.0, center=(300.0, 220.0)),
+            SimpleNamespace(tag_id=2, area=750.0, center=(340.0, 220.0)),
+        ]
+        visual_a = self.pose(190.0, 180.0, 30.0)
+        visual_b = self.pose(193.0, 182.0, 33.0)
+        manager, pans = self.manager(
+            [visual_a, visual_b], prior=prior, tags=tags
+        )
+        self.assertTrue(self.localize_once(manager))
+        self.assertEqual(pans, [100.0, 100.0])
+        suspect = next(
+            data for name, data in manager.debug.events
+            if name == "visual_pose_suspect"
+        )
+        self.assertEqual(suspect["localization_quality"], "HIGH")
+
+    def test_unavailable_confirmation_retains_prior_and_motion_state(self):
+        prior = self.pose(150.0, 150.0, 0.0)
+        manager, _ = self.manager(
+            [self.pose(190.0, 180.0, 30.0), None], prior=prior
+        )
+        manager.state.actions_since_localize = 4
+        manager.state.motion_uncertainty = 3.5
+        self.assertFalse(self.localize_once(manager))
+        self.assertIs(manager.state.pose, prior)
+        self.assertEqual(manager.state.actions_since_localize, 4)
+        self.assertEqual(manager.state.motion_uncertainty, 3.5)
+        self.assertEqual(
+            manager.last_localization_attempt_result,
+            "suspect_visual_pose_rejected",
+        )
+        names = [name for name, _ in manager.debug.events]
+        self.assertNotIn("localization_state_reset", names)
+        result = next(
+            data for name, data in manager.debug.events
+            if name == "visual_pose_confirmation_result"
+        )
+        self.assertEqual(result["decision"], "confirmation_pose_unavailable")
 
 
 class LocalizerDiagnosticTests(unittest.TestCase):

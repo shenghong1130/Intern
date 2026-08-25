@@ -169,9 +169,14 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "target_direct_entry_visual_pose_max_age_s": 4.0,
         "localization_fresh_high_s": 4.0,
         "localization_fresh_medium_s": 10.0,
-        # Diagnostic warning thresholds only; never reject an AprilTag pose.
+        # Large visual jumps require a second independent observation before
+        # replacing the currently installed pose.
         "localization_pose_conflict_distance_cm": 15.0,
         "localization_pose_conflict_yaw_deg": 25.0,
+        "localization_suspect_confirmation_enabled": True,
+        "localization_suspect_confirmation_distance_cm": 10.0,
+        "localization_suspect_confirmation_yaw_deg": 15.0,
+        "localization_suspect_confirmation_attempts": 1,
         "relocalize_after_each_action_batch": True,
         "replan_after_each_action_batch": True,
         "strafe_min_lateral_cm": 7.0,
