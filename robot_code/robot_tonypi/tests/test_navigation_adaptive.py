@@ -773,15 +773,74 @@ class PlannerPreferenceTests(unittest.TestCase):
         )
         return manager
 
-    def test_target_directly_behind_prefers_reverse_without_turn(self):
+    def test_far_target_directly_behind_does_not_reverse(self):
         manager = self.translation_manager()
-        action = manager.choose_translation_action(manager.state.pose, (100.0, 150.0))
+        action = manager.choose_translation_action(
+            manager.state.pose,
+            (100.0, 150.0),
+            final_goal_distance_cm=50.0,
+        )
+        self.assertTrue(action is None or action["kind"] != "reverse")
+        event = next(
+            data for name, data in manager.debug.events
+            if name == "reverse_preference_evaluated"
+        )
+        self.assertEqual(event["final_goal_distance_cm"], 50.0)
+        self.assertEqual(event["reverse_max_goal_distance_cm"], 10.0)
+        self.assertFalse(event["reverse_allowed_by_goal_distance"])
+        self.assertEqual(event["reverse_rejected_reason"], "goal_too_far_for_reverse")
+
+    def test_rear_goal_20cm_away_does_not_reverse(self):
+        manager = self.translation_manager()
+        action = manager.choose_translation_action(
+            manager.state.pose,
+            (130.0, 150.0),
+            final_goal_distance_cm=20.0,
+        )
+        self.assertTrue(action is None or action["kind"] != "reverse")
+
+    def test_rear_goal_10_1cm_away_does_not_reverse(self):
+        manager = self.translation_manager()
+        action = manager.choose_translation_action(
+            manager.state.pose,
+            (139.9, 150.0),
+            final_goal_distance_cm=10.1,
+        )
+        self.assertTrue(action is None or action["kind"] != "reverse")
+
+    def test_rear_goal_exactly_10cm_away_allows_reverse(self):
+        manager = self.translation_manager()
+        action = manager.choose_translation_action(
+            manager.state.pose,
+            (140.0, 150.0),
+            final_goal_distance_cm=10.0,
+        )
         self.assertIsNotNone(action)
         self.assertEqual(action["kind"], "reverse")
-        self.assertLess(action["planned_cm"], 0.0)
-        event = next(data for name, data in manager.debug.events if name == "translation_preferred")
-        self.assertTrue(event["reverse_preferred"])
-        self.assertEqual(event["turn_penalty"], 20.0)
+
+    def test_rear_goal_8cm_away_allows_reverse(self):
+        manager = self.translation_manager()
+        action = manager.choose_translation_action(
+            manager.state.pose,
+            (142.0, 150.0),
+            final_goal_distance_cm=8.0,
+        )
+        self.assertIsNotNone(action)
+        self.assertEqual(action["kind"], "reverse")
+
+    def test_near_rear_waypoint_with_far_final_goal_does_not_reverse(self):
+        manager = self.translation_manager()
+        action = manager.choose_translation_action(
+            manager.state.pose,
+            (142.0, 150.0),
+            final_goal_distance_cm=80.0,
+        )
+        self.assertTrue(action is None or action["kind"] != "reverse")
+        event = next(
+            data for name, data in manager.debug.events
+            if name == "reverse_preference_evaluated"
+        )
+        self.assertEqual(event["reverse_rejected_reason"], "goal_too_far_for_reverse")
 
     def test_reverse_batch_executes_back_fast_then_requests_relocalize(self):
         manager = self.translation_manager()
@@ -826,10 +885,17 @@ class PlannerPreferenceTests(unittest.TestCase):
             "minimum_wall_clearance_cm": 12.0,
         }
         action = manager.choose_translation_action(
-            manager.state.pose, (140.0, 150.0)
+            manager.state.pose,
+            (140.0, 150.0),
+            final_goal_distance_cm=50.0,
         )
         self.assertEqual(action["kind"], "reverse")
         self.assertTrue(action["corridor_metrics"]["clear"])
+        event = next(
+            data for name, data in manager.debug.events
+            if name == "reverse_preference_evaluated"
+        )
+        self.assertFalse(event["reverse_goal_distance_limit_enforced"])
 
         # Reproduce the old contradiction: normal navigation rejects the
         # prefix, although the start-escape planner has already accepted it.

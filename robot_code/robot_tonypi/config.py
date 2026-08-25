@@ -195,6 +195,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "reverse_prefer_rear_angle_tolerance_deg": 30.0,
         "reverse_prefer_min_distance_cm": 2.0,
         "reverse_prefer_max_lateral_cm": 8.0,
+        "reverse_prefer_max_goal_distance_cm": 10.0,
         "action_planner_reverse_cost": 1.08,
         "action_planner_reverse_step_cm": 10.0,
         "navigation_waypoint_lookahead_cm": 14.0,

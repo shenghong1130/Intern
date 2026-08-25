@@ -4323,6 +4323,7 @@ class TaskManager:
         waypoint: Tuple[float, float],
         screen: Screen,
         bypass_action_safety: bool = False,
+        final_goal_distance_cm: Optional[float] = None,
     ) -> Optional[dict]:
         """Choose forward first, then lateral, with a shortened final step."""
         nav = self.config["navigation"]
@@ -4341,6 +4342,13 @@ class TaskManager:
             )
 
         if forward < 0.0:
+            reverse_max_goal_distance_cm = float(
+                nav.get("reverse_prefer_max_goal_distance_cm", 10.0)
+            )
+            reverse_allowed_by_goal_distance = (
+                final_goal_distance_cm is None
+                or float(final_goal_distance_cm) <= reverse_max_goal_distance_cm
+            )
             rear_angle_error = math.degrees(
                 math.atan2(abs(float(lateral)), max(1e-6, -float(forward)))
             )
@@ -4350,12 +4358,35 @@ class TaskManager:
             next_xy = self.translated_pose_xy(pose, forward_cm=-step)
             next_distance = distance_xy(next_xy, waypoint)
             current_distance = distance_xy(pose.xy(), waypoint)
-            if (
-                rear_angle_error <= rear_tolerance
-                and abs(lateral) <= max_lateral
-                and next_distance < current_distance
-                and corridor_for(forward_cm=-step)
-            ):
+            reverse_rejected_reason = None
+            if not reverse_allowed_by_goal_distance:
+                reverse_rejected_reason = "goal_too_far_for_reverse"
+            elif rear_angle_error > rear_tolerance:
+                reverse_rejected_reason = "rear_angle_exceeds_tolerance"
+            elif abs(lateral) > max_lateral:
+                reverse_rejected_reason = "lateral_error_too_large"
+            elif next_distance >= current_distance:
+                reverse_rejected_reason = "would_not_reduce_goal_distance"
+            elif not corridor_for(forward_cm=-step):
+                reverse_rejected_reason = "rear_corridor_blocked"
+            self.debug.event(
+                "reverse_preference_evaluated",
+                navigation_mode="target_direct_approach",
+                selected_action="reverse" if reverse_rejected_reason is None else None,
+                target_local_forward_cm=round(float(forward), 2),
+                target_local_lateral_cm=round(float(lateral), 2),
+                target_rear_angle_error_deg=round(float(rear_angle_error), 2),
+                final_goal_distance_cm=(
+                    None
+                    if final_goal_distance_cm is None
+                    else round(float(final_goal_distance_cm), 2)
+                ),
+                reverse_max_goal_distance_cm=round(reverse_max_goal_distance_cm, 2),
+                reverse_allowed_by_goal_distance=reverse_allowed_by_goal_distance,
+                reverse_preferred=reverse_rejected_reason is None,
+                reverse_rejected_reason=reverse_rejected_reason,
+            )
+            if reverse_rejected_reason is None:
                 self.debug.event(
                     "reverse_short_target_selected",
                     navigation_mode="target_direct_approach",
@@ -4913,6 +4944,7 @@ class TaskManager:
         waypoint: Tuple[float, float],
         allow_goal_high_cost: bool = False,
         bypass_action_safety: bool = False,
+        final_goal_distance_cm: Optional[float] = None,
     ) -> Optional[dict]:
         nav_cfg = self.config["navigation"]
         if not bool(nav_cfg.get("translation_prefer_enabled", True)):
@@ -4941,13 +4973,25 @@ class TaskManager:
             return self.movement_corridor_metrics(pose.xy(), next_xy)
 
         reverse_rejected_reason = "disabled"
+        reverse_max_goal_distance_cm = float(
+            nav_cfg.get("reverse_prefer_max_goal_distance_cm", 10.0)
+        )
+        reverse_allowed_by_goal_distance = (
+            final_goal_distance_cm is None
+            or escape_mode
+            or float(final_goal_distance_cm) <= reverse_max_goal_distance_cm
+        )
         rear_angle_error = math.degrees(
             math.atan2(abs(float(lateral)), max(1e-6, -float(forward)))
         ) if forward < 0.0 else 180.0
         if bool(nav_cfg.get("reverse_prefer_enabled", True)) and "back_fast" in self.config["motion"]["actions"]:
-            reverse_rejected_reason = "target_not_behind"
+            reverse_rejected_reason = (
+                "target_not_behind"
+                if reverse_allowed_by_goal_distance
+                else "goal_too_far_for_reverse"
+            )
             rear_distance = -float(forward)
-            if forward < 0.0:
+            if reverse_allowed_by_goal_distance and forward < 0.0:
                 reverse_rejected_reason = "rear_angle_exceeds_tolerance"
                 if rear_angle_error <= float(
                     nav_cfg.get("reverse_prefer_rear_angle_tolerance_deg", 30.0)
@@ -5018,6 +5062,16 @@ class TaskManager:
             target_local_forward_cm=round(float(forward), 2),
             target_local_lateral_cm=round(float(lateral), 2),
             target_rear_angle_error_deg=round(float(rear_angle_error), 2),
+            final_goal_distance_cm=(
+                None
+                if final_goal_distance_cm is None
+                else round(float(final_goal_distance_cm), 2)
+            ),
+            reverse_max_goal_distance_cm=round(reverse_max_goal_distance_cm, 2),
+            reverse_goal_distance_limit_enforced=(
+                final_goal_distance_cm is not None and not escape_mode
+            ),
+            reverse_allowed_by_goal_distance=reverse_allowed_by_goal_distance,
             reverse_preferred=any(item["kind"] == "reverse" for item in options),
             reverse_rejected_reason=reverse_rejected_reason or None,
             movement_corridor_clear=any(item["kind"] == "reverse" for item in options),
@@ -7604,6 +7658,7 @@ class TaskManager:
                     waypoint,
                     target_screen,
                     bypass_action_safety=bypass_action_safety,
+                    final_goal_distance_cm=dist,
                 )
                 if direct_action is not None:
                     if not self.execute_target_direct_action(direct_action, target_screen, target_xy):
@@ -7617,6 +7672,7 @@ class TaskManager:
                 waypoint,
                 allow_goal_high_cost=waypoint_is_exact_goal,
                 bypass_action_safety=bypass_action_safety,
+                final_goal_distance_cm=dist,
             )
             if action is not None:
                 status = self.execute_translation_action(

@@ -116,11 +116,27 @@ class TargetDirectApproachTests(unittest.TestCase):
     def test_short_rear_target_uses_reverse_not_turn(self):
         manager = self.manager()
         pose = RobotPose(self.goal[0] + 6.22, self.goal[1] - 0.98, 0.0, Confidence.HIGH, "TEST", 1.0)
-        action = manager.choose_target_direct_action(pose, self.goal, self.screen)
+        action = manager.choose_target_direct_action(
+            pose,
+            self.goal,
+            self.screen,
+            final_goal_distance_cm=6.3,
+        )
         self.assertIsNotNone(action)
         self.assertEqual(action["kind"], "reverse")
         self.assertEqual(action["key"], "back_fast")
         self.assertEqual(action["times"], 1)
+
+    def test_far_rear_target_does_not_use_reverse(self):
+        manager = self.manager()
+        pose = RobotPose(self.goal[0] + 20.0, self.goal[1], 0.0, Confidence.HIGH, "TEST", 1.0)
+        action = manager.choose_target_direct_action(
+            pose,
+            self.goal,
+            self.screen,
+            final_goal_distance_cm=20.0,
+        )
+        self.assertTrue(action is None or action["kind"] != "reverse")
 
     def test_turn_costs_penalize_consecutive_and_reverse_turns(self):
         actions = self.model.action_planner_actions(

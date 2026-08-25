@@ -246,6 +246,7 @@
     "reverse_prefer_rear_angle_tolerance_deg": 30.0,
     "reverse_prefer_min_distance_cm": 2.0,
     "reverse_prefer_max_lateral_cm": 8.0,
+    "reverse_prefer_max_goal_distance_cm": 10.0,
     "action_planner_reverse_cost": 1.08,
     "action_planner_reverse_step_cm": 10.0,
     "navigation_waypoint_lookahead_cm": 14.0,
@@ -354,8 +355,8 @@
     "target_confirmation_recovery_max_cycles": 2,
     "sensor_left_offset_cm": 5.0,
     "left_hand_body_offset_cm": 0.0,
-    "flower_change_scan_timeout_s": 15.0,
-    "flower_change_attempt_timeout_s": 15.0,
+    "flower_change_scan_timeout_s": 25.0,
+    "flower_change_attempt_timeout_s": 25.0,
     "flower_change_response_timeout_s": 1.0,
     "left_hand_settle_s": 0.5
   },
