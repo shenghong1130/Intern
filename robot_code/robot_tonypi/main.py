@@ -37,6 +37,17 @@ def parse_args(argv=None):
     parser.add_argument("--config", default=str(default_config_path()))
     parser.add_argument("--load-pos", default=None, help="optional external load_pos.py or tag JSON")
     parser.add_argument("--classifier-url", default="http://192.168.31.81:8080/predict")
+    parser.add_argument(
+        "--classifier-mode",
+        choices=["direct", "central"],
+        default="direct",
+        help="send crops directly to a KV260 Worker or through Central Server",
+    )
+    parser.add_argument(
+        "--classifier-student-id",
+        default=None,
+        help="Central Server student_id used to select the FPGA Artifact",
+    )
     parser.add_argument("--team", default=None, help="registered contest team name used by robotall.send_request")
     parser.add_argument("--robot-id", default=None, help="registered robot ID used by robotall.send_request")
     parser.add_argument("--robot-name", default=None, help="deprecated fallback for both --team and --robot-id")
@@ -52,7 +63,10 @@ def parse_args(argv=None):
     parser.add_argument("--start-x", type=float, default=None, help="test-only manual start x")
     parser.add_argument("--start-y", type=float, default=None, help="test-only manual start y")
     parser.add_argument("--start-yaw", type=float, default=None, help="test-only manual start yaw")
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if args.classifier_mode == "central" and not str(args.classifier_student_id or "").strip():
+        parser.error("--classifier-student-id is required when --classifier-mode central")
+    return args
 
 
 def main(argv=None):

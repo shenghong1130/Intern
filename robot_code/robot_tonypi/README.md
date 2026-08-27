@@ -217,7 +217,7 @@ python3 -u -m robot_tonypi.main \
 
 `--skip-change` 保留真实相机、定位、导航和 FPGA 分类，但跳过专用 10 cm 动作、举手和 NFC；`--skip-api` 是同一参数的旧别名。
 
-### 5.6 正式运行
+### 5.6 正式运行（直连 KV260 Worker）
 
 ```bash
 python3 -u -m robot_tonypi.main \
@@ -230,6 +230,65 @@ python3 -u -m robot_tonypi.main \
   --debug --debug-host 0.0.0.0 --debug-port 8090 \
   --time-limit-s 570
 ```
+
+`direct` 是 `--classifier-mode` 的默认值。为保持旧部署兼容，上面的原命令无需增加任何参数：TonyPi 仍将 `crop_28x28` 编码为 JPEG，并只以 multipart `image` 字段直接提交给指定的 KV260 Worker。
+
+### 5.7 正式运行（通过 Central Server）
+
+运行前先确认 TonyPi 能访问 Central Server 的真实健康检查接口：
+
+```bash
+curl http://192.168.31.254:8000/health
+```
+
+还必须事先为本次使用的 `student_id` 上传状态为 ready 的 FPGA Artifact；否则 `/predict` 会返回 `404 student has no ready artifact`。
+
+```bash
+python3 -u -m robot_tonypi.main \
+  --mode mission \
+  --target-flower hehua \
+  --classifier-mode central \
+  --classifier-url http://192.168.31.254:8000/predict \
+  --classifier-student-id student01 \
+  --team YOUR_TEAM \
+  --robot-id YOUR_ROBOT_ID \
+  --robot-secret YOUR_SECRET \
+  --debug --debug-host 0.0.0.0 --debug-port 8090 \
+  --time-limit-s 570
+```
+
+`192.168.31.254` 只是当前测试 Central Server 的 IP，实际部署时应替换为服务器真实的局域网 IP。`student01` 必须与上传 FPGA Artifact 时使用的 `student_id` 完全一致。
+
+```text
+TonyPi
+   │
+   │ crop_28x28.jpg + student_id
+   │ HTTP POST /predict
+   ▼
+Central Server :8000
+   │
+   │ 根据 student_id 查找 Artifact
+   │ 调度可用 KV260
+   ▼
+KV260 Worker
+   │
+   ▼
+PYNQ Overlay
+   │
+   ▼
+AXI DMA → CNN FPGA IP → AXI DMA
+   │
+   ▼
+分类结果
+   │
+   ▼
+Central Server
+   │
+   ▼
+TonyPi
+```
+
+TonyPi 不再硬编码具体 KV260 Worker。Central Server 根据 `student_id` 找到对应 Artifact 并调度 Worker；TonyPi 只知道 Central Server。若请求进入队列，TonyPi 会按 `request_id` 有间隔地查询 `/requests/{request_id}`，并在 180 秒 deadline 到达后返回可重试错误，由现有任务恢复逻辑决定是否再次分类。
 
 可用花名：
 

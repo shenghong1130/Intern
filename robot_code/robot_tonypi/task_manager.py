@@ -109,7 +109,12 @@ class TaskManager:
         )
         self.localizer = Localizer(self.tag_poses, config)
         self.screen_detector = ScreenDetector(config, self.map)
-        self.classifier = ClassifierClient(args.classifier_url, dry_run=args.dry_run)
+        self.classifier = ClassifierClient(
+            args.classifier_url,
+            dry_run=args.dry_run,
+            mode=getattr(args, "classifier_mode", "direct"),
+            student_id=getattr(args, "classifier_student_id", None),
+        )
         team = getattr(args, "team", None) or getattr(args, "robot_name", None)
         robot_id = getattr(args, "robot_id", None) or getattr(args, "robot_name", None)
         self.interaction = RobotInteractionClient(
