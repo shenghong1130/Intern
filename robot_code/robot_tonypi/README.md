@@ -263,6 +263,7 @@ python3 -u -m robot_tonypi.main \
   --classifier-mode central \
   --classifier-url http://192.168.31.254:8000/predict \
   --classifier-student-id student01 \
+  --classifier-password student01 \
   --team YOUR_TEAM \
   --robot-id YOUR_ROBOT_ID \
   --robot-secret YOUR_SECRET \
