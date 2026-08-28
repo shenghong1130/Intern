@@ -17,6 +17,7 @@ class ClassifierClient:
         dry_run: bool = False,
         mode: str = "direct",
         student_id: Optional[str] = None,
+        password: Optional[str] = None,
         central_poll_deadline_s: float = 180.0,
         central_poll_interval_s: float = 0.5,
     ):
@@ -25,6 +26,7 @@ class ClassifierClient:
         self.dry_run = dry_run
         self.mode = str(mode or "direct").lower()
         self.student_id = student_id
+        self.password = password
         self.central_poll_deadline_s = max(0.0, float(central_poll_deadline_s))
         self.central_poll_interval_s = max(0.0, float(central_poll_interval_s))
 
@@ -50,6 +52,12 @@ class ClassifierClient:
                 error="classifier_student_id_missing",
                 error_kind="configuration_error",
             )
+        if self.mode == "central" and not str(self.password or "").strip():
+            return ClassificationResult(
+                ok=False,
+                error="classifier_password_missing",
+                error_kind="configuration_error",
+            )
         import cv2
         import requests
 
@@ -63,6 +71,7 @@ class ClassifierClient:
             if self.mode == "central":
                 response = requests.post(
                     self.url,
+                    headers=self._central_auth_headers(),
                     data={"student_id": str(self.student_id).strip()},
                     files=files,
                     timeout=max(0.001, self.central_poll_deadline_s),
@@ -73,7 +82,11 @@ class ClassifierClient:
         except requests.exceptions.RequestException as exc:
             return ClassificationResult(
                 ok=False,
-                error=str(exc),
+                error=(
+                    "central_server_request_failed {}".format(type(exc).__name__)
+                    if self.mode == "central"
+                    else str(exc)
+                ),
                 error_kind="service_unavailable",
                 retryable=True,
             )
@@ -107,12 +120,13 @@ class ClassifierClient:
             try:
                 response = requests.get(
                     request_url,
+                    headers=self._central_auth_headers(),
                     timeout=max(0.001, min(self.timeout_s, remaining)),
                 )
             except requests.exceptions.RequestException as exc:
                 return ClassificationResult(
                     ok=False,
-                    error=str(exc),
+                    error="central_server_poll_failed {}".format(type(exc).__name__),
                     error_kind="service_unavailable",
                     retryable=True,
                 )
@@ -140,6 +154,9 @@ class ClassifierClient:
         prefix = parts.path.rsplit("/", 1)[0].rstrip("/")
         path = "{}/requests/{}".format(prefix, quote(request_id, safe=""))
         return urlunsplit((parts.scheme, parts.netloc, path, "", ""))
+
+    def _central_auth_headers(self):
+        return {"X-Student-Password": str(self.password)}
 
     def _parse_central_envelope(self, envelope):
         status = str(envelope.get("status") or "").lower()
@@ -214,8 +231,7 @@ class ClassifierClient:
             raw=raw,
         )
 
-    @staticmethod
-    def _http_error(response, central: bool) -> ClassificationResult:
+    def _http_error(self, response, central: bool) -> ClassificationResult:
         retryable = response.status_code >= 500 or response.status_code in (408, 429)
         prefix = "central_server_http" if central else "http"
         detail = response.text[:120]
@@ -225,6 +241,8 @@ class ClassifierClient:
                 detail = str(payload["detail"])[:120]
         except ValueError:
             pass
+        if central and self.password:
+            detail = detail.replace(str(self.password), "<redacted>")
         return ClassificationResult(
             ok=False,
             error="{}_{} {}".format(prefix, response.status_code, detail),

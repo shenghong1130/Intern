@@ -241,7 +241,20 @@ python3 -u -m robot_tonypi.main \
 curl http://192.168.31.254:8000/health
 ```
 
-还必须事先为本次使用的 `student_id` 上传状态为 ready 的 FPGA Artifact；否则 `/predict` 会返回 `404 student has no ready artifact`。
+还必须事先使用本次运行所需的 `student_id` 和密码上传状态为 ready 的 FPGA Artifact；否则 `/predict` 会返回 `404 student has no ready artifact`。密码通过环境变量传给 TonyPi，不要写入命令、README 或配置文件：
+
+```bash
+read -s STUDENT_PASSWORD
+export STUDENT_PASSWORD
+
+curl -X POST http://192.168.31.254:8000/fpga/artifacts \
+  -F student_id=student01 \
+  -F password="$STUDENT_PASSWORD" \
+  -F bit=@design_1_wrapper.bit \
+  -F hwh=@design_1_wrapper.hwh
+```
+
+上传成功后，在同一个终端中使用完全相同的 `student_id` 和 `STUDENT_PASSWORD` 启动 TonyPi：
 
 ```bash
 python3 -u -m robot_tonypi.main \
@@ -257,13 +270,14 @@ python3 -u -m robot_tonypi.main \
   --time-limit-s 570
 ```
 
-`192.168.31.254` 只是当前测试 Central Server 的 IP，实际部署时应替换为服务器真实的局域网 IP。`student01` 必须与上传 FPGA Artifact 时使用的 `student_id` 完全一致。
+`192.168.31.254` 只是当前测试 Central Server 的 IP，实际部署时应替换为服务器真实的局域网 IP。`student01` 必须与上传 FPGA Artifact 时使用的 `student_id` 完全一致，`STUDENT_PASSWORD` 也必须与上传 Artifact 时设置的密码完全一致。也可通过 `--classifier-password` 显式传入密码，但正式运行推荐使用环境变量，避免密码出现在 shell 历史或进程命令行中。
 
 ```text
 TonyPi
    │
    │ crop_28x28.jpg + student_id
    │ HTTP POST /predict
+   │ Header: X-Student-Password
    ▼
 Central Server :8000
    │
@@ -288,7 +302,13 @@ Central Server
 TonyPi
 ```
 
-TonyPi 不再硬编码具体 KV260 Worker。Central Server 根据 `student_id` 找到对应 Artifact 并调度 Worker；TonyPi 只知道 Central Server。若请求进入队列，TonyPi 会按 `request_id` 有间隔地查询 `/requests/{request_id}`，并在 180 秒 deadline 到达后返回可重试错误，由现有任务恢复逻辑决定是否再次分类。
+TonyPi 不再硬编码具体 KV260 Worker。Central Server 先用 `student_id` 和 `X-Student-Password` 完成认证，再查找 Artifact 并调度 Worker；TonyPi 只知道 Central Server。若请求进入队列，TonyPi 会使用同一密码 Header，按 `request_id` 有间隔地查询 `/requests/{request_id}`，并在 180 秒 deadline 到达后返回可重试错误，由现有任务恢复逻辑决定是否再次分类。
+
+运行结束后可清除当前 shell 中的密码变量：
+
+```bash
+unset STUDENT_PASSWORD
+```
 
 可用花名：
 

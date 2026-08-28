@@ -1,5 +1,6 @@
 from pathlib import Path
 from types import SimpleNamespace
+import os
 import sys
 import unittest
 from unittest import mock
@@ -67,6 +68,7 @@ class ClassifierClientTests(unittest.TestCase):
         self.assertEqual(result.class_index, 8)
         self.assertEqual(result.confidence, 0.9)
         self.assertNotIn("data", self.requests.post.call_args.kwargs)
+        self.assertNotIn("headers", self.requests.post.call_args.kwargs)
         self.assertIn("image", self.requests.post.call_args.kwargs["files"])
         self.requests.get.assert_not_called()
 
@@ -88,6 +90,7 @@ class ClassifierClientTests(unittest.TestCase):
             "http://central:8000/predict",
             mode="central",
             student_id="student01",
+            password="test-password",
         ).classify_crop(object())
 
         self.assertTrue(result.ok)
@@ -97,6 +100,11 @@ class ClassifierClientTests(unittest.TestCase):
             self.requests.post.call_args.kwargs["data"],
             {"student_id": "student01"},
         )
+        self.assertEqual(
+            self.requests.post.call_args.kwargs["headers"],
+            {"X-Student-Password": "test-password"},
+        )
+        self.assertIn("image", self.requests.post.call_args.kwargs["files"])
         self.requests.get.assert_not_called()
 
     def test_central_202_queued_then_completed(self):
@@ -121,6 +129,7 @@ class ClassifierClientTests(unittest.TestCase):
                 "http://central:8000/predict",
                 mode="central",
                 student_id="student01",
+                password="test-password",
                 central_poll_interval_s=0.01,
             ).classify_crop(object())
 
@@ -131,6 +140,15 @@ class ClassifierClientTests(unittest.TestCase):
             self.requests.get.call_args_list[0].args[0],
             "http://central:8000/requests/req_1",
         )
+        self.assertEqual(
+            self.requests.post.call_args.kwargs["headers"],
+            {"X-Student-Password": "test-password"},
+        )
+        for call in self.requests.get.call_args_list:
+            self.assertEqual(
+                call.kwargs["headers"],
+                {"X-Student-Password": "test-password"},
+            )
 
     def test_central_queued_stops_at_deadline(self):
         self.requests.post.return_value = FakeResponse(
@@ -151,6 +169,7 @@ class ClassifierClientTests(unittest.TestCase):
                 "http://central:8000/predict",
                 mode="central",
                 student_id="student01",
+                password="test-password",
                 central_poll_deadline_s=0.05,
                 central_poll_interval_s=0.01,
             ).classify_crop(object())
@@ -172,6 +191,7 @@ class ClassifierClientTests(unittest.TestCase):
             "http://central:8000/predict",
             mode="central",
             student_id="student01",
+            password="test-password",
         ).classify_crop(object())
 
         self.assertFalse(result.ok)
@@ -180,18 +200,69 @@ class ClassifierClientTests(unittest.TestCase):
         self.assertIn("central_server_http_404", result.error)
         self.assertIn("student has no ready artifact", result.error)
 
-    def test_cli_defaults_to_direct_and_central_requires_student_id(self):
-        direct = parse_args(["--target-flower", "hehua"])
-        self.assertEqual(direct.classifier_mode, "direct")
-        self.assertIsNone(direct.classifier_student_id)
-        with self.assertRaises(SystemExit):
-            parse_args(["--target-flower", "hehua", "--classifier-mode", "central"])
-        central = parse_args([
-            "--target-flower", "hehua",
-            "--classifier-mode", "central",
-            "--classifier-student-id", "student01",
-        ])
+    def test_central_requires_password(self):
+        result = ClassifierClient(
+            "http://central:8000/predict",
+            mode="central",
+            student_id="student01",
+        ).classify_crop(object())
+
+        self.assertFalse(result.ok)
+        self.assertEqual(result.error, "classifier_password_missing")
+        self.assertEqual(result.error_kind, "configuration_error")
+        self.requests.post.assert_not_called()
+
+    def test_central_401_is_not_retryable(self):
+        self.requests.post.return_value = FakeResponse(
+            401,
+            {"detail": "invalid student credentials: test-password"},
+        )
+
+        result = ClassifierClient(
+            "http://central:8000/predict",
+            mode="central",
+            student_id="student01",
+            password="test-password",
+        ).classify_crop(object())
+
+        self.assertFalse(result.ok)
+        self.assertFalse(result.retryable)
+        self.assertEqual(result.error_kind, "http_error")
+        self.assertIn("central_server_http_401", result.error)
+        self.assertNotIn("test-password", result.error)
+        self.assertIn("<redacted>", result.error)
+
+    def test_cli_direct_needs_no_credentials_and_central_requires_both(self):
+        with mock.patch.dict(os.environ, {}, clear=True):
+            direct = parse_args(["--target-flower", "hehua"])
+            self.assertEqual(direct.classifier_mode, "direct")
+            self.assertIsNone(direct.classifier_student_id)
+            self.assertIsNone(direct.classifier_password)
+            with self.assertRaises(SystemExit):
+                parse_args(["--target-flower", "hehua", "--classifier-mode", "central"])
+            with self.assertRaises(SystemExit):
+                parse_args([
+                    "--target-flower", "hehua",
+                    "--classifier-mode", "central",
+                    "--classifier-student-id", "student01",
+                ])
+            explicit = parse_args([
+                "--target-flower", "hehua",
+                "--classifier-mode", "central",
+                "--classifier-student-id", "student01",
+                "--classifier-password", "explicit-password",
+            ])
+            self.assertEqual(explicit.classifier_password, "explicit-password")
+
+    def test_cli_uses_student_password_environment_variable(self):
+        with mock.patch.dict(os.environ, {"STUDENT_PASSWORD": "env-password"}):
+            central = parse_args([
+                "--target-flower", "hehua",
+                "--classifier-mode", "central",
+                "--classifier-student-id", "student01",
+            ])
         self.assertEqual(central.classifier_student_id, "student01")
+        self.assertEqual(central.classifier_password, "env-password")
 
 
 if __name__ == "__main__":

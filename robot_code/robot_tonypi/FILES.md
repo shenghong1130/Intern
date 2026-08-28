@@ -174,7 +174,7 @@ Debug 显示由 `_map_pt(xy) -> (y, x)` 转换，因此左上为 `(0,0)`、x 向
 
 ### `classifier.py`
 
-把 crop 编码成 JPEG，以 multipart `image` POST 到 FPGA `/predict`，默认 HTTP timeout 4 秒。连接异常、5xx、408、429 被标记为可恢复 service unavailable；无合法花名/JSON 属于 invalid response。
+把 crop 编码成 JPEG。`direct` 模式保持只以 multipart `image` POST 到 KV260 Worker `/predict`；`central` 模式额外提交 `student_id`，并在 POST `/predict` 和 queued GET `/requests/{request_id}` 中使用 `X-Student-Password`。连接异常、5xx、408、429 被标记为可恢复 service unavailable；401 等其他 HTTP 错误不可重试；无合法花名/JSON 属于 invalid response。
 
 ### `fpga_flower_server/fpga_server_api_ready.py`
 

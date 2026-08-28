@@ -114,6 +114,7 @@ class TaskManager:
             dry_run=args.dry_run,
             mode=getattr(args, "classifier_mode", "direct"),
             student_id=getattr(args, "classifier_student_id", None),
+            password=getattr(args, "classifier_password", None),
         )
         team = getattr(args, "team", None) or getattr(args, "robot_name", None)
         robot_id = getattr(args, "robot_id", None) or getattr(args, "robot_name", None)

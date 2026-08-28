@@ -3,6 +3,7 @@
 """Command line entry point for the TonyPi competition controller."""
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -48,6 +49,11 @@ def parse_args(argv=None):
         default=None,
         help="Central Server student_id used to select the FPGA Artifact",
     )
+    parser.add_argument(
+        "--classifier-password",
+        default=os.environ.get("STUDENT_PASSWORD"),
+        help="Central Server student password; defaults to STUDENT_PASSWORD environment variable",
+    )
     parser.add_argument("--team", default=None, help="registered contest team name used by robotall.send_request")
     parser.add_argument("--robot-id", default=None, help="registered robot ID used by robotall.send_request")
     parser.add_argument("--robot-name", default=None, help="deprecated fallback for both --team and --robot-id")
@@ -66,6 +72,11 @@ def parse_args(argv=None):
     args = parser.parse_args(argv)
     if args.classifier_mode == "central" and not str(args.classifier_student_id or "").strip():
         parser.error("--classifier-student-id is required when --classifier-mode central")
+    if args.classifier_mode == "central" and not str(args.classifier_password or "").strip():
+        parser.error(
+            "Central classifier password is required. "
+            "Use --classifier-password or set STUDENT_PASSWORD."
+        )
     return args
 
 
