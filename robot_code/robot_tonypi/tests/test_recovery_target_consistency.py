@@ -42,6 +42,8 @@ class TargetConsistencyTests(unittest.TestCase):
             self.assertEqual(goal.tag_id, screen_id)
             self.assertEqual(goal.anchor_xy, screen.center_xy)
             self.assertEqual(goal.goal_xy, screen.task_target_xy)
+            self.assertEqual(goal.navigation_staging_xy, screen.navigation_staging_xy)
+            self.assertEqual(goal.interaction_target_xy, screen.interaction_target_xy)
             self.assertEqual(goal.desired_yaw_deg, screen.task_target_yaw_deg)
             self.assertTrue(manager.validate_target_goal(goal))
 
@@ -58,6 +60,19 @@ class TargetConsistencyTests(unittest.TestCase):
         stale = replace(goal, goal_xy=manager.map.screens[23].task_target_xy)
         self.assertFalse(manager.validate_target_goal(stale, requested_xy=stale.goal_xy))
         self.assertTrue(any(name == "target_pose_mismatch" for name, _ in manager.debug.events))
+
+    def test_stale_staging_point_for_same_screen_is_rejected(self):
+        manager = geometry_manager()
+        goal = manager.lock_target_goal(manager.map.screens[26])
+        stale = replace(
+            goal,
+            navigation_staging_xy=manager.map.screens[23].navigation_staging_xy,
+        )
+        self.assertFalse(
+            manager.validate_target_goal(
+                stale, requested_xy=stale.navigation_staging_xy
+            )
+        )
 
 
 class InteriorRecoveryTests(unittest.TestCase):

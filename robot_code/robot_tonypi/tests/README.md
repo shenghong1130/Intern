@@ -52,7 +52,7 @@ python3 -m unittest robot_tonypi.tests.test_interaction_flow -v
 检查：
 
 - Tag/Screen/Worker 同 ID、地图参考坐标和 TargetGoal；
-- 最近 task target 选择、同距 ID 破平局、完成后按新 Pose 重排；
+- 最近 navigation staging 选择、同距 ID 破平局、完成后按新 Pose 重排；
 - classifier/authorization 必须锁定且已到达；
 - 已是目标花不执行物理交互；
 - turn progress、scan-after-turn 和 stale pose；
@@ -92,9 +92,9 @@ python3 -m unittest robot_tonypi.tests.test_navigation_adaptive -v
 python3 -m unittest robot_tonypi.tests.test_navigation_path_fallback -v
 ```
 
-## 7. `test_recovery_target_consistency.py`（5 项）
+## 7. `test_recovery_target_consistency.py`（6 项）
 
-检查所有配置 Screen 的 TargetGoal 原子一致性、Screen26 的 goal/anchor 区别、stale goal 拒绝、边缘 interior waypoint，以及保 yaw 的 strafe/reverse recovery。
+检查所有配置 Screen 的 TargetGoal 双目标点原子一致性、Screen26 的 goal/anchor 区别、stale interaction/staging goal 拒绝、边缘 interior waypoint，以及保 yaw 的 strafe/reverse recovery。
 
 ```bash
 python3 -m unittest robot_tonypi.tests.test_recovery_target_consistency -v
@@ -108,11 +108,12 @@ python3 -m unittest robot_tonypi.tests.test_recovery_target_consistency -v
 python3 -m unittest robot_tonypi.tests.test_target_direct_approach -v
 ```
 
-## 9. `test_target_standoff_flow.py`（43 项）
+## 9. `test_target_standoff_flow.py`（46 项）
 
 检查完整到点交互状态机：
 
-- `25 cm / -1 cm` 唯一 task target，最终 yaw 在正对屏幕基础上左偏 `5°`；
+- 同一 `face_center + outward normal` 生成 `40 cm` staging 和 `25 cm / -1 cm` interaction target，不受建筑中心/尺寸变化影响；
+- 普通导航只到 staging；到达后强制 `localize_scan()`，并从最新视觉 Pose 重规划 interaction approach；
 - `20→25 cm` 只沿 cardinal normal 移动 task-target XY，`0→+5°` 只改变目标 yaw；
 - 所有 interaction 几何/final-forward 参数都不改变 building bounds、grid、inflation 或 cost；
 - 当前 Tag 与同 ID Screen 绑定后才授权；
@@ -193,4 +194,4 @@ python3 -u -m robot_tonypi.tests.test_capture_15_frames
 python3 -m compileall -q robot_tonypi
 ```
 
-自动化测试不会证明以下真机参数正确：动作实际位移、相机内参、Tag 世界坐标、NFC 耦合距离、FPGA 网络稳定性、25 cm task target、5° yaw offset 和 17 cm final forward。正式运行前仍需现场验证。
+自动化测试不会证明以下真机参数正确：动作实际位移、相机内参、Tag 世界坐标、NFC 耦合距离、FPGA 网络稳定性、40 cm staging、25 cm interaction target、5° yaw offset 和 17 cm final forward。正式运行前仍需现场验证。

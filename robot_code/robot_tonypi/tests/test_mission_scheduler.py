@@ -29,6 +29,8 @@ def screen(screen_id, xy):
         interaction_yaw_deg=180.0,
         reader_xy=xy,
         screen_left_tangent_xy=(0.0, -1.0),
+        navigation_staging_xy=xy,
+        interaction_target_xy=xy,
         task_target_xy=xy,
         task_target_yaw_deg=180.0,
     )
@@ -345,18 +347,22 @@ class MissionSchedulerTests(unittest.TestCase):
         self.assertTrue(manager.turn_navigation_abort)
         self.assertEqual(manager.turn_no_progress_count, 2)
 
-    def test_nearest_target_uses_current_pose_to_configured_task_target(self):
+    def test_nearest_target_uses_current_pose_to_navigation_staging(self):
         old_near_new_far = screen(3, (30.0, 0.0))
         old_near_new_far.target_xy = (2.0, 0.0)
         old_near_new_far.task_target_xy = (30.0, 0.0)
+        old_near_new_far.interaction_target_xy = (30.0, 0.0)
+        old_near_new_far.navigation_staging_xy = (30.0, 0.0)
         old_far_new_near = screen(2, (10.0, 0.0))
         old_far_new_near.target_xy = (80.0, 0.0)
         old_far_new_near.task_target_xy = (10.0, 0.0)
+        old_far_new_near.interaction_target_xy = (10.0, 0.0)
+        old_far_new_near.navigation_staging_xy = (10.0, 0.0)
         manager = manager_at(0.0, 0.0, [old_near_new_far, old_far_new_near])
         self.assertEqual(manager.choose_nearest_screen().screen_id, 2)
         self.assertEqual(
             manager.last_target_plan["selection_rule"],
-            "euclidean_current_pose_to_task_target_then_tag_id",
+            "euclidean_current_pose_to_navigation_staging_then_tag_id",
         )
 
     def test_reselects_from_latest_pose_after_completion(self):
@@ -434,7 +440,7 @@ class MissionSchedulerTests(unittest.TestCase):
         manager.arrived_at_target = False
         self.assertIn("target_not_arrived", manager.visual_authorization_check(target, "mudan").reasons)
 
-    def test_navigation_goes_directly_to_single_configured_target(self):
+    def test_interaction_approach_goes_to_configured_interaction_target(self):
         target = screen(2, (25.0, -2.0))
         manager = TaskManager.__new__(TaskManager)
         manager.config = load_config(None)

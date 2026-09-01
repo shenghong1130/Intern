@@ -87,11 +87,15 @@ class RobotPose:
 
 @dataclass(frozen=True)
 class TargetGoal:
-    """Atomic, traceable target identity and canonical navigation pose."""
+    """Atomic target identity with separate staging and interaction poses."""
     screen_id: int
     tag_id: int
     anchor_xy: Tuple[float, float]
+    # Compatibility alias for the historical 25 cm task target.  Ordinary
+    # navigation must use navigation_staging_xy instead.
     goal_xy: Tuple[float, float]
+    navigation_staging_xy: Tuple[float, float]
+    interaction_target_xy: Tuple[float, float]
     desired_yaw_deg: float
     source: str
     generation_id: int
@@ -102,6 +106,8 @@ class TargetGoal:
             "tag_id": self.tag_id,
             "anchor_xy": list(self.anchor_xy),
             "goal_xy": list(self.goal_xy),
+            "navigation_staging_xy": list(self.navigation_staging_xy),
+            "interaction_target_xy": list(self.interaction_target_xy),
             "desired_yaw_deg": self.desired_yaw_deg,
             "source": self.source,
             "generation_id": self.generation_id,
@@ -140,7 +146,11 @@ class Screen:
     surface_face: str = "UNKNOWN"
     cardinal_normal_xy: Tuple[float, float] = (0.0, 0.0)
     face_center_xy: Optional[Tuple[float, float]] = None
+    navigation_staging_xy: Optional[Tuple[float, float]] = None
+    interaction_target_xy: Optional[Tuple[float, float]] = None
     tag_front_xy: Optional[Tuple[float, float]] = None
+    # Compatibility alias for interaction_target_xy.  Do not use this field as
+    # the ordinary A*/Action Planner destination.
     task_target_xy: Optional[Tuple[float, float]] = None
     task_target_yaw_deg: Optional[float] = None
     worker_id: Optional[int] = None
@@ -184,6 +194,8 @@ class Screen:
             "surface_face": self.surface_face,
             "cardinal_normal_xy": list(self.cardinal_normal_xy),
             "face_center_xy": None if self.face_center_xy is None else list(self.face_center_xy),
+            "navigation_staging_xy": None if self.navigation_staging_xy is None else list(self.navigation_staging_xy),
+            "interaction_target_xy": None if self.interaction_target_xy is None else list(self.interaction_target_xy),
             "tag_front_xy": None if self.tag_front_xy is None else list(self.tag_front_xy),
             "task_target_xy": None if self.task_target_xy is None else list(self.task_target_xy),
             "task_target_yaw_deg": self.task_target_yaw_deg,

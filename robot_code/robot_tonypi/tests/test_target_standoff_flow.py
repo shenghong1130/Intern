@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from robot_tonypi.config import default_config_path, load_config
 from robot_tonypi.hardware import TonyPiHardware
+from robot_tonypi.interaction_logic import build_interaction_geometry, face_center_from_bounds
 from robot_tonypi.load_pos import load_tag_pos
 from robot_tonypi.map_model import MapModel
 from robot_tonypi.models import (
@@ -43,6 +44,9 @@ def make_screen(screen_id=1, xy=(20.0, -1.0)):
         interaction_yaw_deg=180.0,
         reader_xy=(0.0, -5.0),
         screen_left_tangent_xy=(0.0, -1.0),
+        face_center_xy=(0.0, 0.0),
+        navigation_staging_xy=(40.0, 0.0),
+        interaction_target_xy=xy,
         task_target_xy=xy,
         task_target_yaw_deg=180.0,
         worker_id=screen_id,
@@ -112,7 +116,114 @@ def candidate(screen_id=1, tag_id=1):
 
 
 class TargetStandoffFlowTests(unittest.TestCase):
-    def test_map_screens_have_one_configured_target_with_lateral_offset(self):
+    def test_staging_and_interaction_distances_are_measured_from_face_center(self):
+        cfg = dict(load_config(None)["interaction"], target_lateral_offset_cm=0.0)
+        geometry = build_interaction_geometry((100.0, 100.0), (1.0, 0.0), cfg)
+        self.assertEqual(geometry["navigation_staging_xy"], (140.0, 100.0))
+        self.assertEqual(geometry["interaction_target_xy"], (125.0, 100.0))
+
+    def test_building_size_does_not_change_equal_face_geometry(self):
+        narrow = {"x_min": 80.0, "x_max": 100.0, "y_min": 90.0, "y_max": 110.0}
+        wide = {"x_min": 40.0, "x_max": 100.0, "y_min": 80.0, "y_max": 120.0}
+        narrow_face = face_center_from_bounds(narrow, "EAST")
+        wide_face = face_center_from_bounds(wide, "EAST")
+        self.assertEqual(narrow_face, wide_face)
+        cfg = dict(load_config(None)["interaction"], target_lateral_offset_cm=0.0)
+        narrow_geometry = build_interaction_geometry(narrow_face, (1.0, 0.0), cfg)
+        wide_geometry = build_interaction_geometry(wide_face, (1.0, 0.0), cfg)
+        self.assertEqual(
+            narrow_geometry["navigation_staging_xy"],
+            wide_geometry["navigation_staging_xy"],
+        )
+        self.assertEqual(
+            narrow_geometry["interaction_target_xy"],
+            wide_geometry["interaction_target_xy"],
+        )
+
+    def test_screen_navigation_stages_then_forces_visual_pose_before_interaction(self):
+        manager = TaskManager.__new__(TaskManager)
+        manager.config = load_config(None)
+        manager.map = MapModel(load_tag_pos(), manager.config)
+        manager.debug = DebugStub()
+        manager.current_target_screen_id = None
+        manager.current_target_goal = None
+        manager.target_generation_counter = 0
+        manager.last_navigation_failure_reason = ""
+        manager.state = SimpleNamespace(
+            pose=RobotPose(120.0, 120.0, 0.0, Confidence.HIGH, "START", 1.0)
+        )
+        target = manager.map.screens[1]
+        goal = manager.lock_target_goal(target)
+        navigation_calls = []
+
+        def navigate_to_xy(target_xy, **kwargs):
+            navigation_calls.append((tuple(target_xy), kwargs, manager.state.pose.source))
+            if tuple(target_xy) == goal.navigation_staging_xy:
+                manager.state.pose = RobotPose(
+                    target_xy[0], target_xy[1], goal.desired_yaw_deg,
+                    Confidence.MEDIUM, "DEAD_RECKONING_STAGE", 2.0,
+                )
+            else:
+                self.assertEqual(manager.state.pose.source, "VISUAL_STAGE")
+                manager.state.pose = RobotPose(
+                    target_xy[0], target_xy[1], goal.desired_yaw_deg,
+                    Confidence.HIGH, "VISUAL_STAGE", 4.0,
+                )
+            return True
+
+        manager.navigate_to_xy = navigate_to_xy
+        motion_calls = []
+        manager.motion = SimpleNamespace(
+            run=lambda key, times_override=1: motion_calls.append((key, times_override))
+            or ActionResult(key, key, times_override, 0.0, ok=True)
+        )
+        head_calls = []
+        manager.hardware = SimpleNamespace(center_head=lambda: head_calls.append("center"))
+        localization_calls = []
+
+        def localize_scan(**kwargs):
+            localization_calls.append(kwargs)
+            manager.state.pose = RobotPose(
+                goal.navigation_staging_xy[0] + 0.5,
+                goal.navigation_staging_xy[1] - 0.5,
+                goal.desired_yaw_deg,
+                Confidence.HIGH,
+                "VISUAL_STAGE",
+                3.0,
+            )
+            return True
+
+        manager.localize_scan = localize_scan
+
+        self.assertTrue(manager.navigate_to_screen(target))
+        self.assertEqual(navigation_calls[0][0], goal.navigation_staging_xy)
+        self.assertIsNone(navigation_calls[0][1]["target_screen"])
+        self.assertFalse(navigation_calls[0][1]["allow_goal_high_cost"])
+        self.assertFalse(navigation_calls[0][1]["bypass_action_safety"])
+        self.assertFalse(navigation_calls[0][1]["require_fresh_visual_on_arrival"])
+        self.assertEqual(navigation_calls[1][0], goal.interaction_target_xy)
+        self.assertIs(navigation_calls[1][1]["target_screen"], target)
+        self.assertTrue(navigation_calls[1][1]["bypass_action_safety"])
+        self.assertEqual(motion_calls, [("stand", 1)])
+        self.assertEqual(head_calls, ["center"])
+        self.assertEqual(localization_calls, [{
+            "reason": "target_staging_relocalize",
+            "allow_pan_search": True,
+            "allow_failure_escalation": False,
+        }])
+        names = [name for name, _ in manager.debug.events]
+        for name in (
+            "target_geometry_created",
+            "target_staging_navigation_started",
+            "target_staging_arrived",
+            "target_staging_relocalize_started",
+            "target_staging_relocalize_success",
+            "interaction_approach_started",
+            "interaction_target_arrived",
+        ):
+            self.assertIn(name, names)
+
+    def test_map_screens_have_distinct_staging_and_interaction_targets(self):
         config = load_config(None)
         model = MapModel(load_tag_pos(), config)
         desired_lateral = config["interaction"]["target_lateral_offset_cm"]
@@ -128,6 +239,15 @@ class TargetStandoffFlowTests(unittest.TestCase):
             self.assertAlmostEqual(lateral_distance, desired_lateral)
             self.assertEqual(item.target_xy, item.task_target_xy)
             self.assertEqual(item.interaction_xy, item.task_target_xy)
+            staging_rel = (
+                item.navigation_staging_xy[0] - item.face_center_xy[0],
+                item.navigation_staging_xy[1] - item.face_center_xy[1],
+            )
+            self.assertAlmostEqual(
+                staging_rel[0] * item.cardinal_normal_xy[0]
+                + staging_rel[1] * item.cardinal_normal_xy[1],
+                40.0,
+            )
             base_yaw = ((item.normal_yaw_deg + 360.0) % 360.0) - 180.0
             expected_yaw = ((base_yaw + yaw_offset + 180.0) % 360.0) - 180.0
             self.assertAlmostEqual(item.task_target_yaw_deg, expected_yaw)
@@ -201,6 +321,7 @@ class TargetStandoffFlowTests(unittest.TestCase):
         baseline_config = load_config(None)
         changed_config = load_config(None)
         changed_config["interaction"].update({
+            "navigation_standoff_cm": 55.0,
             "target_distance_cm": 20.0,
             "target_lateral_offset_cm": 3.0,
             "target_yaw_offset_deg": -12.0,
@@ -957,19 +1078,24 @@ class TargetStandoffFlowTests(unittest.TestCase):
             calls = {getattr(call.func, "attr", "") for call in ast.walk(fn) if isinstance(call, ast.Call)}
             self.assertTrue(forbidden.isdisjoint(calls), (name, calls & forbidden))
 
-    def test_configuration_has_no_old_two_stage_distance(self):
+    def test_configuration_keeps_three_distinct_interaction_distances(self):
         config = load_config(None)
         production_config = load_config(str(default_config_path()))
+        self.assertEqual(config["interaction"]["navigation_standoff_cm"], 40.0)
         self.assertEqual(config["interaction"]["target_distance_cm"], 25.0)
         self.assertEqual(config["interaction"]["target_lateral_offset_cm"], -1.0)
         self.assertEqual(config["interaction"]["target_yaw_offset_deg"], 5.0)
         self.assertEqual(config["vision"]["bound_classification_cache_ttl_s"], 15.0)
         self.assertEqual(config["vision"]["bound_classification_min_interval_s"], 1.0)
         self.assertEqual(config["interaction"]["target_final_forward_cm"], 17.0)
+        self.assertEqual(
+            production_config["interaction"]["navigation_standoff_cm"], 40.0
+        )
         self.assertEqual(config["navigation"]["target_arrival_radius_cm"], 4.0)
         self.assertNotIn("target_arrival_distance_cm", config["map"])
-        self.assertNotIn("interaction_staging_distance_cm", config["interaction"])
-        self.assertNotIn("interaction_staging_arrival_radius_cm", config["interaction"])
+        self.assertEqual(
+            config["interaction"]["navigation_staging_arrival_radius_cm"], 8.0
+        )
         self.assertNotIn("interaction_forward_10cm", config["motion"]["actions"])
         self.assertNotIn(
             "interaction_forward_10cm",

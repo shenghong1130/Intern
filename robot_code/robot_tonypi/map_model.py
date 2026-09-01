@@ -98,10 +98,15 @@ class MapModel:
                 surface_face=surface["face"],
                 cardinal_normal_xy=surface["normal_xy"],
                 face_center_xy=face_center,
+                navigation_staging_xy=geometry["navigation_staging_xy"],
+                interaction_target_xy=geometry["interaction_target_xy"],
                 # This is an immutable map anchor on the physical building
-                # face.  Configured task stand-off belongs only to target_xy.
+                # face. Configured stand-offs belong only to navigation and
+                # interaction target geometry.
                 tag_front_xy=face_center,
-                task_target_xy=target,
+                # Compatibility alias: this remains the 25 cm interaction
+                # point, never the ordinary navigation destination.
+                task_target_xy=geometry["interaction_target_xy"],
                 task_target_yaw_deg=geometry["interaction_yaw_deg"],
                 worker_id=int(tag_id),
             )

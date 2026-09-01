@@ -108,8 +108,8 @@ def face_center_from_bounds(bounds: dict, face: str) -> Tuple[float, float]:
     raise ValueError("unknown building face: {}".format(face))
 
 
-def build_interaction_geometry(center_xy: Tuple[float, float], normal_xy: Tuple[float, float], cfg: dict) -> dict:
-    """Build reader, body target and facing yaw in the screen-local frame."""
+def build_interaction_geometry(face_center_xy: Tuple[float, float], normal_xy: Tuple[float, float], cfg: dict) -> dict:
+    """Build staging and interaction targets from one physical face center."""
     norm = math.hypot(float(normal_xy[0]), float(normal_xy[1]))
     if norm <= 1e-9:
         raise ValueError("screen normal must be non-zero")
@@ -124,14 +124,19 @@ def build_interaction_geometry(center_xy: Tuple[float, float], normal_xy: Tuple[
     screen_left = (normal[1], -normal[0])
     sensor_left = float(cfg["sensor_left_offset_cm"])
     target_lateral = float(cfg.get("target_lateral_offset_cm", -1.0))
+    navigation_standoff = float(cfg["navigation_standoff_cm"])
     target_distance = float(cfg["target_distance_cm"])
     reader = (
-        float(center_xy[0]) + screen_left[0] * sensor_left,
-        float(center_xy[1]) + screen_left[1] * sensor_left,
+        float(face_center_xy[0]) + screen_left[0] * sensor_left,
+        float(face_center_xy[1]) + screen_left[1] * sensor_left,
     )
     interaction = (
-        float(center_xy[0]) + normal[0] * target_distance + robot_left[0] * target_lateral,
-        float(center_xy[1]) + normal[1] * target_distance + robot_left[1] * target_lateral,
+        float(face_center_xy[0]) + normal[0] * target_distance + robot_left[0] * target_lateral,
+        float(face_center_xy[1]) + normal[1] * target_distance + robot_left[1] * target_lateral,
+    )
+    staging = (
+        float(face_center_xy[0]) + normal[0] * navigation_standoff,
+        float(face_center_xy[1]) + normal[1] * navigation_standoff,
     )
     yaw_offset = float(cfg.get("target_yaw_offset_deg", 0.0))
     interaction_yaw = ((base_interaction_yaw + yaw_offset + 180.0) % 360.0) - 180.0
@@ -140,6 +145,8 @@ def build_interaction_geometry(center_xy: Tuple[float, float], normal_xy: Tuple[
         "normal_yaw_deg": ((normal_yaw + 180.0) % 360.0) - 180.0,
         "screen_left_tangent_xy": screen_left,
         "reader_xy": reader,
+        "navigation_staging_xy": staging,
+        "interaction_target_xy": interaction,
         "target_xy": interaction,
         "interaction_xy": interaction,
         "interaction_yaw_deg": interaction_yaw,

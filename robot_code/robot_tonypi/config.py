@@ -337,6 +337,8 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         },
     },
     "interaction": {
+        "navigation_standoff_cm": 40.0,
+        "navigation_staging_arrival_radius_cm": 8.0,
         "target_distance_cm": 25.0,
         "target_lateral_offset_cm": -1.0,
         "target_yaw_offset_deg": 5.0,

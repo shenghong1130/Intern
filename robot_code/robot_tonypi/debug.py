@@ -59,7 +59,7 @@ const statusZh={UNKNOWN:'未知',NEEDS_CHANGE:'需要换花',INTERACTING:'交互
 const modeZh={mission:'完整任务',localize:'仅定位',harvest:'仅扫描识别'};
 const phaseZh={idle:'空闲',transaction_start:'交互开始',stand:'站立',left_hand_lifted:'左手已举起',worker_request_sent:'已发送 Worker 请求',worker_response:'收到 Worker 响应',transaction_end:'交互结束'};
 const reasonZh={target_confirmation_missing:'缺少任务点目标确认',confirmation_screen_mismatch:'确认屏幕不匹配',confirmation_tag_mismatch:'确认Tag不匹配',confirmation_binding_missing:'确认时Tag与屏幕未绑定',visual_authorization_missing:'缺少目标视觉授权',authorization_screen_mismatch:'授权屏幕不匹配',authorization_tag_mismatch:'授权 Tag 不匹配',authorization_binding_missing:'Tag 与屏幕未绑定',authorization_flower_mismatch:'授权花朵结果不匹配',flower_unknown:'花朵未知',already_target:'已是目标花',flower_changed_since_capture:'拍摄后花朵状态改变',target_lock_mismatch:'当前目标锁不匹配',target_not_arrived:'当前目标未到达'};
-const eventZh={mission_state:'任务状态',navigation_mode:'导航模式',target_direct_approach_action:'近目标直达动作',target_direct_recovery_suppressed:'末段抑制近墙恢复',transit_bindings_updated:'途中几何绑定更新',arrived_at_target:'已到达当前目标',target_tag_and_screen_confirmed:'目标Tag与屏幕确认',target_visual_authorized:'FPGA视觉授权成功',target_visual_confirmation_failed:'目标视觉确认失败',target_classification_failed:'当前目标分类失败',classifier_gate_blocked:'分类入口阻止',target_final_forward_started:'开始最终前进',target_final_forward_done:'已完成最终前进',target_final_forward_failed:'最终前进动作失败',screen_needs_change:'屏幕需要换花',already_target:'已是目标花',target_selected:'已选择最近目标',interaction_safety_gate_blocked:'交互授权阻止',interaction_changed:'换花成功',interaction_not_changed:'换花未成功',interaction_exception:'交互异常',left_hand_lifted:'左手已举起',worker_request_sent:'已发送 Worker 请求',worker_response:'收到 Worker 响应',navigate_failed:'导航失败',localize_failed:'定位失败',pose_update:'定位已更新',action:'执行动作',recovery_start:'开始恢复',recovery_done:'恢复完成',turn_no_progress:'转向无进展',suspect_stale_pose_after_turn:'转向后疑似旧位姿',turn_direction_conflict:'转向方向冲突',scan_after_turn_pose_rejected:'拒绝转向后视觉位姿',turn_progress_relocalize:'转向进展强制重定位',turn_progress_failed:'转向进展失败',turn_progress_restored:'转向进展恢复'};
+const eventZh={mission_state:'任务状态',navigation_mode:'导航模式',target_geometry_created:'目标双点几何已生成',target_staging_navigation_started:'开始导航至40cm预备点',target_staging_arrived:'已到达40cm预备点',target_staging_relocalize_started:'预备点强制视觉定位开始',target_staging_relocalize_success:'预备点视觉定位成功',target_staging_relocalize_failed:'预备点视觉定位失败',interaction_approach_started:'开始靠近25cm交互点',interaction_target_arrived:'已到达25cm交互点',target_direct_approach_action:'近目标直达动作',target_direct_recovery_suppressed:'末段抑制近墙恢复',transit_bindings_updated:'途中几何绑定更新',arrived_at_target:'已到达当前目标',target_tag_and_screen_confirmed:'目标Tag与屏幕确认',target_visual_authorized:'FPGA视觉授权成功',target_visual_confirmation_failed:'目标视觉确认失败',target_classification_failed:'当前目标分类失败',classifier_gate_blocked:'分类入口阻止',target_final_forward_started:'开始最终前进',target_final_forward_done:'已完成最终前进',target_final_forward_failed:'最终前进动作失败',screen_needs_change:'屏幕需要换花',already_target:'已是目标花',target_selected:'已选择最近目标',interaction_safety_gate_blocked:'交互授权阻止',interaction_changed:'换花成功',interaction_not_changed:'换花未成功',interaction_exception:'交互异常',left_hand_lifted:'左手已举起',worker_request_sent:'已发送 Worker 请求',worker_response:'收到 Worker 响应',navigate_failed:'导航失败',localize_failed:'定位失败',pose_update:'定位已更新',action:'执行动作',recovery_start:'开始恢复',recovery_done:'恢复完成',turn_no_progress:'转向无进展',suspect_stale_pose_after_turn:'转向后疑似旧位姿',turn_direction_conflict:'转向方向冲突',scan_after_turn_pose_rejected:'拒绝转向后视觉位姿',turn_progress_relocalize:'转向进展强制重定位',turn_progress_failed:'转向进展失败',turn_progress_restored:'转向进展恢复'};
 function bi(value,dict){const raw=String(value===null||value===undefined?'':value); return dict[raw]?`${dict[raw]} / ${raw}`:raw;}
 function reasonsBi(values){return (values||[]).map(x=>bi(x,reasonZh)).join(',')||'-';}
 function renderSummary(data){
@@ -84,7 +84,7 @@ function renderSummary(data){
     '<b>任务状态 / Mission state</b>: '+esc(data.mission_state||'-')+'<br>'+
     '<b>当前目标 / Current target</b>: Tag '+esc(data.current_target_tag_id||'-')+', Screen '+esc(targetScreen.screen_id||'-')+
     ' '+(targetScreen.status?`<span class="${clsForStatus(targetScreen.status)}">${esc(bi(targetScreen.status,statusZh))}</span>`:'')+'<br>'+
-    '<b>最近目标选择 / Nearest selection</b>: 距离/distance='+esc(fmt(data.current_target_distance_cm,1))+'cm, task target='+esc((plan.task_target_xy||[]).join(','))+', yaw='+esc(fmt(plan.task_target_yaw_deg,1))+'°, face='+esc(plan.surface_face||'-')+', normal='+esc((plan.cardinal_normal_xy||[]).join(','))+', 剩余/remaining='+esc((data.remaining_target_ids||[]).join(','))+'<br>'+
+    '<b>最近目标选择 / Nearest selection</b>: 距离/distance='+esc(fmt(data.current_target_distance_cm,1))+'cm, STAGING='+esc((plan.navigation_staging_xy||targetScreen.navigation_staging_xy||[]).join(','))+', INTERACTION='+esc((plan.interaction_target_xy||targetScreen.interaction_target_xy||[]).join(','))+', yaw='+esc(fmt(plan.task_target_yaw_deg,1))+'°, face='+esc(plan.surface_face||'-')+', normal='+esc((plan.cardinal_normal_xy||[]).join(','))+', 剩余/remaining='+esc((data.remaining_target_ids||[]).join(','))+'<br>'+
     '<b>任务点确认与分类授权 / Confirmation & authorization</b>: arrived='+esc(data.arrived_at_target)+', confirmedTag='+esc(confirmation.tag_id||'-')+', confirmedScreen='+esc(confirmation.screen_id||'-')+', bound='+esc(confirmation.binding_ok)+', source='+esc(authorization.source||'-')+', cacheAge='+esc(fmt(authorization.cache_age_s,2))+'s, finalForward='+esc(data.final_forward_executed)+', flower='+esc(authorization.flower||'-')+', confidence='+esc(fmt(authorization.confidence,3))+'<br>'+
     '<b>途中几何绑定 / Transit bindings</b>: '+esc(Object.keys(bindings).join(',')||'-')+'（只框屏幕并绑定左上 Tag，不分类 / geometry only）<br>'+
     '<b>Tag/定位健康 / Localization health</b>: 无Tag扫描/noTagScans='+esc(health.consecutive_no_tag_scans||0)+
@@ -143,7 +143,7 @@ function renderScreens(data){
   let rows='';
   Object.values(screens).sort((a,b)=>a.screen_id-b.screen_id).forEach(s=>{
     const status=s.status||'';
-    rows+=`<tr><td>${esc(s.screen_id)}</td><td>${esc(s.worker_id||'-')}</td><td class="${clsForStatus(status)}">${esc(bi(status,statusZh))}</td><td>${esc(s.attempts)}</td><td>${esc(s.last_classification||'-')}</td><td>${esc(fmt(s.last_confidence,3))}</td><td>${esc((s.task_target_xy||s.target_xy||[]).join(','))} @ ${esc(fmt(s.task_target_yaw_deg===null?s.interaction_yaw_deg:s.task_target_yaw_deg,1))}deg</td><td>${esc(s.surface_face||'-')} / ${esc((s.cardinal_normal_xy||[]).join(','))}</td><td>${esc((s.notes||[]).join('; '))}</td></tr>`;
+    rows+=`<tr><td>${esc(s.screen_id)}</td><td>${esc(s.worker_id||'-')}</td><td class="${clsForStatus(status)}">${esc(bi(status,statusZh))}</td><td>${esc(s.attempts)}</td><td>${esc(s.last_classification||'-')}</td><td>${esc(fmt(s.last_confidence,3))}</td><td>S ${esc((s.navigation_staging_xy||[]).join(','))}<br>I ${esc((s.interaction_target_xy||s.task_target_xy||s.target_xy||[]).join(','))} @ ${esc(fmt(s.task_target_yaw_deg===null?s.interaction_yaw_deg:s.task_target_yaw_deg,1))}deg</td><td>${esc(s.surface_face||'-')} / ${esc((s.cardinal_normal_xy||[]).join(','))}</td><td>${esc((s.notes||[]).join('; '))}</td></tr>`;
   });
   document.getElementById('screens').innerHTML =
     '<table><tr><th>屏幕 / Screen</th><th>Worker</th><th>状态 / Status</th><th>尝试 / Attempts</th><th>花朵 / Flower</th><th>置信度 / Conf</th><th>任务位姿 / Target pose</th><th>目标面 / Face-normal</th><th>备注 / Notes</th></tr>'+rows+'</table>';
@@ -151,7 +151,7 @@ function renderScreens(data){
 function renderEvents(events){
   events=events||[];
   if(!events.length){document.getElementById('events').innerHTML='暂无事件 / No events yet.';return;}
-  const important=new Set(['mission_state','navigation_mode','target_direct_approach_action','target_direct_recovery_suppressed','transit_bindings_updated','arrived_at_target','target_tag_and_screen_confirmed','target_visual_authorized','target_visual_confirmation_failed','target_classification_failed','classifier_gate_blocked','interaction_safety_gate_blocked','target_final_forward_started','target_final_forward_done','target_final_forward_failed','interaction_changed','interaction_not_changed','interaction_exception','left_hand_lifted','worker_request_sent','worker_response','already_target','classification_failed','classification_low_confidence','target_selected','target_goal_resolved','target_goal_validated','target_pose_mismatch','navigate_xy_arrival_check','target_tag_confirmed','target_classifier_unavailable','target_classifier_retry','target_classifier_recovered','recovery_waypoint_selected','recovery_action','recovery_localization_success','resume_original_target','target_not_completed_after_arrival','navigate_failed','target_failed','mission_complete','near_wall_recover','front_obstacle_recover','forward_blocked_by_map','forward_no_progress','visual_forward_no_progress','visual_progress_check_inconclusive','visual_forward_progress_restored','no_tag_recovery_triggered','recovery_start','recovery_backoff_localize_attempt','recovery_done','translation_step','turn_last_resort','turn_last_resort_noop','scan_after_turn_done','scan_after_turn_failed','turn_no_progress','suspect_stale_pose_after_turn','turn_direction_conflict','scan_after_turn_pose_rejected','turn_progress_relocalize','turn_progress_failed','turn_progress_restored','boundary_pan_filtered','boundary_safe_turn','boundary_recovery_target_selected','boundary_blind_nav_start','boundary_blind_nav_step','boundary_blind_nav_arrived','boundary_blind_nav_failed','localize_skipped_boundary_outward','head_recenter_after_scan','head_recenter_failed','action','pose_update']);
+  const important=new Set(['mission_state','navigation_mode','target_geometry_created','target_staging_navigation_started','target_staging_arrived','target_staging_relocalize_started','target_staging_relocalize_success','target_staging_relocalize_failed','interaction_approach_started','interaction_target_arrived','target_direct_approach_action','target_direct_recovery_suppressed','transit_bindings_updated','arrived_at_target','target_tag_and_screen_confirmed','target_visual_authorized','target_visual_confirmation_failed','target_classification_failed','classifier_gate_blocked','interaction_safety_gate_blocked','target_final_forward_started','target_final_forward_done','target_final_forward_failed','interaction_changed','interaction_not_changed','interaction_exception','left_hand_lifted','worker_request_sent','worker_response','already_target','classification_failed','classification_low_confidence','target_selected','target_goal_resolved','target_goal_validated','target_pose_mismatch','navigate_xy_arrival_check','target_tag_confirmed','target_classifier_unavailable','target_classifier_retry','target_classifier_recovered','recovery_waypoint_selected','recovery_action','recovery_localization_success','resume_original_target','target_not_completed_after_arrival','navigate_failed','target_failed','mission_complete','near_wall_recover','front_obstacle_recover','forward_blocked_by_map','forward_no_progress','visual_forward_no_progress','visual_progress_check_inconclusive','visual_forward_progress_restored','no_tag_recovery_triggered','recovery_start','recovery_backoff_localize_attempt','recovery_done','translation_step','turn_last_resort','turn_last_resort_noop','scan_after_turn_done','scan_after_turn_failed','turn_no_progress','suspect_stale_pose_after_turn','turn_direction_conflict','scan_after_turn_pose_rejected','turn_progress_relocalize','turn_progress_failed','turn_progress_restored','boundary_pan_filtered','boundary_safe_turn','boundary_recovery_target_selected','boundary_blind_nav_start','boundary_blind_nav_step','boundary_blind_nav_arrived','boundary_blind_nav_failed','localize_skipped_boundary_outward','head_recenter_after_scan','head_recenter_failed','action','pose_update']);
   let rows='';
   events.slice().reverse().forEach(e=>{
     const detail=Object.assign({}, e); delete detail.t; delete detail.event;
@@ -275,23 +275,44 @@ setInterval(refresh,800);
             if target_screen is not None and screen.screen_id == target_screen.screen_id:
                 color = (40, 80, 240)
             c = self._map_pt(screen.center_xy, scale, img.shape[0])
-            target = self._map_pt(screen.target_xy, scale, img.shape[0])
+            interaction_xy = screen.interaction_target_xy or screen.target_xy
+            staging_xy = screen.navigation_staging_xy or interaction_xy
+            target = self._map_pt(interaction_xy, scale, img.shape[0])
+            staging = self._map_pt(staging_xy, scale, img.shape[0])
             reader = self._map_pt(screen.reader_xy, scale, img.shape[0])
             cv2.circle(img, c, 4, color, -1)
+            cv2.drawMarker(img, staging, (0, 150, 255), cv2.MARKER_DIAMOND, 10, 1)
             cv2.circle(img, target, 4, (220, 80, 40), -1)
             cv2.circle(img, reader, 2, (180, 0, 180), -1)
             cv2.putText(img, str(screen.screen_id), (c[0] + 4, c[1] - 4), cv2.FONT_HERSHEY_SIMPLEX, 0.35, color, 1)
         if target_goal is not None:
             anchor_xy = target_goal.anchor_xy if hasattr(target_goal, "anchor_xy") else target_goal.get("anchor_xy")
-            goal_xy = target_goal.goal_xy if hasattr(target_goal, "goal_xy") else target_goal.get("goal_xy")
+            staging_xy = (
+                target_goal.navigation_staging_xy
+                if hasattr(target_goal, "navigation_staging_xy")
+                else target_goal.get("navigation_staging_xy")
+            )
+            interaction_xy = (
+                target_goal.interaction_target_xy
+                if hasattr(target_goal, "interaction_target_xy")
+                else target_goal.get("interaction_target_xy")
+            )
+            if staging_xy is None:
+                staging_xy = target_goal.goal_xy if hasattr(target_goal, "goal_xy") else target_goal.get("goal_xy")
+            if interaction_xy is None:
+                interaction_xy = target_goal.goal_xy if hasattr(target_goal, "goal_xy") else target_goal.get("goal_xy")
             screen_id = target_goal.screen_id if hasattr(target_goal, "screen_id") else target_goal.get("screen_id")
             anchor = self._map_pt(anchor_xy, scale, img.shape[0])
-            goal = self._map_pt(goal_xy, scale, img.shape[0])
+            staging = self._map_pt(staging_xy, scale, img.shape[0])
+            interaction = self._map_pt(interaction_xy, scale, img.shape[0])
             cv2.circle(img, anchor, 8, (0, 180, 0), 2)
-            cv2.drawMarker(img, goal, (0, 0, 255), cv2.MARKER_CROSS, 16, 2)
-            cv2.line(img, anchor, goal, (0, 120, 255), 1)
+            cv2.drawMarker(img, staging, (0, 150, 255), cv2.MARKER_DIAMOND, 18, 2)
+            cv2.drawMarker(img, interaction, (0, 0, 255), cv2.MARKER_CROSS, 16, 2)
+            cv2.line(img, anchor, staging, (0, 150, 255), 1)
+            cv2.line(img, anchor, interaction, (0, 0, 255), 1)
             cv2.putText(img, "TARGET {} anchor".format(screen_id), (anchor[0] + 7, anchor[1] + 14), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 120, 0), 1)
-            cv2.putText(img, "GOAL {}".format(screen_id), (goal[0] + 7, goal[1] - 7), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 220), 1)
+            cv2.putText(img, "STAGING 40cm", (staging[0] + 7, staging[1] + 14), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 110, 220), 1)
+            cv2.putText(img, "INTERACTION 25cm", (interaction[0] + 7, interaction[1] - 7), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 220), 1)
         if recovery_waypoint is not None:
             xy = recovery_waypoint.get("xy") or recovery_waypoint.get("recovery_xy")
             if xy:

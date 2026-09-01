@@ -66,7 +66,7 @@ main.py
 - `Confidence`：HIGH/MEDIUM/LOW/UNKNOWN；
 - `ScreenStatus`：UNKNOWN、NEEDS_CHANGE、INTERACTING、CHANGED、ALREADY_TARGET、FAILED；
 - `MissionState`：定位、目标选择、导航、确认、分类、NFC、retreat、complete/timeout/blocked 等可观测状态；
-- `TargetGoal`：原子化 screen/tag/anchor/goal/yaw/generation；
+- `TargetGoal`：原子化 screen/tag/anchor/navigation staging/interaction target/yaw/generation；
 - `TargetTagConfirmation`、`TargetVisualConfirmation`、`VisualAuthorization`；
 - `RecentBoundFlowerObservation`：每个 Screen 最新有效 Tag↔Screen 分类证据；
 - `WorkerChangeResult`、`InteractionAuthorizationCheck`、动作结果等。
@@ -85,9 +85,9 @@ main.py
 
 #### 目标生命周期
 
-- `configure_cardinal_task_targets()`：从建筑面生成 `25 cm / -1 cm` task target，并仅对最终 yaw 增加 `+5°`；
+- `configure_cardinal_task_targets()`：从同一建筑面中心和外法线生成 `40 cm` staging 与 `25 cm / -1 cm` interaction target，并仅对最终 yaw 增加 `+5°`；
 - `resolve_target_goal()`、`lock_target_goal()`、`validate_target_goal()`：原子化目标身份与坐标，防止 stale screen/goal；
-- `choose_nearest_screen()`：保留未失败的当前锁，否则按当前 Pose 到 task target 的欧氏距离排序，同距按 ID；
+- `choose_nearest_screen()`：保留未失败的当前锁，否则按当前 Pose 到 navigation staging 的欧氏距离排序，同距按 ID；
 - `run_mission()`：临时失败轮换、全局恢复、交互后退、完成等待和 timeout。
 
 #### 定位
@@ -110,7 +110,7 @@ main.py
 
 - `plan_navigation_path()`：direct、start projection、approach/staging、A*、动作空间规划；
 - `navigate_to_xy()`：自适应重定位、动作选择、到达前新鲜视觉 Pose、最终 yaw；
-- `navigate_to_screen()` → `navigate_directly_to_target()`：当前 task target 设置 `allow_goal_high_cost=True` 和 `bypass_action_safety=True`；
+- `navigate_to_screen()`：普通导航到 40 cm staging，停止/回中并强制视觉定位，再从最新 Pose 调用 `navigate_directly_to_target()` 靠近 25 cm interaction point；仅后者设置 `allow_goal_high_cost=True` 和 `bypass_action_safety=True`；
 - `choose_translation_action()`：前进、短距离正后方倒退和平移；
 - `adaptive_relocalization_decision()`：动作预算、置信度、不确定度、阶段和大转向触发；
 - `register_plan_failure()`：相同输入 3 次失败后升级，不等到 80 步才处理。
@@ -139,7 +139,7 @@ main.py
 无硬件纯逻辑：
 
 - 从 Tag 平面确定 WEST/EAST/SOUTH/NORTH；
-- 从建筑边界中心生成 reader、task target 和 cardinal yaw；
+- 从同一建筑 `face_center` 和 cardinal normal 生成 reader、40 cm staging、25 cm interaction target 和 cardinal yaw；
 - 保存分类但不执行交互；
 - 只有 Worker `success=True` 才写 `CHANGED`。
 
@@ -160,7 +160,7 @@ main.py
 
 - 300×300 cm、5 cm 栅格；
 - 根据 Screen 建筑矩形生成硬障碍、软 inflation 和 cost；
-- `tag_front_xy` 固定为物理建筑面锚点；交互距离/横移/yaw/final-forward 只改变允许的 Screen 目标几何，不污染静态地图层；
+- `tag_front_xy` 固定为物理建筑面锚点；staging/交互距离、横移、yaw/final-forward 只改变允许的 Screen 目标几何，不污染静态地图层；
 - 动态障碍、footprint、clearance、直线/旋转 corridor；
 - 普通 A* 和带 yaw/action 的动作空间 A*；
 - 当前目标建筑的软 inflation 仅在受限 final approach 中可被忽略，其他建筑和硬占用仍生效。
