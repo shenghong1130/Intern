@@ -34,7 +34,7 @@ Physical change is bounded and target-specific:
 
 ```text
 live current Tag + same-ID bound classification != target
-→ interaction_forward_10cm exactly once
+→ interaction_forward_final exactly once (go_forward_one_step×3 + go_forward_one_small_step×1, about 17 cm)
 → visual authorization check
 → stand → lift_left_hand(stand=False)
 → authorization recheck
@@ -64,6 +64,7 @@ The following invariants are mandatory:
 
 - Ordinary planners keep hard occupancy, footprint, soft cost, clearance, A*, action-space planning, near-wall recovery and interior recovery.
 - Current task-target navigation calls `navigate_to_xy(..., allow_goal_high_cost=True, bypass_action_safety=True)`. It may still use the planners, but an already selected TURN/FORWARD/BACK/LATERAL action is not vetoed again by near-wall/corridor/footprint/center-free gates.
+- Interaction geometry may change Screen target XY/yaw fields only. Building bounds, hard cells, inflation and cost remain derived solely from immutable Tag coordinates and map configuration.
 - The current target building's soft inflation may be ignored only by the bounded target-owned direct/approach rules. Hard occupancy, boundaries, unrelated buildings and dynamic obstacles remain hard constraints outside task-target bypass semantics.
 - Repeated identical planning failures escalate at 3; they must not wait for the 80-step target limit.
 - Navigation failures rotate a target temporarily. When all unfinished targets are temporary failures, run global recovery, release them and select again.

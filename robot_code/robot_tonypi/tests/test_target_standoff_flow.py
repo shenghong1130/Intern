@@ -9,7 +9,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from robot_tonypi.config import load_config
+from robot_tonypi.config import default_config_path, load_config
 from robot_tonypi.hardware import TonyPiHardware
 from robot_tonypi.load_pos import load_tag_pos
 from robot_tonypi.map_model import MapModel
@@ -133,11 +133,101 @@ class TargetStandoffFlowTests(unittest.TestCase):
             self.assertAlmostEqual(item.task_target_yaw_deg, expected_yaw)
         west = model.screens[1]
         self.assertEqual(west.face_center_xy, (196.0, 17.5))
-        self.assertEqual(west.tag_front_xy, (171.0, 17.5))
+        self.assertEqual(west.tag_front_xy, west.face_center_xy)
         self.assertEqual(west.task_target_xy, (171.0, 16.5))
         self.assertEqual(west.task_target_yaw_deg, 5.0)
         self.assertEqual(west.target_xy, west.task_target_xy)
         self.assertEqual(west.interaction_xy, west.task_target_xy)
+
+    def test_20_to_25cm_moves_only_task_target_geometry_along_face_normal(self):
+        config_20 = load_config(None)
+        config_25 = load_config(None)
+        config_20["interaction"]["target_distance_cm"] = 20.0
+        config_25["interaction"]["target_distance_cm"] = 25.0
+        model_20 = MapModel(load_tag_pos(), config_20)
+        model_25 = MapModel(load_tag_pos(), config_25)
+
+        self.assertEqual(model_20.building_bounds, model_25.building_bounds)
+        np.testing.assert_array_equal(model_20.grid, model_25.grid)
+        np.testing.assert_array_equal(model_20.cost, model_25.cost)
+        for screen_id, screen_20 in model_20.screens.items():
+            screen_25 = model_25.screens[screen_id]
+            expected_delta = tuple(5.0 * value for value in screen_20.cardinal_normal_xy)
+            for field in ("target_xy", "interaction_xy", "task_target_xy"):
+                point_20 = getattr(screen_20, field)
+                point_25 = getattr(screen_25, field)
+                actual_delta = tuple(
+                    point_25[index] - point_20[index]
+                    for index in (0, 1)
+                )
+                np.testing.assert_allclose(actual_delta, expected_delta, atol=1e-9)
+            self.assertEqual(screen_20.face_center_xy, screen_25.face_center_xy)
+            self.assertEqual(screen_20.tag_front_xy, screen_25.tag_front_xy)
+            self.assertEqual(screen_20.reader_xy, screen_25.reader_xy)
+            self.assertEqual(screen_20.interaction_yaw_deg, screen_25.interaction_yaw_deg)
+            self.assertEqual(screen_20.task_target_yaw_deg, screen_25.task_target_yaw_deg)
+
+    def test_yaw_offset_changes_only_interaction_and_task_target_yaw(self):
+        config_0 = load_config(None)
+        config_5 = load_config(None)
+        config_0["interaction"]["target_yaw_offset_deg"] = 0.0
+        config_5["interaction"]["target_yaw_offset_deg"] = 5.0
+        model_0 = MapModel(load_tag_pos(), config_0)
+        model_5 = MapModel(load_tag_pos(), config_5)
+
+        self.assertEqual(model_0.building_bounds, model_5.building_bounds)
+        np.testing.assert_array_equal(model_0.grid, model_5.grid)
+        np.testing.assert_array_equal(model_0.cost, model_5.cost)
+        for screen_id, screen_0 in model_0.screens.items():
+            screen_5 = model_5.screens[screen_id]
+            self.assertEqual(screen_0.target_xy, screen_5.target_xy)
+            self.assertEqual(screen_0.interaction_xy, screen_5.interaction_xy)
+            self.assertEqual(screen_0.task_target_xy, screen_5.task_target_xy)
+            self.assertEqual(screen_0.face_center_xy, screen_5.face_center_xy)
+            self.assertEqual(screen_0.tag_front_xy, screen_5.tag_front_xy)
+            self.assertEqual(screen_0.reader_xy, screen_5.reader_xy)
+            yaw_delta = (
+                (screen_5.interaction_yaw_deg - screen_0.interaction_yaw_deg + 180.0)
+                % 360.0
+            ) - 180.0
+            task_yaw_delta = (
+                (screen_5.task_target_yaw_deg - screen_0.task_target_yaw_deg + 180.0)
+                % 360.0
+            ) - 180.0
+            self.assertAlmostEqual(yaw_delta, 5.0)
+            self.assertAlmostEqual(task_yaw_delta, 5.0)
+
+    def test_all_interaction_geometry_parameters_leave_static_map_unchanged(self):
+        baseline_config = load_config(None)
+        changed_config = load_config(None)
+        changed_config["interaction"].update({
+            "target_distance_cm": 20.0,
+            "target_lateral_offset_cm": 3.0,
+            "target_yaw_offset_deg": -12.0,
+            "target_final_forward_cm": 31.0,
+        })
+        baseline = MapModel(load_tag_pos(), baseline_config)
+        changed = MapModel(load_tag_pos(), changed_config)
+
+        self.assertEqual(baseline.building_bounds, changed.building_bounds)
+        np.testing.assert_array_equal(baseline.grid, changed.grid)
+        np.testing.assert_array_equal(baseline.cost, changed.cost)
+        np.testing.assert_array_equal(baseline._static_grid, changed._static_grid)
+        np.testing.assert_array_equal(baseline._static_cost, changed._static_cost)
+
+    def test_final_forward_distance_does_not_change_map_or_screen_geometry(self):
+        config_17 = load_config(None)
+        config_34 = load_config(None)
+        config_17["interaction"]["target_final_forward_cm"] = 17.0
+        config_34["interaction"]["target_final_forward_cm"] = 34.0
+        model_17 = MapModel(load_tag_pos(), config_17)
+        model_34 = MapModel(load_tag_pos(), config_34)
+
+        self.assertEqual(model_17.building_bounds, model_34.building_bounds)
+        np.testing.assert_array_equal(model_17.grid, model_34.grid)
+        np.testing.assert_array_equal(model_17.cost, model_34.cost)
+        for screen_id, screen_17 in model_17.screens.items():
+            self.assertEqual(screen_17.as_dict(), model_34.screens[screen_id].as_dict())
 
     def test_high_cost_exact_target_is_not_moved_but_obstacle_is_rejected(self):
         model = MapModel(load_tag_pos(), load_config(None))
@@ -458,7 +548,7 @@ class TargetStandoffFlowTests(unittest.TestCase):
             [("change", 1), ("change", 2)],
         )
         self.assertIn(("motion", "back_fast", 4), manager.sequence)
-        self.assertIn(("motion", "interaction_forward_10cm", 1), manager.sequence)
+        self.assertIn(("motion", "interaction_forward_final", 1), manager.sequence)
         retry_order = [
             item[0] for item in manager.sequence
             if item[0] in (
@@ -473,7 +563,7 @@ class TargetStandoffFlowTests(unittest.TestCase):
         self.assertLess(retry_order.index("navigate_target"), retry_order.index("confirm_tag"))
         final_forward_index = next(
             index for index, item in enumerate(manager.sequence)
-            if item == ("motion", "interaction_forward_10cm", 1)
+            if item == ("motion", "interaction_forward_final", 1)
         )
         self.assertLess(manager.sequence.index(("confirm_tag", target.screen_id)), final_forward_index)
         event_names = [name for name, _ in manager.debug.events]
@@ -520,13 +610,13 @@ class TargetStandoffFlowTests(unittest.TestCase):
             item for item in manager.sequence
             if item[0] == "change"
             or (item[0] == "motion" and item[1] in (
-                "back_fast", "interaction_forward_10cm"
+                "back_fast", "interaction_forward_final"
             ))
         ]
         self.assertEqual(compact, [
             ("change", 1),
             ("motion", "back_fast", 4),
-            ("motion", "interaction_forward_10cm", 1),
+            ("motion", "interaction_forward_final", 1),
             ("change", 2),
         ])
         self.assertEqual(target.status, ScreenStatus.FAILED)
@@ -588,7 +678,7 @@ class TargetStandoffFlowTests(unittest.TestCase):
             [("change", 1)],
         )
         self.assertIn(("motion", "back_fast", 4), manager.sequence)
-        self.assertNotIn(("motion", "interaction_forward_10cm", 1), manager.sequence)
+        self.assertNotIn(("motion", "interaction_forward_final", 1), manager.sequence)
         self.assertNotIn(("lock_target", target.screen_id), manager.sequence)
         self.assertNotIn(("navigate_target", target.screen_id), manager.sequence)
         self.assertNotIn(("confirm_tag", target.screen_id), manager.sequence)
@@ -869,6 +959,7 @@ class TargetStandoffFlowTests(unittest.TestCase):
 
     def test_configuration_has_no_old_two_stage_distance(self):
         config = load_config(None)
+        production_config = load_config(str(default_config_path()))
         self.assertEqual(config["interaction"]["target_distance_cm"], 25.0)
         self.assertEqual(config["interaction"]["target_lateral_offset_cm"], -1.0)
         self.assertEqual(config["interaction"]["target_yaw_offset_deg"], 5.0)
@@ -879,34 +970,86 @@ class TargetStandoffFlowTests(unittest.TestCase):
         self.assertNotIn("target_arrival_distance_cm", config["map"])
         self.assertNotIn("interaction_staging_distance_cm", config["interaction"])
         self.assertNotIn("interaction_staging_arrival_radius_cm", config["interaction"])
+        self.assertNotIn("interaction_forward_10cm", config["motion"]["actions"])
+        self.assertNotIn(
+            "interaction_forward_10cm",
+            production_config["motion"]["actions"],
+        )
         self.assertEqual(
-            config["motion"]["actions"]["interaction_forward_10cm"]["forward_cm"],
+            config["motion"]["actions"]["interaction_forward_final"]["forward_cm"],
             17.0,
         )
-        final_action = config["motion"]["actions"]["interaction_forward_10cm"]
+        final_action = config["motion"]["actions"]["interaction_forward_final"]
+        self.assertEqual(
+            final_action,
+            production_config["motion"]["actions"]["interaction_forward_final"],
+        )
         self.assertEqual(final_action["times"], 1)
         self.assertEqual(
-            [(step["group"], step["times"]) for step in final_action["sequence"]],
-            [("go_forward_one_step", 2)],
+            [
+                (step["group"], step["times"], step["repeat"])
+                for step in final_action["sequence"]
+            ],
+            [
+                ("go_forward_one_step", 3, True),
+                ("go_forward_one_small_step", 1, True),
+            ],
         )
         self.assertEqual(config["vision"]["max_screen_area_ratio"], 0.98)
 
-    def test_final_17cm_hardware_sequence_and_state_model_are_synchronized(self):
+    def test_final_forward_times_one_runs_physical_17cm_sequence(self):
         config = load_config(None)
-        hardware = TonyPiHardware(config, dry_run=True)
+        hardware = TonyPiHardware.__new__(TonyPiHardware)
+        hardware.config = config
+        hardware.dry_run = False
+        hardware.interaction_active = False
+        hardware.AGC = mock.Mock()
+        hardware.require_action_group = mock.Mock()
         with mock.patch("robot_tonypi.hardware.time.sleep"), mock.patch("builtins.print"):
-            result = hardware.run_action("interaction_forward_10cm", times_override=1)
+            result = hardware.run_action("interaction_forward_final", times_override=1)
+
+        self.assertEqual(hardware.AGC.runActionGroup.call_args_list, [
+            mock.call("go_forward_one_step", times=3, with_stand=False),
+            mock.call("go_forward_one_small_step", times=1, with_stand=False),
+        ])
         self.assertTrue(result.ok)
         self.assertEqual(result.times, 1)
         self.assertEqual(result.executed_times, 1)
         self.assertEqual(result.model_forward_cm, 17.0)
-        self.assertEqual(result.group, "go_forward_one_step")
+        self.assertEqual(
+            result.group,
+            "go_forward_one_step+go_forward_one_small_step",
+        )
+
+    def test_final_forward_times_two_doubles_physical_sequence_and_model(self):
+        config = load_config(None)
+        hardware = TonyPiHardware.__new__(TonyPiHardware)
+        hardware.config = config
+        hardware.dry_run = False
+        hardware.interaction_active = False
+        hardware.AGC = mock.Mock()
+        hardware.require_action_group = mock.Mock()
+        with mock.patch("robot_tonypi.hardware.time.sleep"), mock.patch("builtins.print"):
+            result = hardware.run_action("interaction_forward_final", times_override=2)
+
+        self.assertEqual(hardware.AGC.runActionGroup.call_args_list, [
+            mock.call("go_forward_one_step", times=6, with_stand=False),
+            mock.call("go_forward_one_small_step", times=2, with_stand=False),
+        ])
+        self.assertTrue(result.ok)
+        self.assertEqual(result.times, 2)
+        self.assertEqual(result.executed_times, 2)
+        self.assertEqual(result.model_forward_cm, 34.0)
+
+    def test_final_forward_state_model_moves_17cm(self):
+        config = load_config(None)
+        hardware = TonyPiHardware(config, dry_run=True)
 
         state = RobotState(config)
         state.set_manual_pose(10.0, 20.0, 0.0)
         controller = MotionController(hardware, state)
         with mock.patch("robot_tonypi.hardware.time.sleep"), mock.patch("builtins.print"):
-            controller.run("interaction_forward_10cm", times_override=1)
+            controller.run("interaction_forward_final", times_override=1)
         self.assertAlmostEqual(state.pose.x_cm, 27.0)
         self.assertAlmostEqual(state.pose.y_cm, 20.0)
 
@@ -934,7 +1077,7 @@ class TargetStandoffFlowTests(unittest.TestCase):
         manager, target = self.interaction_manager(motion_ok=False)
         manager.final_forward_executed = False
         self.assertFalse(manager.execute_final_forward(target))
-        self.assertEqual(manager.sequence, [("motion", "interaction_forward_10cm", 1)])
+        self.assertEqual(manager.sequence, [("motion", "interaction_forward_final", 1)])
         self.assertEqual(target.status, ScreenStatus.NEEDS_CHANGE)
         self.assertFalse(manager.final_forward_executed)
 
@@ -943,7 +1086,7 @@ class TargetStandoffFlowTests(unittest.TestCase):
         manager.final_forward_executed = False
         self.assertTrue(manager.execute_final_forward(target))
         self.assertFalse(manager.execute_final_forward(target))
-        self.assertEqual(manager.sequence, [("motion", "interaction_forward_10cm", 1)])
+        self.assertEqual(manager.sequence, [("motion", "interaction_forward_final", 1)])
 
     def test_skip_change_runs_no_final_forward_hardware_action(self):
         manager, target = self.interaction_manager(skip_change=True)

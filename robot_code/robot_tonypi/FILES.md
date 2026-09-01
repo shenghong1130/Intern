@@ -127,7 +127,7 @@ main.py
 
 - `latest_valid_bound_flower_observation()`：15 秒、同 ID、binding、置信度检查；
 - `adopt_cached_target_observation()`：实时当前 Tag 存在后把缓存变成授权；
-- `execute_final_forward()`：仅 NEEDS_CHANGE 时执行一次 `interaction_forward_10cm`，并设置 retreat pending；
+- `execute_final_forward()`：仅 NEEDS_CHANGE 时执行一次 `interaction_forward_final`（大步×3 + 小步×1，约 17 cm），并设置 retreat pending；
 - `process_screen_interaction()`：最多两次 NFC 物理尝试；
 - `restore_nfc_physical_contact()`：Attempt1 失败后后退、定位、最多 3 轮重新寻找当前目标；
 - `recalibrate_target_for_nfc_retry()`：只有当前目标重新分类仍不是 target 才重新导航/确认/final forward；
@@ -160,6 +160,7 @@ main.py
 
 - 300×300 cm、5 cm 栅格；
 - 根据 Screen 建筑矩形生成硬障碍、软 inflation 和 cost；
+- `tag_front_xy` 固定为物理建筑面锚点；交互距离/横移/yaw/final-forward 只改变允许的 Screen 目标几何，不污染静态地图层；
 - 动态障碍、footprint、clearance、直线/旋转 corridor；
 - 普通 A* 和带 yaw/action 的动作空间 A*；
 - 当前目标建筑的软 inflation 仅在受限 final approach 中可被忽略，其他建筑和硬占用仍生效。

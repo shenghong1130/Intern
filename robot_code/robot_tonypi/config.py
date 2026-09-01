@@ -283,9 +283,20 @@ DEFAULT_CONFIG: Dict[str, Any] = {
             "stand": {"group": "stand", "times": 1, "with_stand": False, "settle_s": 0.25},
             "forward_fast": {"group": "go_forward_fast", "times": 1, "with_stand": True, "forward_cm": 3.5, "settle_s": 0.35},
             "forward_micro": {"group": "go_forward_one_small_step", "times": 1, "with_stand": False, "forward_cm": 2.0, "settle_s": 0.25},
-            "interaction_forward_10cm": {
+            "interaction_forward_final": {
                 "sequence": [
-                    {"group": "go_forward_one_step", "times": 2, "with_stand": False},
+                    {
+                        "group": "go_forward_one_step",
+                        "times": 3,
+                        "repeat": True,
+                        "with_stand": False,
+                    },
+                    {
+                        "group": "go_forward_one_small_step",
+                        "times": 1,
+                        "repeat": True,
+                        "with_stand": False,
+                    },
                 ],
                 "times": 1,
                 "forward_cm": 17.0,

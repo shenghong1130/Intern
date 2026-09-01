@@ -108,17 +108,19 @@ python3 -m unittest robot_tonypi.tests.test_recovery_target_consistency -v
 python3 -m unittest robot_tonypi.tests.test_target_direct_approach -v
 ```
 
-## 9. `test_target_standoff_flow.py`（37 项）
+## 9. `test_target_standoff_flow.py`（43 项）
 
 检查完整到点交互状态机：
 
 - `25 cm / -1 cm` 唯一 task target，最终 yaw 在正对屏幕基础上左偏 `5°`；
+- `20→25 cm` 只沿 cardinal normal 移动 task-target XY，`0→+5°` 只改变目标 yaw；
+- 所有 interaction 几何/final-forward 参数都不改变 building bounds、grid、inflation 或 cost；
 - 当前 Tag 与同 ID Screen 绑定后才授权；
 - classifier offline 保留 live Tag 和 mission；
 - pan 找到目标后先消费帧再回中；
 - 目标确认和可见性恢复有界；
 - `ALREADY_TARGET` 跳过 final forward；
-- NEEDS_CHANGE 只执行一次 final forward；
+- NEEDS_CHANGE 只执行一次 `interaction_forward_final`；mock AGC 验证 ×1 为大步×3+小步×1，×2 为大步×6+小步×2，模型同步为 17/34 cm；
 - NFC Attempt1 成功、失败后 retreat/relocalize/reacquire；
 - 其他 Screen 分类不能用于当前目标；
 - 其他 Tag 定位成功不代表当前目标重获；

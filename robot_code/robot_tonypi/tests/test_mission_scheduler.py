@@ -414,7 +414,7 @@ class MissionSchedulerTests(unittest.TestCase):
         self.assertNotIn("execute_final_forward", calls)
         self.assertIn("visual_authorization_check", calls)
         state_names = {state.name for state in MissionState}
-        self.assertIn("FORWARD_10CM", state_names)
+        self.assertIn("FORWARD_FINAL", state_names)
         self.assertNotIn("NAVIGATE_TO_APPROACH", state_names)
         self.assertNotIn("FINAL_ALIGN_15CM", state_names)
         self.assertNotIn("ALIGN_FOR_INTERACTION", state_names)

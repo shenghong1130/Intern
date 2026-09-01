@@ -57,11 +57,18 @@
         "forward_cm": 3.5,
         "settle_s": 0.35
       },
-      "interaction_forward_10cm": {
+      "interaction_forward_final": {
         "sequence": [
           {
             "group": "go_forward_one_step",
-            "times": 2,
+            "times": 3,
+            "repeat": true,
+            "with_stand": false
+          },
+          {
+            "group": "go_forward_one_small_step",
+            "times": 1,
+            "repeat": true,
             "with_stand": false
           }
         ],

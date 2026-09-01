@@ -13,7 +13,7 @@
 → 实时确认当前 Tag
 → 使用 15 秒内同 ID 的 Tag↔Screen 分类缓存，或有限拍摄新帧
 → flower == target：ALREADY_TARGET，不执行 final forward / NFC
-→ flower != target：执行一次 interaction_forward_10cm
+→ flower != target：执行一次 interaction_forward_final（大步×3 + 小步×1，约 17 cm）
 → NFC Attempt 1
 → 成功：CHANGED
 → 失败：后退 10 cm、重新定位、最多 3 轮重新寻找当前目标并重新 FPGA
@@ -43,6 +43,8 @@
 - Screen 任务目标由完整建筑面的中心、cardinal 外法线和机器人横向补偿共同生成。
 - 当前正式参数：`target_distance_cm=25.0`、`target_lateral_offset_cm=-1.0`、`target_yaw_offset_deg=5.0`、`target_final_forward_cm=17.0`。
 - `target_xy`、`interaction_xy` 和 `task_target_xy` 指向同一个 25 cm 身体目标；5° yaw offset 不参与目标点计算。Screen/Tag anchor 与机器人目标点不是同一个点。
+- `interaction_forward_final` 的实体序列为 `go_forward_one_step×3 + go_forward_one_small_step×1`；按现有 5 cm/2 cm 标定约为 17 cm，两个 step 都使用 `repeat=true`，因此 `times_override` 会同步放大实体动作和 dead reckoning。
+- 建筑边界、硬障碍、inflation 和 cost 只来自 `load_pos.py` 的 Tag 坐标与 map 配置；交互距离、横移、yaw 和 final-forward 参数不会改变地图层。
 - 当前配置排除 Screen：`2, 6, 9, 20, 28`。
 
 ## 3. 部署和运行环境
@@ -390,7 +392,7 @@ curl -i http://192.168.31.81:8080/predict
 [ ] FPGA /predict 可访问
 [ ] Tag ID == screen_id == worker_id
 [ ] 25 cm / -1 cm task target 和正对屏幕 + 左偏 5° yaw 已现场验证
-[ ] interaction_forward_10cm（模型 17 cm）与 10 cm retreat 已现场验证
+[ ] interaction_forward_final（实体大步×3 + 小步×1，模型 17 cm）与 10 cm retreat 已现场验证
 [ ] --skip-change 全流程已通过
 [ ] 正式命令已删除 --skip-change
 [ ] 操作员可随时 Ctrl+C / emergency stop

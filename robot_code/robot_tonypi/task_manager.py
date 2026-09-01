@@ -249,11 +249,9 @@ class TaskManager:
             screen.target_xy = geometry["target_xy"]
             screen.interaction_xy = geometry["target_xy"]
             screen.interaction_yaw_deg = geometry["interaction_yaw_deg"]
-            distance = float(self.config["interaction"]["target_distance_cm"])
-            screen.tag_front_xy = (
-                face_center[0] + screen.normal_xy[0] * distance,
-                face_center[1] + screen.normal_xy[1] * distance,
-            )
+            # Keep the physical face anchor independent of interaction
+            # stand-off parameters; only the task-target fields may move.
+            screen.tag_front_xy = face_center
             screen.task_target_xy = geometry["target_xy"]
             screen.task_target_yaw_deg = screen.interaction_yaw_deg
 
@@ -536,7 +534,7 @@ class TaskManager:
                     target_xy=target.task_target_xy,
                     target_yaw_deg=target.task_target_yaw_deg,
                     visual_confirmation="target_tag_and_bound_screen_required",
-                    final_forward_action="interaction_forward_10cm x1",
+                    final_forward_action="interaction_forward_final x1",
                 )
             self.set_mission_state(MissionState.NAVIGATE_TO_TARGET)
             ok = self.navigate_to_screen(target)
@@ -2941,7 +2939,7 @@ class TaskManager:
         )
 
     def execute_final_forward(self, screen: Screen) -> bool:
-        """Execute the configured final forward action exactly once before classification."""
+        """Execute the configured final forward action exactly once before NFC."""
         if self.final_forward_executed:
             self.debug.event("target_final_forward_failed", screen_id=screen.screen_id, reason="already_executed")
             return False
@@ -2955,17 +2953,17 @@ class TaskManager:
             self.debug.event("target_final_forward_failed", screen_id=screen.screen_id, reason="target_confirmation_missing")
             return False
         distance = float(self.config["interaction"]["target_final_forward_cm"])
-        self.set_mission_state(MissionState.FORWARD_10CM)
+        self.set_mission_state(MissionState.FORWARD_FINAL)
         self.debug.event(
             "target_final_forward_started",
             screen_id=screen.screen_id,
-            action="interaction_forward_10cm",
+            action="interaction_forward_final",
             final_forward_cm=distance,
             target_distance_cm=float(self.config["interaction"]["target_distance_cm"]),
             final_forward_executed=False,
             dry_run=self.args.dry_run,
         )
-        result = self.motion.run("interaction_forward_10cm", times_override=1)
+        result = self.motion.run("interaction_forward_final", times_override=1)
         self.final_forward_executed = bool(result.ok)
         if result.ok:
             self.post_interaction_retreat_pending = True

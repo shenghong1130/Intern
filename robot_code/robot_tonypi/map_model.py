@@ -84,11 +84,6 @@ class MapModel:
                 self.cfg["interaction"],
             )
             target = geometry["target_xy"]
-            target_distance = float(self.cfg["interaction"]["target_distance_cm"])
-            tag_front = (
-                face_center[0] + surface["normal_xy"][0] * target_distance,
-                face_center[1] + surface["normal_xy"][1] * target_distance,
-            )
             self.screens[tag_id] = Screen(
                 screen_id=tag_id,
                 tag_corners_3d=self.tag_poses[str(tag_id)],
@@ -103,7 +98,9 @@ class MapModel:
                 surface_face=surface["face"],
                 cardinal_normal_xy=surface["normal_xy"],
                 face_center_xy=face_center,
-                tag_front_xy=tag_front,
+                # This is an immutable map anchor on the physical building
+                # face.  Configured task stand-off belongs only to target_xy.
+                tag_front_xy=face_center,
                 task_target_xy=target,
                 task_target_yaw_deg=geometry["interaction_yaw_deg"],
                 worker_id=int(tag_id),
