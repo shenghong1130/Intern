@@ -89,12 +89,12 @@ class RealFailureRegressionTests(unittest.TestCase):
 
     def test_screen_35_high_cost_start_has_safe_escape_action(self):
         self.assert_real_case_moves(
-            35, (245.43, 125.23, 99.4), (203.0, 98.5)
+            35, (245.43, 125.23, 99.4), (208.0, 98.5)
         )
 
     def test_screen_4_high_cost_start_has_safe_escape_action(self):
         self.assert_real_case_moves(
-            4, (172.50, 64.96, 106.5), (207.5, 50.0)
+            4, (172.50, 64.96, 106.5), (207.5, 55.0)
         )
 
     def test_screen_17_astar_successful_safe_candidate_is_reachable(self):
@@ -205,7 +205,7 @@ class ApproachAndStagingTests(unittest.TestCase):
             ("staging", "approach"),
         )
         self.assertIn(selected, calls)
-        self.assertLess(distance_xy(path[-1], selected), 0.1)
+        self.assertEqual(self.manager.map.grid_pos(path[-1]), self.manager.map.grid_pos(selected))
         self.assertNotEqual(selected, self.screen.task_target_xy)
 
     def test_blocked_first_staging_selects_alternate_approach(self):

@@ -49,8 +49,8 @@ class TargetConsistencyTests(unittest.TestCase):
         manager = geometry_manager()
         goal = manager.lock_target_goal(manager.map.screens[26])
         self.assertEqual(goal.anchor_xy, (237.5, 246.5))
-        self.assertEqual(goal.goal_xy, (248.5, 226.5))
-        self.assertEqual(goal.desired_yaw_deg, 90.0)
+        self.assertEqual(goal.goal_xy, (248.5, 221.5))
+        self.assertEqual(goal.desired_yaw_deg, 95.0)
 
     def test_stale_goal_for_same_screen_is_rejected(self):
         manager = geometry_manager()

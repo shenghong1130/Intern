@@ -115,11 +115,11 @@ def build_interaction_geometry(center_xy: Tuple[float, float], normal_xy: Tuple[
         raise ValueError("screen normal must be non-zero")
     normal = (float(normal_xy[0]) / norm, float(normal_xy[1]) / norm)
     normal_yaw = math.degrees(math.atan2(normal[1], normal[0]))
-    interaction_yaw = ((normal_yaw + 360.0) % 360.0) - 180.0
+    base_interaction_yaw = ((normal_yaw + 360.0) % 360.0) - 180.0
     # Match RobotState.apply_action_result(): lateral_cm > 0 moves along the
-    # robot's yaw + 90 degree (left) axis.  The requested -2 cm therefore
-    # moves to the robot's right after it has turned to face the screen.
-    left_rad = math.radians(interaction_yaw) + math.pi / 2.0
+    # robot's yaw + 90 degree (left) axis.  A configured negative offset
+    # therefore moves right after it has turned to face the screen.
+    left_rad = math.radians(base_interaction_yaw) + math.pi / 2.0
     robot_left = (math.cos(left_rad), math.sin(left_rad))
     screen_left = (normal[1], -normal[0])
     sensor_left = float(cfg["sensor_left_offset_cm"])
@@ -133,6 +133,8 @@ def build_interaction_geometry(center_xy: Tuple[float, float], normal_xy: Tuple[
         float(center_xy[0]) + normal[0] * target_distance + robot_left[0] * target_lateral,
         float(center_xy[1]) + normal[1] * target_distance + robot_left[1] * target_lateral,
     )
+    yaw_offset = float(cfg.get("target_yaw_offset_deg", 0.0))
+    interaction_yaw = ((base_interaction_yaw + yaw_offset + 180.0) % 360.0) - 180.0
     return {
         "normal_xy": normal,
         "normal_yaw_deg": ((normal_yaw + 180.0) % 360.0) - 180.0,

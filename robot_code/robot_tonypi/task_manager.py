@@ -2608,7 +2608,7 @@ class TaskManager:
         return False
 
     def classify_after_final_forward(self, screen: Screen, *, allow_without_forward: bool = False) -> int:
-        """Capture once and classify after the dedicated final 10 cm motion."""
+        """Capture once and classify after the configured final forward motion."""
         confirmation = self.target_visual_confirmation
         if (
             confirmation is None
@@ -2941,7 +2941,7 @@ class TaskManager:
         )
 
     def execute_final_forward(self, screen: Screen) -> bool:
-        """Execute the dedicated 10 cm action exactly once before classification."""
+        """Execute the configured final forward action exactly once before classification."""
         if self.final_forward_executed:
             self.debug.event("target_final_forward_failed", screen_id=screen.screen_id, reason="already_executed")
             return False
@@ -3379,7 +3379,7 @@ class TaskManager:
                 reason="repeat_existing_final_forward",
                 forward_cm=float(
                     self.config["interaction"].get(
-                        "target_final_forward_cm", 10.0
+                        "target_final_forward_cm", 17.0
                     )
                 ),
             )
@@ -3418,7 +3418,7 @@ class TaskManager:
         screen: Screen,
         retry_attempt: int,
     ) -> bool:
-        """Rebuild the 20 cm target pose and identity lock before NFC attempt 2."""
+        """Rebuild the configured target pose and identity lock before NFC attempt 2."""
         self.debug.event(
             "nfc_retry_target_recalibration_started",
             screen_id=screen.screen_id,

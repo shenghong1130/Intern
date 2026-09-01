@@ -127,10 +127,10 @@ class InteractionFlowTests(unittest.TestCase):
         centers = building_centers_from_tags(tag_poses)
         bounds = building_bounds_from_tags(tag_poses)
         expected = {
-            1: ("WEST", (-1.0, 0.0), (196.0, 17.5), (176.0, 17.5), (176.0, 16.5), 0.0),
-            2: ("SOUTH", (0.0, -1.0), (208.5, 5.0), (208.5, -15.0), (209.5, -15.0), 90.0),
-            3: ("EAST", (1.0, 0.0), (221.0, 17.5), (241.0, 17.5), (241.0, 18.5), -180.0),
-            4: ("NORTH", (0.0, 1.0), (208.5, 30.0), (208.5, 50.0), (207.5, 50.0), -90.0),
+            1: ("WEST", (-1.0, 0.0), (196.0, 17.5), (171.0, 17.5), (171.0, 16.5), 0.0),
+            2: ("SOUTH", (0.0, -1.0), (208.5, 5.0), (208.5, -20.0), (209.5, -20.0), 90.0),
+            3: ("EAST", (1.0, 0.0), (221.0, 17.5), (246.0, 17.5), (246.0, 18.5), -180.0),
+            4: ("NORTH", (0.0, 1.0), (208.5, 30.0), (208.5, 55.0), (207.5, 55.0), -90.0),
         }
         cfg = load_config(None)["interaction"]
         for tag_id, (face, normal, face_center, tag_front, body_target, yaw) in expected.items():
@@ -147,7 +147,8 @@ class InteractionFlowTests(unittest.TestCase):
             self.assertEqual(base_target, tag_front)
             self.assertAlmostEqual(geometry["interaction_xy"][0], body_target[0])
             self.assertAlmostEqual(geometry["interaction_xy"][1], body_target[1])
-            self.assertEqual(geometry["interaction_yaw_deg"], yaw)
+            expected_final_yaw = ((yaw + cfg["target_yaw_offset_deg"] + 180.0) % 360.0) - 180.0
+            self.assertEqual(geometry["interaction_yaw_deg"], expected_final_yaw)
             self.assertIn(yaw, (0.0, -180.0, 90.0, -90.0))
             yaw_rad = math.radians(yaw)
             robot_left = (-math.sin(yaw_rad), math.cos(yaw_rad))
@@ -162,10 +163,15 @@ class InteractionFlowTests(unittest.TestCase):
 
         self.assertEqual(geometry["screen_left_tangent_xy"], (0.0, -1.0))
         self.assertEqual(geometry["reader_xy"], (0.0, -5.0))
-        self.assertAlmostEqual(geometry["target_xy"][0], 20.0)
+        self.assertAlmostEqual(geometry["target_xy"][0], 25.0)
         self.assertAlmostEqual(geometry["target_xy"][1], 1.0)
         self.assertEqual(geometry["interaction_xy"], geometry["target_xy"])
-        self.assertEqual(abs(geometry["interaction_yaw_deg"]), 180.0)
+        self.assertEqual(geometry["interaction_yaw_deg"], -175.0)
+
+        no_yaw_offset = dict(load_config(None)["interaction"], target_yaw_offset_deg=0.0)
+        base_geometry = build_interaction_geometry((0.0, 0.0), (1.0, 0.0), no_yaw_offset)
+        self.assertEqual(geometry["target_xy"], base_geometry["target_xy"])
+        self.assertEqual(base_geometry["interaction_yaw_deg"], -180.0)
 
     def test_case_4_valid_pose_runs_notebook_order_and_arguments(self):
         actions = []

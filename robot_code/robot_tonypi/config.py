@@ -288,7 +288,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
                     {"group": "go_forward_one_step", "times": 2, "with_stand": False},
                 ],
                 "times": 1,
-                "forward_cm": 10.0,
+                "forward_cm": 17.0,
                 "settle_s": 0.30,
             },
             "back_fast": {
@@ -326,9 +326,10 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         },
     },
     "interaction": {
-        "target_distance_cm": 20.0,
+        "target_distance_cm": 25.0,
         "target_lateral_offset_cm": -1.0,
-        "target_final_forward_cm": 10.0,
+        "target_yaw_offset_deg": 5.0,
+        "target_final_forward_cm": 17.0,
         "post_interaction_retreat_cm": 10.0,
         "post_interaction_retreat_action": "back_fast",
         "post_interaction_retry_interval_s": 1.0,

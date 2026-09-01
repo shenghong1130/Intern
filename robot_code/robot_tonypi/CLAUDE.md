@@ -13,11 +13,12 @@ TonyPi competition controller for a 300 × 300 cm field. Before changing task lo
 
 ## Current target geometry
 
-- `target_distance_cm = 20.0`.
+- `target_distance_cm = 25.0`.
 - `target_lateral_offset_cm = -1.0` in the robot-left frame.
-- `target_final_forward_cm = 10.0`.
+- `target_yaw_offset_deg = 5.0`; it affects only desired yaw, never target XY.
+- `target_final_forward_cm = 17.0`.
 - `target_xy`, `interaction_xy` and `task_target_xy` are the same configured body target; the Screen/Tag anchor is separate.
-- Cardinal normals are exactly `(-1,0)`, `(1,0)`, `(0,-1)`, `(0,1)`. Desired yaw is `0°`, `-180°`, `+90°` or `-90°`.
+- Cardinal normals are exactly `(-1,0)`, `(1,0)`, `(0,-1)`, `(0,1)`. Desired yaw is the screen-facing cardinal yaw plus `5°`, normalized to `[-180, 180)`.
 
 ## Vision and authorization boundary
 

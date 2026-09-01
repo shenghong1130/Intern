@@ -112,7 +112,7 @@ python3 -m unittest robot_tonypi.tests.test_target_direct_approach -v
 
 检查完整到点交互状态机：
 
-- `20 cm / -1 cm` 唯一 task target；
+- `25 cm / -1 cm` 唯一 task target，最终 yaw 在正对屏幕基础上左偏 `5°`；
 - 当前 Tag 与同 ID Screen 绑定后才授权；
 - classifier offline 保留 live Tag 和 mission；
 - pan 找到目标后先消费帧再回中；
@@ -191,4 +191,4 @@ python3 -u -m robot_tonypi.tests.test_capture_15_frames
 python3 -m compileall -q robot_tonypi
 ```
 
-自动化测试不会证明以下真机参数正确：动作实际位移、相机内参、Tag 世界坐标、NFC 耦合距离、FPGA 网络稳定性、20 cm task target 和 10 cm final forward。正式运行前仍需现场验证。
+自动化测试不会证明以下真机参数正确：动作实际位移、相机内参、Tag 世界坐标、NFC 耦合距离、FPGA 网络稳定性、25 cm task target、5° yaw offset 和 17 cm final forward。正式运行前仍需现场验证。

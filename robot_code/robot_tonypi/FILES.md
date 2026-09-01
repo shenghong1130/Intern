@@ -85,7 +85,7 @@ main.py
 
 #### 目标生命周期
 
-- `configure_cardinal_task_targets()`：从建筑面生成 `20 cm / -1 cm` task target；
+- `configure_cardinal_task_targets()`：从建筑面生成 `25 cm / -1 cm` task target，并仅对最终 yaw 增加 `+5°`；
 - `resolve_target_goal()`、`lock_target_goal()`、`validate_target_goal()`：原子化目标身份与坐标，防止 stale screen/goal；
 - `choose_nearest_screen()`：保留未失败的当前锁，否则按当前 Pose 到 task target 的欧氏距离排序，同距按 ID；
 - `run_mission()`：临时失败轮换、全局恢复、交互后退、完成等待和 timeout。

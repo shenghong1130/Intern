@@ -9,7 +9,7 @@
 → 初始 AprilTag 定位
 → SELECT_NEAREST_TARGET
 → 锁定 TargetGoal(screen_id/tag_id/anchor/goal/yaw/generation)
-→ 导航到 20 cm task target，并完成 cardinal yaw
+→ 导航到 25 cm task target，并完成正对屏幕 + 左偏 5° yaw
 → 实时确认当前 Tag
 → 使用 15 秒内同 ID 的 Tag↔Screen 分类缓存，或有限拍摄新帧
 → flower == target：ALREADY_TARGET，不执行 final forward / NFC
@@ -18,7 +18,7 @@
 → 成功：CHANGED
 → 失败：后退 10 cm、重新定位、最多 3 轮重新寻找当前目标并重新 FPGA
    → 当前目标已是 target：CHANGED，立即结束当前 Screen
-   → 当前目标仍不是 target：重新导航到 20 cm task target，再执行 Attempt 2
+   → 当前目标仍不是 target：重新导航到 25 cm task target，再执行 Attempt 2
    → 3 轮仍找不到当前目标：GAVE_UP 当前 Screen
 → Attempt 2 成功：CHANGED；失败：GAVE_UP
 → 如曾进入近距离交互位，完成后退和重新定位
@@ -41,8 +41,8 @@
 - 云台中心角是 `100°`；更大角度向左看，更小角度向右看。
 - AprilTag ID、`screen_id` 和 NFC `worker_id` 必须完全相同。
 - Screen 任务目标由完整建筑面的中心、cardinal 外法线和机器人横向补偿共同生成。
-- 当前正式参数：`target_distance_cm=20.0`、`target_lateral_offset_cm=-1.0`、`target_final_forward_cm=10.0`。
-- `target_xy`、`interaction_xy` 和 `task_target_xy` 指向同一个 20 cm 身体目标；Screen/Tag anchor 与机器人目标点不是同一个点。
+- 当前正式参数：`target_distance_cm=25.0`、`target_lateral_offset_cm=-1.0`、`target_yaw_offset_deg=5.0`、`target_final_forward_cm=17.0`。
+- `target_xy`、`interaction_xy` 和 `task_target_xy` 指向同一个 25 cm 身体目标；5° yaw offset 不参与目标点计算。Screen/Tag anchor 与机器人目标点不是同一个点。
 - 当前配置排除 Screen：`2, 6, 9, 20, 28`。
 
 ## 3. 部署和运行环境
@@ -149,7 +149,7 @@ cp /home/pi/robot_tonypi/action_groups/*.d6a /home/pi/TonyPi/ActionGroups/
 | 最低分类置信度 | `0.2` |
 | 目标确认新鲜帧上限 | `3` 次 |
 | 目标可见性恢复 | `2` 轮 |
-| final forward | `10 cm`，一次逻辑动作 |
+| final forward | `17 cm`，一次逻辑动作 |
 | post-interaction retreat | `10 cm`，`back_fast` |
 | NFC 单次物理尝试 deadline | `15 s` |
 | NFC 物理尝试上限 | `2` 次 |
@@ -215,7 +215,7 @@ python3 -u -m robot_tonypi.main \
   --time-limit-s 570
 ```
 
-`--skip-change` 保留真实相机、定位、导航和 FPGA 分类，但跳过专用 10 cm 动作、举手和 NFC；`--skip-api` 是同一参数的旧别名。
+`--skip-change` 保留真实相机、定位、导航和 FPGA 分类，但跳过专用 17 cm 动作、举手和 NFC；`--skip-api` 是同一参数的旧别名。
 
 ### 5.6 正式运行（直连 KV260 Worker）
 
@@ -389,8 +389,8 @@ curl -i http://192.168.31.81:8080/predict
 [ ] Debug 地图坐标轴与现场一致：左上 (0,0)，x 向下，y 向右
 [ ] FPGA /predict 可访问
 [ ] Tag ID == screen_id == worker_id
-[ ] 20 cm / -1 cm task target 和 cardinal yaw 已现场验证
-[ ] interaction_forward_10cm 与 10 cm retreat 已现场验证
+[ ] 25 cm / -1 cm task target 和正对屏幕 + 左偏 5° yaw 已现场验证
+[ ] interaction_forward_10cm（模型 17 cm）与 10 cm retreat 已现场验证
 [ ] --skip-change 全流程已通过
 [ ] 正式命令已删除 --skip-change
 [ ] 操作员可随时 Ctrl+C / emergency stop
