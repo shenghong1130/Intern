@@ -8,10 +8,9 @@
 启动并居中云台
 → 初始 AprilTag 定位
 → SELECT_NEAREST_TARGET
-→ 锁定 TargetGoal(screen_id/tag_id/anchor/staging/interaction/yaw/generation)
-→ 普通 A*/Action Planner 导航到墙面外 40 cm staging point
-→ 停止、云台回中并强制 AprilTag 视觉重定位
-→ 从最新视觉 Pose 重新规划到墙面外 25 cm interaction point，并完成正对屏幕 + 左偏 5° yaw
+→ 按“最近距离窗口 + 朝向惩罚”锁定 TargetGoal
+→ Motion-Aware A* 以 (x_grid, y_grid, yaw_bin) 规划到墙面外 25 cm interaction point + desired yaw
+→ Executor 直接执行规划出的 FORWARD / STRAFE / TURN / 受限 REVERSE，动作 batch 后按策略定位并重规划
 → 实时确认当前 Tag
 → 使用 15 秒内同 ID 的 Tag↔Screen 分类缓存，或有限拍摄新帧
 → flower == target：ALREADY_TARGET，不执行 final forward / NFC
@@ -20,7 +19,7 @@
 → 成功：CHANGED
 → 失败：后退 10 cm、重新定位、最多 3 轮重新寻找当前目标并重新 FPGA
    → 当前目标已是 target：CHANGED，立即结束当前 Screen
-   → 当前目标仍不是 target：重新执行 40 cm staging → 强制定位 → 25 cm interaction approach，再执行 Attempt 2
+   → 当前目标仍不是 target：重新直接规划到 25 cm + desired yaw，再执行 Attempt 2
    → 3 轮仍找不到当前目标：GAVE_UP 当前 Screen
 → Attempt 2 成功：CHANGED；失败：GAVE_UP
 → 如曾进入近距离交互位，完成后退和重新定位
@@ -43,8 +42,8 @@
 - 云台中心角是 `100°`；更大角度向左看，更小角度向右看。
 - AprilTag ID、`screen_id` 和 NFC `worker_id` 必须完全相同。
 - Screen 任务目标由完整建筑面的中心、cardinal 外法线和机器人横向补偿共同生成。
-- 当前正式参数：`navigation_standoff_cm=40.0`、`target_distance_cm=25.0`、`target_lateral_offset_cm=-1.0`、`target_yaw_offset_deg=5.0`、`target_final_forward_cm=17.0`。
-- `navigation_staging_xy` 和 `interaction_target_xy` 都从同一个建筑 `face_center` 沿同一个 cardinal 外法线生成；后者继续应用横向补偿。`target_xy`、`interaction_xy` 和 `task_target_xy` 是 25 cm interaction point 的兼容别名，不能作为普通远距离规划终点。
+- 当前正式参数：`target_distance_cm=25.0`、`target_lateral_offset_cm=-1.0`、`target_yaw_offset_deg=5.0`、`target_final_forward_cm=17.0`。
+- `goal_xy`、`navigation_staging_xy`、`interaction_target_xy`、`target_xy`、`interaction_xy` 和 `task_target_xy` 运行时都指向同一 25 cm interaction point；`navigation_staging_xy` 仅保留为兼容字段。
 - `interaction_forward_final` 的实体序列为 `go_forward_one_step×3 + go_forward_one_small_step×1`；按现有 5 cm/2 cm 标定约为 17 cm，两个 step 都使用 `repeat=true`，因此 `times_override` 会同步放大实体动作和 dead reckoning。
 - 建筑边界、硬障碍、inflation 和 cost 只来自 `load_pos.py` 的 Tag 坐标与 map 配置；交互距离、横移、yaw 和 final-forward 参数不会改变地图层。
 - 当前配置排除 Screen：`2, 6, 9, 20, 28`。
@@ -113,6 +112,8 @@ cp /home/pi/robot_tonypi/action_groups/*.d6a /home/pi/TonyPi/ActionGroups/
 | `edge_margin_px` | `35` | 图像边缘过滤 |
 | `no_tag_recovery_failures` | `2` | no-tag 恢复阈值 |
 | `no_tag_recovery_cooldown_s` | `4.0` | 防止重复进入恢复 |
+| normal pose conflict | `15 cm / 25°` | 进入 suspect 二次确认 |
+| hard jump | `40 cm / 60°` | 直接拒绝，不允许二次远跳确认 |
 
 普通 `localize_scan()` 当前会按配置扫描多角度，并在第一个可接受视觉 Pose 处停止、回中。靠边界时可能过滤朝场外看的 pan。NFC 目标重获模式不同：即使其他 Tag 已成功定位，也继续扫描，直到当前目标 Tag 与 Screen 正确绑定。
 
@@ -120,12 +121,9 @@ cp /home/pi/robot_tonypi/action_groups/*.d6a /home/pi/TonyPi/ActionGroups/
 
 | 配置 | 当前值 |
 |---|---:|
-| staging point 距墙面 | `40 cm` |
-| staging 到达半径 | `8 cm` |
 | task target 到达半径 | `4 cm` |
 | task target yaw 容差 | `10°` |
 | 每目标最大导航步骤 | `80` |
-| target-direct 距离 | `40 cm` |
 | 普通导航最小 clearance | `25 cm` |
 | 相同规划失败升级阈值 | `3` |
 | `forward_fast` | `3.5 cm/周期` |
@@ -134,15 +132,15 @@ cp /home/pi/robot_tonypi/action_groups/*.d6a /home/pi/TonyPi/ActionGroups/
 | 左/右平移 | `+4.0 / -3.0 cm/周期` |
 | 大左/右转模型 | `+15 / -18°/逻辑动作` |
 
-`navigate_to_screen()` 先用普通 A*/Action Planner 和正常动作安全门导航到 `navigation_staging_xy`。到达后机器人停止、云台回中，并强制执行 `localize_scan(reason="target_staging_relocalize")`；只有接受最新视觉 Pose 后，才独立重规划到 `interaction_target_xy`。40→25 cm 的 bounded interaction approach 保留 target-direct 与当前 task-target safety bypass，普通 staging 导航不使用该 bypass。
+`navigate_to_screen()` 只建立一次正式 goal：`interaction_target_xy + desired_yaw_deg`。`MapModel.plan_motion_actions()` 返回带预测起止 Pose、动作 key、周期数和代价的 `NavigationPlan`；Executor 不再根据 XY waypoint 猜动作。当前目标建筑的软 inflation 可在这条规划中豁免，但场界、真实建筑 hard occupancy、机器人 footprint、无关建筑、动态障碍和 corridor 检查始终生效。
 
 自适应重定位使用动作数、运动不确定度、Pose 置信度和导航阶段：
 
 - normal HIGH：最多 6 个动作，不确定度上限 6.0；
-- staging HIGH：最多 5 个动作，上限 5.0；
 - recovery HIGH：最多 4 个动作，上限 4.5；
-- target-direct HIGH：最多 3 个动作，上限 3.5；
-- LOW confidence、大转向、障碍紧张、进入 target-direct 前、ARRIVED 前会提前定位。
+- LOW confidence、大转向、障碍紧张、ARRIVED 前会提前定位。
+
+距离目标大于 `15 cm` 时 HIGH confidence 的 forward/strafe 可使用较大胆 batch；进入 `15 cm` 后限制为单周期。普通导航的 REVERSE 只在最终目标距离不超过 `5 cm`、目标位于后方、确实缩短距离且后方 corridor 安全时进入 A* 扩展；Recovery、NFC retry retreat 和 post-interaction retreat 不受此限制。
 
 动作不确定度：直行 `0.6`、后退 `0.9`、平移 `1.0`、普通转向 `1.8`、大转向 `2.6` 每周期。只有接受新的视觉 Pose 才清零累计值。
 
@@ -328,7 +326,7 @@ shuixianhua taohua yinghua yuanweihua zijinghua
 
 - 初始定位失败不会立即退出；主循环反复执行初始搜索，直到得到 Pose 或全局 timeout。
 - `no_tag` 与“看见 Tag 但没有 Pose”分开计数；no-tag 恢复只在无 Tag 达阈值且 Pose 缺失、朝场外或边界受困时启动。
-- 普通规划会依次考虑 exact/direct、start projection、reachable approach/staging、A*、动作空间规划；相同输入失败 3 次后升级到 interior recovery。
+- 正式目标规划使用 Motion-Aware A*；相同输入失败 3 次后仍按既有规则升级到 interior recovery。普通二维 A* 保留给 debug、fallback 和 Recovery 兼容。
 - near-wall 恢复顺序为后退、左右平移、小转向；普通动作全被拒绝时可进入 bounded forced escape。真实动作后会重新定位。
 - 单个导航目标失败进入临时失败集合，不是永久黑名单；所有未完成目标都临时失败时执行全局恢复并释放它们。
 - NFC GAVE_UP 是单独集合：该 Screen 在本次进程中不再立即选择，但 mission 继续处理其他目标。
@@ -359,7 +357,7 @@ http://192.168.31.220:8090
 Dashboard/文件包括：
 
 - `latest_state.json`：MissionState、Pose、TargetGoal、缓存、NFC retry、恢复计数和最近事件；
-- `latest_map.jpg`：Robot Pose、Screen anchor、`STAGING 40cm`、`INTERACTION 25cm`、当前导航 goal、recovery waypoint 和路径；
+- `latest_map.jpg`：Robot Pose、Screen anchor、`INTERACTION 25cm`、当前导航 goal、recovery waypoint 和路径；
 - `latest_annotated.jpg`：Tag 与 Screen 绑定标注；
 - `events.jsonl` 与 `interaction_calls.jsonl`：状态和 NFC 审计。
 
@@ -395,7 +393,7 @@ curl -i http://192.168.31.81:8080/predict
 [ ] Debug 地图坐标轴与现场一致：左上 (0,0)，x 向下，y 向右
 [ ] FPGA /predict 可访问
 [ ] Tag ID == screen_id == worker_id
-[ ] 墙面外 40 cm staging、强制视觉重定位、25 cm / -1 cm interaction point 和正对屏幕 + 左偏 5° yaw 已现场验证
+[ ] 25 cm / -1 cm interaction point、Motion-Aware A* 动作序列和正对屏幕 + 左偏 5° yaw 已现场验证
 [ ] interaction_forward_final（实体大步×3 + 小步×1，模型 17 cm）与 10 cm retreat 已现场验证
 [ ] --skip-change 全流程已通过
 [ ] 正式命令已删除 --skip-change

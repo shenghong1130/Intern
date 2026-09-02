@@ -150,7 +150,8 @@ class AdaptiveBatchTests(unittest.TestCase):
     def test_near_wall_recovery_and_near_target_force_short_batches(self):
         manager = adaptive_manager()
         self.assertEqual(manager.select_adaptive_action_batch("forward", 6, 3.5, 100, 100, near_wall=True)[0], 1)
-        self.assertEqual(manager.select_adaptive_action_batch("strafe", 3, 3.0, 20, 20)[0], 1)
+        self.assertGreater(manager.select_adaptive_action_batch("strafe", 3, 3.0, 20, 20)[0], 1)
+        self.assertEqual(manager.select_adaptive_action_batch("strafe", 3, 3.0, 14, 14)[0], 1)
         self.assertEqual(manager.select_adaptive_action_batch("turn", 2, 7.5, 100, 100, recovery=True)[0], 1)
 
     def test_batch_cannot_cross_waypoint_or_target(self):
@@ -613,10 +614,10 @@ class LocalizationStateResetTests(unittest.TestCase):
 
     def test_confirmed_visual_jump_is_accepted_and_resets_dead_reckoning(self):
         visual = RobotPose(
-            190.0, 150.0, 45.0, Confidence.HIGH, "VISION_TAG_1", now_s()
+            185.0, 150.0, 45.0, Confidence.HIGH, "VISION_TAG_1", now_s()
         )
         confirmed = RobotPose(
-            193.0, 152.0, 48.0, Confidence.HIGH, "VISION_TAG_1", now_s()
+            188.0, 152.0, 48.0, Confidence.HIGH, "VISION_TAG_1", now_s()
         )
         tag = SimpleNamespace(tag_id=1, area=800.0)
         manager, _ = self.scan_manager([visual, confirmed], tags=[tag])
@@ -744,8 +745,8 @@ class SuspectVisualPoseConfirmationTests(unittest.TestCase):
 
     def test_consistent_large_visual_jump_accepts_confirmation_pose(self):
         prior = self.pose(150.0, 150.0, 0.0)
-        visual_a = self.pose(190.0, 180.0, 30.0)
-        visual_b = self.pose(193.0, 182.0, 33.0)
+        visual_a = self.pose(180.0, 170.0, 30.0)
+        visual_b = self.pose(183.0, 172.0, 33.0)
         manager, _ = self.manager([visual_a, visual_b], prior=prior)
         capture = manager.capture_with_tags
         installed_during_captures = []
@@ -760,8 +761,8 @@ class SuspectVisualPoseConfirmationTests(unittest.TestCase):
 
     def test_two_inconsistent_visual_outliers_retain_prior(self):
         prior = self.pose(150.0, 150.0, 0.0)
-        visual_a = self.pose(190.0, 180.0, 30.0)
-        visual_b = self.pose(220.0, 100.0, -50.0)
+        visual_a = self.pose(180.0, 170.0, 30.0)
+        visual_b = self.pose(125.0, 145.0, -20.0)
         manager, _ = self.manager([visual_a, visual_b], prior=prior)
         self.assertFalse(self.localize_once(manager))
         self.assertIs(manager.state.pose, prior)
@@ -805,8 +806,8 @@ class SuspectVisualPoseConfirmationTests(unittest.TestCase):
     def test_medium_single_tag_jump_requires_confirmation(self):
         prior = self.pose(150.0, 150.0, 0.0)
         tags = [SimpleNamespace(tag_id=1, area=400.0, center=(320.0, 220.0))]
-        visual_a = self.pose(190.0, 150.0, 0.0)
-        visual_b = self.pose(193.0, 151.0, 2.0)
+        visual_a = self.pose(185.0, 150.0, 0.0)
+        visual_b = self.pose(188.0, 151.0, 2.0)
         manager, _ = self.manager(
             [visual_a, visual_b], prior=prior, tags=tags
         )
@@ -825,8 +826,8 @@ class SuspectVisualPoseConfirmationTests(unittest.TestCase):
             SimpleNamespace(tag_id=1, area=800.0, center=(300.0, 220.0)),
             SimpleNamespace(tag_id=2, area=750.0, center=(340.0, 220.0)),
         ]
-        visual_a = self.pose(190.0, 180.0, 30.0)
-        visual_b = self.pose(193.0, 182.0, 33.0)
+        visual_a = self.pose(180.0, 170.0, 30.0)
+        visual_b = self.pose(183.0, 172.0, 33.0)
         manager, pans = self.manager(
             [visual_a, visual_b], prior=prior, tags=tags
         )
@@ -841,7 +842,7 @@ class SuspectVisualPoseConfirmationTests(unittest.TestCase):
     def test_unavailable_confirmation_retains_prior_and_motion_state(self):
         prior = self.pose(150.0, 150.0, 0.0)
         manager, _ = self.manager(
-            [self.pose(190.0, 180.0, 30.0), None], prior=prior
+            [self.pose(180.0, 170.0, 30.0), None], prior=prior
         )
         manager.state.actions_since_localize = 4
         manager.state.motion_uncertainty = 3.5
@@ -967,7 +968,7 @@ class PlannerPreferenceTests(unittest.TestCase):
             if name == "reverse_preference_evaluated"
         )
         self.assertEqual(event["final_goal_distance_cm"], 50.0)
-        self.assertEqual(event["reverse_max_goal_distance_cm"], 10.0)
+        self.assertEqual(event["reverse_max_goal_distance_cm"], 5.0)
         self.assertFalse(event["reverse_allowed_by_goal_distance"])
         self.assertEqual(event["reverse_rejected_reason"], "goal_too_far_for_reverse")
 
@@ -989,22 +990,21 @@ class PlannerPreferenceTests(unittest.TestCase):
         )
         self.assertTrue(action is None or action["kind"] != "reverse")
 
-    def test_rear_goal_exactly_10cm_away_allows_reverse(self):
+    def test_rear_goal_over_5cm_does_not_reverse(self):
         manager = self.translation_manager()
         action = manager.choose_translation_action(
             manager.state.pose,
             (140.0, 150.0),
             final_goal_distance_cm=10.0,
         )
-        self.assertIsNotNone(action)
-        self.assertEqual(action["kind"], "reverse")
+        self.assertTrue(action is None or action["kind"] != "reverse")
 
-    def test_rear_goal_8cm_away_allows_reverse(self):
+    def test_rear_goal_exactly_5cm_away_allows_reverse(self):
         manager = self.translation_manager()
         action = manager.choose_translation_action(
             manager.state.pose,
-            (142.0, 150.0),
-            final_goal_distance_cm=8.0,
+            (145.0, 150.0),
+            final_goal_distance_cm=5.0,
         )
         self.assertIsNotNone(action)
         self.assertEqual(action["kind"], "reverse")

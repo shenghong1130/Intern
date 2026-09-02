@@ -50,6 +50,7 @@ def manager_at(x, y, screens):
     manager.map = FakeMap(screens)
     manager.last_target_plan = {}
     manager.config = load_config(None)
+    manager.debug = SimpleNamespace(event=lambda *args, **kwargs: None)
     return manager
 
 
@@ -191,8 +192,8 @@ class MissionSchedulerTests(unittest.TestCase):
         dead_reckoning = RobotPose(
             10, 10, 15, Confidence.HIGH, "DEAD_RECKONING", 2
         )
-        visual_a = RobotPose(50, 40, 60, Confidence.HIGH, "VISION", 3)
-        visual_b = RobotPose(52, 42, 62, Confidence.HIGH, "VISION", 4)
+        visual_a = RobotPose(35, 30, 45, Confidence.HIGH, "VISION", 3)
+        visual_b = RobotPose(37, 32, 47, Confidence.HIGH, "VISION", 4)
         queue = [visual_a, visual_b]
         tag = SimpleNamespace(tag_id=1, area=800.0, center=(320.0, 220.0))
         captures = []
@@ -242,7 +243,7 @@ class MissionSchedulerTests(unittest.TestCase):
         self.assertTrue(result["accepted"])
         self.assertIs(manager.state.pose, visual_b)
         self.assertEqual(captures, [100.0, 100.0])
-        self.assertAlmostEqual(result["actual_delta"], 62.0)
+        self.assertAlmostEqual(result["actual_delta"], 47.0)
         self.assertIn("visual_pose_jump_confirmed", [name for name, _ in events])
 
     def test_wrong_direction_turn_is_rejected(self):
@@ -347,7 +348,7 @@ class MissionSchedulerTests(unittest.TestCase):
         self.assertTrue(manager.turn_navigation_abort)
         self.assertEqual(manager.turn_no_progress_count, 2)
 
-    def test_nearest_target_uses_current_pose_to_navigation_staging(self):
+    def test_nearest_target_uses_current_pose_to_interaction_target(self):
         old_near_new_far = screen(3, (30.0, 0.0))
         old_near_new_far.target_xy = (2.0, 0.0)
         old_near_new_far.task_target_xy = (30.0, 0.0)
@@ -362,7 +363,7 @@ class MissionSchedulerTests(unittest.TestCase):
         self.assertEqual(manager.choose_nearest_screen().screen_id, 2)
         self.assertEqual(
             manager.last_target_plan["selection_rule"],
-            "euclidean_current_pose_to_navigation_staging_then_tag_id",
+            "nearest_interaction_target_window_then_orientation_score_then_id",
         )
 
     def test_reselects_from_latest_pose_after_completion(self):
@@ -376,7 +377,7 @@ class MissionSchedulerTests(unittest.TestCase):
         self.assertEqual(manager.choose_nearest_screen().screen_id, 2)
 
     def test_equal_distance_tie_breaks_by_tag_id(self):
-        manager = manager_at(0.0, 0.0, [screen(9, (-10.0, 0.0)), screen(4, (10.0, 0.0))])
+        manager = manager_at(0.0, 0.0, [screen(9, (10.0, 0.0)), screen(4, (10.0, 0.0))])
         self.assertEqual(manager.choose_nearest_screen().screen_id, 4)
 
     def test_completed_and_temporarily_failed_targets_are_rotated(self):
@@ -452,7 +453,7 @@ class MissionSchedulerTests(unittest.TestCase):
         self.assertEqual(calls[0][0][0], (25.0, -2.0))
         self.assertEqual(calls[0][1]["target_yaw_deg"], 180.0)
         self.assertTrue(calls[0][1]["allow_goal_high_cost"])
-        self.assertTrue(calls[0][1]["bypass_action_safety"])
+        self.assertFalse(calls[0][1]["bypass_action_safety"])
 
     def test_only_bound_evidence_paths_call_classifier(self):
         source = (Path(__file__).resolve().parents[1] / "task_manager.py").read_text(encoding="utf-8")

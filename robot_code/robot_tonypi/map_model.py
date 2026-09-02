@@ -17,8 +17,8 @@ from .interaction_logic import (
     cardinal_surface_from_tag,
     face_center_from_bounds,
 )
-from .models import Screen
-from .utils import clamp, distance_xy, normalize_angle_deg
+from .models import NavigationPlan, PlannedNavigationAction, RobotPose, Screen
+from .utils import angle_diff_deg, clamp, distance_xy, normalize_angle_deg
 
 
 def load_tag_positions(path: Optional[str] = None) -> Dict[str, np.ndarray]:
@@ -104,8 +104,7 @@ class MapModel:
                 # face. Configured stand-offs belong only to navigation and
                 # interaction target geometry.
                 tag_front_xy=face_center,
-                # Compatibility alias: this remains the 25 cm interaction
-                # point, never the ordinary navigation destination.
+                # Compatibility alias for the formal navigation destination.
                 task_target_xy=geometry["interaction_target_xy"],
                 task_target_yaw_deg=geometry["interaction_yaw_deg"],
                 worker_id=int(tag_id),
@@ -229,6 +228,19 @@ class MapModel:
 
     def in_bounds_xy(self, xy) -> bool:
         return 0.0 <= float(xy[0]) <= self.width_cm and 0.0 <= float(xy[1]) <= self.height_cm
+
+    def physical_pose_rejection_reason(self, xy) -> Optional[str]:
+        """Validate only immutable field/building physics, never soft costs."""
+        if not self.in_bounds_xy(xy):
+            return "pose_outside_field"
+        x, y = float(xy[0]), float(xy[1])
+        for bounds in self.building_bounds.values():
+            if (
+                float(bounds["x_min"]) <= x <= float(bounds["x_max"])
+                and float(bounds["y_min"]) <= y <= float(bounds["y_max"])
+            ):
+                return "pose_inside_building"
+        return None
 
     def is_free_grid(self, node) -> bool:
         return 0 <= node[0] < self.rows and 0 <= node[1] < self.cols and self.grid[node[0], node[1]] == 0
@@ -368,6 +380,23 @@ class MapModel:
                 float(xy[1]) + radius * math.sin(angle),
             )
             if not self.is_traversable_xy(sample, max_cost=max_cost):
+                return False
+        return True
+
+    def target_rotation_sweep_clear(
+        self, xy, radius_cm: float, max_cost: float, target_screen_id: int
+    ) -> bool:
+        """Check rotation while exempting only the target building's soft cost."""
+        radius = max(0.0, float(radius_cm))
+        samples = [xy]
+        samples.extend((
+            float(xy[0]) + radius * math.cos(2.0 * math.pi * index / 16.0),
+            float(xy[1]) + radius * math.sin(2.0 * math.pi * index / 16.0),
+        ) for index in range(16))
+        for sample in samples:
+            if not self.is_free_xy(sample):
+                return False
+            if self.non_target_obstacle_cost_xy(sample, target_screen_id) >= float(max_cost):
                 return False
         return True
 
@@ -742,6 +771,7 @@ class MapModel:
         actions = [
             {
                 "name": "forward",
+                "kind": "forward",
                 "forward_cm": forward_step,
                 "lateral_cm": 0.0,
                 "yaw_deg": 0.0,
@@ -751,7 +781,25 @@ class MapModel:
                 "away_from_goal_penalty_scale": away_from_goal_scale,
             },
             {
+                "name": "forward_fine",
+                "kind": "forward",
+                "forward_cm": max(
+                    self.res,
+                    abs(float(motion_actions.get("forward_fast", {}).get("forward_cm", 3.5))) * 2.0,
+                ),
+                "lateral_cm": 0.0,
+                "yaw_deg": 0.0,
+                "base_cost": max(
+                    self.res,
+                    abs(float(motion_actions.get("forward_fast", {}).get("forward_cm", 3.5))) * 2.0,
+                ) * forward_cost,
+                "motion_code": 1,
+                "path_reversal_penalty": path_reversal_penalty,
+                "away_from_goal_penalty_scale": away_from_goal_scale,
+            },
+            {
                 "name": "strafe_left",
+                "kind": "strafe_left",
                 "forward_cm": 0.0,
                 "lateral_cm": strafe_step,
                 "yaw_deg": 0.0,
@@ -762,6 +810,7 @@ class MapModel:
             },
             {
                 "name": "strafe_right",
+                "kind": "strafe_right",
                 "forward_cm": 0.0,
                 "lateral_cm": -strafe_step,
                 "yaw_deg": 0.0,
@@ -776,6 +825,7 @@ class MapModel:
                 1,
                 {
                     "name": "reverse",
+                    "kind": "reverse",
                     "forward_cm": -reverse_step,
                     "lateral_cm": 0.0,
                     "yaw_deg": 0.0,
@@ -798,6 +848,7 @@ class MapModel:
             actions.append(
                 {
                     "name": name,
+                    "kind": name,
                     "forward_cm": 0.0,
                     "lateral_cm": 0.0,
                     "yaw_deg": yaw_delta,
@@ -839,6 +890,9 @@ class MapModel:
         turn_sweep_radius_cm: float = 0.0,
         goal_node=None,
         allow_goal_high_cost: bool = False,
+        target_screen_id: Optional[int] = None,
+        safety_cache: Optional[dict] = None,
+        allow_start_escape: bool = False,
     ):
         gx, gy, yaw_idx = state[:3]
         previous_turn_sign = int(state[3]) if len(state) >= 4 else 0
@@ -846,11 +900,32 @@ class MapModel:
         current_xy = self.xy_from_grid((gx, gy))
         yaw_delta = float(action.get("yaw_deg", 0.0))
         if abs(yaw_delta) > 1e-6:
-            if not self.rotation_sweep_clear(current_xy, turn_sweep_radius_cm, segment_max_cost):
+            rotation_key = ("rotation", gx, gy, target_screen_id)
+            rotation_clear = None if safety_cache is None else safety_cache.get(rotation_key)
+            if rotation_clear is None:
+                rotation_clear = (
+                self.target_rotation_sweep_clear(
+                    current_xy, turn_sweep_radius_cm, segment_max_cost,
+                    int(target_screen_id),
+                )
+                if target_screen_id is not None
+                else self.rotation_sweep_clear(
+                    current_xy, turn_sweep_radius_cm, segment_max_cost
+                )
+                )
+                if safety_cache is not None:
+                    safety_cache[rotation_key] = rotation_clear
+            if not rotation_clear:
                 return None
             bin_delta = self.yaw_delta_to_bins(yaw_delta, yaw_bin_deg)
             turn_sign = 1 if yaw_delta > 0.0 else -1
-            turn_cost = float(action["base_cost"]) + float(action.get("in_place_turn_penalty", 0.0))
+            # Once XY is already at the goal grid, a final corrective turn is
+            # preferable to leaving the goal and translating back merely to
+            # avoid the general in-place-turn discouragement.
+            at_goal_xy = goal_node is not None and (gx, gy) == tuple(goal_node)
+            turn_cost = float(action["base_cost"])
+            if not at_goal_xy:
+                turn_cost += float(action.get("in_place_turn_penalty", 0.0))
             if previous_turn_sign == turn_sign:
                 turn_cost += float(action.get("consecutive_turn_penalty", 0.0))
             elif previous_turn_sign == -turn_sign:
@@ -871,13 +946,42 @@ class MapModel:
             return None
         nx, ny = self.grid_pos(next_xy)
         is_goal = bool(allow_goal_high_cost and goal_node is not None and (nx, ny) == tuple(goal_node))
-        corridor = self.translation_corridor_metrics(
-            current_xy,
-            next_xy,
-            corridor_half_width_cm,
-            segment_max_cost,
-            allow_goal_high_cost=is_goal,
+        corridor_key = (
+            "translation", gx, gy, yaw_idx, str(action.get("name")),
+            target_screen_id, bool(is_goal),
         )
+        corridor = None if safety_cache is None else safety_cache.get(corridor_key)
+        if corridor is None and target_screen_id is not None:
+            corridor = self.target_direct_corridor_metrics(
+                current_xy,
+                next_xy,
+                int(target_screen_id),
+                corridor_half_width_cm,
+                segment_max_cost,
+                minimum_non_target_clearance_cm=0.0,
+            )
+        elif corridor is None:
+            corridor = self.translation_corridor_metrics(
+                current_xy,
+                next_xy,
+                corridor_half_width_cm,
+                segment_max_cost,
+                allow_goal_high_cost=is_goal,
+            )
+        if safety_cache is not None:
+            safety_cache[corridor_key] = corridor
+        if (
+            allow_start_escape
+            and target_screen_id is not None
+            and not corridor.get("clear")
+            and not corridor.get("physical_collision")
+            and not corridor.get("clearance_rejected")
+            and self.non_target_obstacle_cost_xy(next_xy, int(target_screen_id))
+            < self.non_target_obstacle_cost_xy(current_xy, int(target_screen_id))
+        ):
+            corridor = dict(corridor)
+            corridor["clear"] = True
+            corridor["start_escape"] = True
         if not corridor["clear"]:
             return None
         if (nx, ny) == (gx, gy):
@@ -897,6 +1001,245 @@ class MapModel:
             away_cm = max(0.0, distance_xy(next_xy, goal_xy) - distance_xy(current_xy, goal_xy))
             move_cost += away_cm * float(action.get("away_from_goal_penalty_scale", 0.0))
         return (nx, ny, yaw_idx, 0, motion_code), move_cost
+
+    def plan_motion_actions(
+        self,
+        start_pose: RobotPose,
+        goal_xy: Tuple[float, float],
+        goal_yaw_deg: float,
+        navigation_cfg: dict,
+        motion_cfg: dict,
+        *,
+        target_screen_id: Optional[int] = None,
+        goal_position_tolerance_cm: Optional[float] = None,
+        goal_yaw_tolerance_deg: Optional[float] = None,
+    ) -> Optional[NavigationPlan]:
+        """Plan executable TonyPi actions in ``(x_grid, y_grid, yaw_bin)`` space."""
+        start_xy = start_pose.xy()
+        self.last_action_plan_metrics = {
+            "reason": "started",
+            "expanded_nodes": 0,
+            "goal_xy": list(goal_xy),
+            "goal_yaw_deg": float(goal_yaw_deg),
+            "reverse_allowed": 0,
+            "reverse_rejected": 0,
+        }
+        if not self.in_bounds_xy(start_xy) or not self.is_free_xy(start_xy):
+            self.last_action_plan_metrics["reason"] = "start_not_physically_free"
+            return None
+        if not self.in_bounds_xy(goal_xy) or not self.is_free_xy(goal_xy):
+            self.last_action_plan_metrics["reason"] = "goal_not_physically_free"
+            return None
+
+        yaw_bin_deg = max(5.0, float(navigation_cfg.get("action_planner_yaw_bin_deg", 15.0)))
+        yaw_bins = max(8, int(round(360.0 / yaw_bin_deg)))
+        yaw_bin_deg = 360.0 / float(yaw_bins)
+        start_grid = self.grid_pos(start_xy)
+        start_state = (
+            start_grid[0], start_grid[1],
+            self.yaw_to_action_bin(start_pose.yaw_deg, yaw_bin_deg, yaw_bins),
+            0, 0,
+        )
+        goal_node = self.grid_pos(goal_xy)
+        position_tolerance = max(0.1, float(
+            navigation_cfg.get("target_arrival_radius_cm", 4.0)
+            if goal_position_tolerance_cm is None else goal_position_tolerance_cm
+        ))
+        yaw_tolerance = max(0.1, float(
+            navigation_cfg.get("action_planner_goal_yaw_tolerance_deg", 10.0)
+            if goal_yaw_tolerance_deg is None else goal_yaw_tolerance_deg
+        ))
+        reverse_limit = max(0.0, float(
+            navigation_cfg.get("reverse_prefer_max_goal_distance_cm", 5.0)
+        ))
+        max_expansions = max(100, int(navigation_cfg.get("action_planner_max_expansions", 45000)))
+        segment_max_cost = min(
+            float(navigation_cfg.get("action_planner_segment_max_cost", 55.0)),
+            float(navigation_cfg.get("normal_navigation_max_cost", 55.0)),
+            float(self.cfg["map"].get("obstacle_cost_max", 80.0)),
+        )
+        actions = self.action_planner_actions(navigation_cfg, motion_cfg)
+        obstacle_scale = max(0.0, float(navigation_cfg.get("action_planner_obstacle_cost_scale", 1.0)))
+        half_width = max(0.0, float(navigation_cfg.get("translation_corridor_half_width_cm", 0.0)))
+        clearance_target = max(0.0, float(navigation_cfg.get("action_planner_wall_clearance_target_cm", 0.0)))
+        clearance_scale = max(0.0, float(navigation_cfg.get("action_planner_wall_clearance_penalty_scale", 0.0)))
+        turn_radius = max(0.0, float(navigation_cfg.get("turn_sweep_radius_cm", 0.0)))
+
+        target_yaw_idx = self.yaw_to_action_bin(goal_yaw_deg, yaw_bin_deg, yaw_bins)
+        turn_cost_per_bin = []
+        for candidate_action in actions:
+            yaw_delta = float(candidate_action.get("yaw_deg", 0.0))
+            if abs(yaw_delta) <= 1e-6:
+                continue
+            bins = abs(self.yaw_delta_to_bins(yaw_delta, yaw_bin_deg))
+            turn_cost_per_bin.append(
+                (float(candidate_action.get("base_cost", 0.0))
+                 + float(candidate_action.get("in_place_turn_penalty", 0.0)))
+                / max(1, bins)
+            )
+        minimum_turn_cost_per_bin = min(turn_cost_per_bin or [0.0])
+
+        def heuristic_for(state, xy):
+            raw_bins = abs(int(state[2]) - target_yaw_idx)
+            yaw_bins_away = min(raw_bins, yaw_bins - raw_bins)
+            return (
+                distance_xy(xy, goal_xy)
+                + yaw_bins_away * minimum_turn_cost_per_bin
+            )
+
+        start_h = heuristic_for(start_state, self.xy_from_grid(start_grid))
+        open_heap = [(start_h, 0, start_state)]
+        counter = 0
+        came = {}
+        came_action = {}
+        came_cost = {}
+        g = {start_state: 0.0}
+        closed = set()
+        expansions = 0
+        final_state = None
+        safety_cache = {}
+        while open_heap and expansions < max_expansions:
+            _, _, current = heapq.heappop(open_heap)
+            if current in closed:
+                continue
+            closed.add(current)
+            expansions += 1
+            current_xy = self.xy_from_grid((current[0], current[1]))
+            current_yaw = self.yaw_from_action_bin(current[2], yaw_bin_deg)
+            if (
+                distance_xy(current_xy, goal_xy) <= position_tolerance
+                and abs(angle_diff_deg(goal_yaw_deg, current_yaw)) <= yaw_tolerance
+            ):
+                final_state = current
+                break
+            for action in actions:
+                if action.get("name") == "reverse":
+                    distance_to_goal = distance_xy(current_xy, goal_xy)
+                    yaw_rad = math.radians(current_yaw)
+                    dx = float(goal_xy[0]) - current_xy[0]
+                    dy = float(goal_xy[1]) - current_xy[1]
+                    local_forward = dx * math.cos(yaw_rad) + dy * math.sin(yaw_rad)
+                    local_lateral = -dx * math.sin(yaw_rad) + dy * math.cos(yaw_rad)
+                    rear_error = math.degrees(math.atan2(abs(local_lateral), max(1e-6, -local_forward))) if local_forward < 0.0 else 180.0
+                    reverse_ok = bool(
+                        distance_to_goal <= reverse_limit + 1e-9
+                        and local_forward < 0.0
+                        and rear_error <= float(navigation_cfg.get("reverse_prefer_rear_angle_tolerance_deg", 30.0))
+                        and abs(local_lateral) <= float(navigation_cfg.get("reverse_prefer_max_lateral_cm", 8.0))
+                    )
+                    if not reverse_ok:
+                        self.last_action_plan_metrics["reverse_rejected"] += 1
+                        continue
+                transition = self.action_planner_transition(
+                    current, action, yaw_bin_deg, yaw_bins,
+                    segment_max_cost, obstacle_scale,
+                    corridor_half_width_cm=half_width,
+                    wall_clearance_target_cm=clearance_target,
+                    wall_clearance_penalty_scale=clearance_scale,
+                    turn_sweep_radius_cm=turn_radius,
+                    goal_node=goal_node,
+                    allow_goal_high_cost=target_screen_id is not None,
+                    target_screen_id=target_screen_id,
+                    safety_cache=safety_cache,
+                    allow_start_escape=True,
+                )
+                if transition is None:
+                    if action.get("name") == "reverse":
+                        self.last_action_plan_metrics["reverse_rejected"] += 1
+                    continue
+                nxt, action_cost = transition
+                if action.get("name") == "reverse":
+                    next_xy = self.xy_from_grid((nxt[0], nxt[1]))
+                    if distance_xy(next_xy, goal_xy) >= distance_xy(current_xy, goal_xy):
+                        self.last_action_plan_metrics["reverse_rejected"] += 1
+                        continue
+                    self.last_action_plan_metrics["reverse_allowed"] += 1
+                tentative = g[current] + action_cost
+                if tentative >= g.get(nxt, float("inf")):
+                    continue
+                came[nxt] = current
+                came_action[nxt] = action
+                came_cost[nxt] = float(action_cost)
+                g[nxt] = tentative
+                next_xy = self.xy_from_grid((nxt[0], nxt[1]))
+                counter += 1
+                heuristic = heuristic_for(nxt, next_xy)
+                heapq.heappush(open_heap, (tentative + heuristic, counter, nxt))
+        self.last_action_plan_metrics["expanded_nodes"] = expansions
+        if final_state is None:
+            self.last_action_plan_metrics["reason"] = (
+                "max_expansions" if expansions >= max_expansions else "open_set_exhausted"
+            )
+            return None
+
+        chain = []
+        cursor = final_state
+        while cursor in came:
+            chain.append((came[cursor], cursor, came_action[cursor], came_cost[cursor]))
+            cursor = came[cursor]
+        chain.reverse()
+        motion_actions = motion_cfg.get("actions", {})
+        key_for_name = {
+            "forward": "forward_fast", "forward_fine": "forward_fast",
+            "reverse": "back_fast",
+            "strafe_left": "strafe_left_fast", "strafe_right": "strafe_right_fast",
+            "turn_left_small": "turn_left_fast", "turn_right_small": "turn_right_fast",
+            "turn_left_large": "turn_left_large", "turn_right_large": "turn_right_large",
+        }
+        planned_actions = []
+        path_xy = [start_xy]
+        turn_cost = 0.0
+        for before, after, action, action_cost in chain:
+            action_name = str(action["name"])
+            kind = str(action.get("kind", action_name))
+            key = key_for_name.get(action_name, key_for_name.get(kind))
+            before_xy = self.xy_from_grid((before[0], before[1]))
+            after_xy = self.xy_from_grid((after[0], after[1]))
+            before_yaw = self.yaw_from_action_bin(before[2], yaw_bin_deg)
+            after_yaw = self.yaw_from_action_bin(after[2], yaw_bin_deg)
+            if kind == "forward" or kind == "reverse":
+                unit = abs(float(motion_actions[key].get("forward_cm", 1.0)))
+                amount = abs(float(action.get("forward_cm", 0.0)))
+            elif kind.startswith("strafe"):
+                unit = abs(float(motion_actions[key].get("lateral_cm", 1.0)))
+                amount = abs(float(action.get("lateral_cm", 0.0)))
+            else:
+                unit = abs(float(motion_actions[key].get("yaw_deg", 1.0)))
+                amount = abs(float(action.get("yaw_deg", 0.0)))
+                turn_cost += action_cost
+            cycles = max(1, int(round(amount / max(0.1, unit))))
+            start_pred = RobotPose(before_xy[0], before_xy[1], before_yaw, source="MOTION_ASTAR")
+            end_pred = RobotPose(after_xy[0], after_xy[1], after_yaw, source="MOTION_ASTAR")
+            planned_actions.append(PlannedNavigationAction(
+                kind=kind,
+                action_key=key,
+                cycles=cycles,
+                predicted_start_pose=start_pred,
+                predicted_end_pose=end_pred,
+                predicted_distance_cm=distance_xy(before_xy, after_xy),
+                predicted_yaw_deg=angle_diff_deg(after_yaw, before_yaw),
+                cost=action_cost,
+            ))
+            if distance_xy(path_xy[-1], after_xy) > 0.1:
+                path_xy.append(after_xy)
+        metrics = dict(self.last_action_plan_metrics)
+        metrics.update({
+            "reason": "success",
+            "total_cost": float(g[final_state]),
+            "turn_cost": float(turn_cost),
+            "selected_actions": [item.kind for item in planned_actions],
+            "goal_position_tolerance_cm": position_tolerance,
+            "goal_yaw_tolerance_deg": yaw_tolerance,
+        })
+        self.last_action_plan_metrics = metrics
+        return NavigationPlan(
+            goal_xy=(float(goal_xy[0]), float(goal_xy[1])),
+            goal_yaw_deg=float(goal_yaw_deg),
+            total_cost=float(g[final_state]),
+            path_xy=path_xy,
+            actions=planned_actions,
+            metrics=metrics,
+        )
 
     def _reconstruct_action_path(self, came, current, start_xy) -> List[Tuple[float, float]]:
         states = [current]

@@ -66,7 +66,8 @@ main.py
 - `Confidence`：HIGH/MEDIUM/LOW/UNKNOWN；
 - `ScreenStatus`：UNKNOWN、NEEDS_CHANGE、INTERACTING、CHANGED、ALREADY_TARGET、FAILED；
 - `MissionState`：定位、目标选择、导航、确认、分类、NFC、retreat、complete/timeout/blocked 等可观测状态；
-- `TargetGoal`：原子化 screen/tag/anchor/navigation staging/interaction target/yaw/generation；
+- `TargetGoal`：原子化 screen/tag/anchor/25 cm interaction target/yaw/generation；兼容字段 `navigation_staging_xy` 与 interaction target 相同；
+- `NavigationPlan` / `PlannedNavigationAction`：Motion-Aware A* 的真实动作计划、预测起止 Pose、周期与成本；
 - `TargetTagConfirmation`、`TargetVisualConfirmation`、`VisualAuthorization`；
 - `RecentBoundFlowerObservation`：每个 Screen 最新有效 Tag↔Screen 分类证据；
 - `WorkerChangeResult`、`InteractionAuthorizationCheck`、动作结果等。
@@ -85,9 +86,9 @@ main.py
 
 #### 目标生命周期
 
-- `configure_cardinal_task_targets()`：从同一建筑面中心和外法线生成 `40 cm` staging 与 `25 cm / -1 cm` interaction target，并仅对最终 yaw 增加 `+5°`；
+- `configure_cardinal_task_targets()`：从建筑面中心和外法线生成 `25 cm / -1 cm` interaction target，并仅对最终 yaw 增加 `+5°`；
 - `resolve_target_goal()`、`lock_target_goal()`、`validate_target_goal()`：原子化目标身份与坐标，防止 stale screen/goal；
-- `choose_nearest_screen()`：保留未失败的当前锁，否则按当前 Pose 到 navigation staging 的欧氏距离排序，同距按 ID；
+- `choose_nearest_screen()`：保留合法当前锁；否则先按 Pose 到 25 cm interaction target 的最近距离窗口筛选，再用 behind-turn + final-yaw 有界惩罚评分，最后按 ID 稳定破平局；
 - `run_mission()`：临时失败轮换、全局恢复、交互后退、完成等待和 timeout。
 
 #### 定位
@@ -108,9 +109,11 @@ main.py
 
 #### 导航
 
-- `plan_navigation_path()`：direct、start projection、approach/staging、A*、动作空间规划；
+- `plan_navigation_path()`：保留给 debug、fallback 和 Recovery 兼容的二维路径接口；
+- `plan_motion_actions()`：正式目标导航的 `(x_grid,y_grid,yaw_bin)` Motion-Aware A*，同时满足 XY 与 yaw，并重建真实动作序列；
 - `navigate_to_xy()`：自适应重定位、动作选择、到达前新鲜视觉 Pose、最终 yaw；
-- `navigate_to_screen()`：普通导航到 40 cm staging，停止/回中并强制视觉定位，再从最新 Pose 调用 `navigate_directly_to_target()` 靠近 25 cm interaction point；仅后者设置 `allow_goal_high_cost=True` 和 `bypass_action_safety=True`；
+- `navigate_to_screen()`：一次建立 25 cm XY + desired yaw goal，并进入 `navigate_motion_plan_to_target()`；不再有中途停止/强制 staging 定位；
+- `execute_motion_astar_action()`：直接执行 Planner 的 action key，可合并连续同动作，按 confidence/距离限制 batch，随后定位并重规划；
 - `choose_translation_action()`：前进、短距离正后方倒退和平移；
 - `adaptive_relocalization_decision()`：动作预算、置信度、不确定度、阶段和大转向触发；
 - `register_plan_failure()`：相同输入 3 次失败后升级，不等到 80 步才处理。
@@ -139,7 +142,7 @@ main.py
 无硬件纯逻辑：
 
 - 从 Tag 平面确定 WEST/EAST/SOUTH/NORTH；
-- 从同一建筑 `face_center` 和 cardinal normal 生成 reader、40 cm staging、25 cm interaction target 和 cardinal yaw；
+- 从同一建筑 `face_center` 和 cardinal normal 生成 reader、25 cm interaction target 和 cardinal yaw；
 - 保存分类但不执行交互；
 - 只有 Worker `success=True` 才写 `CHANGED`。
 
@@ -160,7 +163,7 @@ main.py
 
 - 300×300 cm、5 cm 栅格；
 - 根据 Screen 建筑矩形生成硬障碍、软 inflation 和 cost；
-- `tag_front_xy` 固定为物理建筑面锚点；staging/交互距离、横移、yaw/final-forward 只改变允许的 Screen 目标几何，不污染静态地图层；
+- `tag_front_xy` 固定为物理建筑面锚点；交互距离、横移、yaw/final-forward 只改变允许的 Screen 目标几何，不污染静态地图层；
 - 动态障碍、footprint、clearance、直线/旋转 corridor；
 - 普通 A* 和带 yaw/action 的动作空间 A*；
 - 当前目标建筑的软 inflation 仅在受限 final approach 中可被忽略，其他建筑和硬占用仍生效。
@@ -233,9 +236,10 @@ Debug 显示由 `_map_pt(xy) -> (y, x)` 转换，因此左上为 `(0,0)`、x 向
 - `test_interaction_flow.py`：几何、授权、NFC deadline/seq/异常；
 - `test_mission_scheduler.py`：目标选择、状态机、near-wall/forced escape、timeout；
 - `test_navigation_adaptive.py`：动作批次、自适应定位、no-tag、倒退/平移、task safety bypass；
-- `test_navigation_path_fallback.py`：clearance、approach/staging、规划失败升级；
+- `test_navigation_path_fallback.py`：clearance、兼容 fallback、规划失败升级；
 - `test_recovery_target_consistency.py`：TargetGoal 原子一致和 interior recovery；
 - `test_target_direct_approach.py`：当前目标软 cost 例外和直接动作；
+- `test_mission_refactor.py`：物理定位 gate、hard jump、两阶段目标评分、Motion-Aware A* goal/action、5 cm reverse 和 Planner→Executor 一致性；
 - `test_target_standoff_flow.py`：目标确认、缓存、final forward、NFC 两次尝试和目标重获；
 - `test_vision_tag_binding.py`：Tag↔Screen 绑定和 15 秒缓存。
 

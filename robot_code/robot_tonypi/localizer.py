@@ -249,8 +249,9 @@ class Localizer:
         camera_xy = np.array([cam_pos[0][0], cam_pos[1][0]], dtype=np.float64)
         forward = np.array([math.cos(math.radians(yaw)), math.sin(math.radians(yaw))], dtype=np.float64)
         robot_xy = camera_xy - self.camera_forward_offset_cm * forward
-        if not self._pose_in_bounds(robot_xy):
-            return None, "map_bounds", "pose_out_of_bounds"
+        # Physical field/building acceptance belongs to TaskManager, where the
+        # immutable MapModel is available.  Keeping a permissive filter here
+        # would otherwise hide out-of-field candidates before that gate.
         return RobotPose(
             x_cm=float(robot_xy[0]),
             y_cm=float(robot_xy[1]),

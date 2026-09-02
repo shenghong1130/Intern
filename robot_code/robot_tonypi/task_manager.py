@@ -29,6 +29,7 @@ from .models import (
     InteractionAuthorizationCheck,
     MissionState,
     NearWallRecoveryResult,
+    NavigationPlan,
     RecentBoundFlowerObservation,
     RobotPose,
     Screen,
@@ -272,7 +273,7 @@ class TaskManager:
             or screen.task_target_xy
             or screen.interaction_xy
         )
-        staging_xy = screen.navigation_staging_xy or interaction_xy
+        staging_xy = interaction_xy
         desired_yaw = (
             screen.task_target_yaw_deg
             if screen.task_target_yaw_deg is not None
@@ -295,7 +296,7 @@ class TaskManager:
     def target_goal_from_screen(self, screen: Screen, generation_id: int) -> TargetGoal:
         """Compatibility resolver for isolated tests; production uses map.screens."""
         interaction_xy = screen.interaction_target_xy or screen.task_target_xy or screen.target_xy
-        staging_xy = screen.navigation_staging_xy or interaction_xy
+        staging_xy = interaction_xy
         yaw = screen.task_target_yaw_deg if screen.task_target_yaw_deg is not None else screen.interaction_yaw_deg
         return TargetGoal(
             screen_id=int(screen.screen_id),
@@ -550,7 +551,7 @@ class TaskManager:
                 interaction_target_xy=target.interaction_target_xy,
                 task_target_xy=target.task_target_xy,
                 task_target_yaw_deg=target.task_target_yaw_deg,
-                navigation_standoff_cm=float(self.config["interaction"]["navigation_standoff_cm"]),
+                formal_target_distance_cm=float(self.config["interaction"]["target_distance_cm"]),
                 target_distance_cm=float(self.config["interaction"]["target_distance_cm"]),
                 target_final_forward_cm=float(self.config["interaction"]["target_final_forward_cm"]),
                 actual_target_offset_cm=self.target_surface_offset_cm(target),
@@ -1222,12 +1223,17 @@ class TaskManager:
         position_conflict_cm = 0.0
         yaw_conflict_deg = 0.0
         conflict = False
+        hard_jump = False
         if prior_pose is not None:
             position_conflict_cm = distance_xy(prior_pose.xy(), pose.xy())
             yaw_conflict_deg = abs(angle_diff_deg(pose.yaw_deg, prior_pose.yaw_deg))
             conflict = (
                 position_conflict_cm > float(self.config["navigation"].get("localization_pose_conflict_distance_cm", 15.0))
                 or yaw_conflict_deg > float(self.config["navigation"].get("localization_pose_conflict_yaw_deg", 25.0))
+            )
+            hard_jump = (
+                position_conflict_cm > float(self.config["navigation"].get("localization_hard_jump_distance_cm", 40.0))
+                or yaw_conflict_deg > float(self.config["navigation"].get("localization_hard_jump_yaw_deg", 60.0))
             )
         self.last_localization_tag_count = len(valid_areas)
         self.last_localization_quality = quality
@@ -1239,7 +1245,20 @@ class TaskManager:
             "visual_odometry_position_delta_cm": round(position_conflict_cm, 2),
             "visual_odometry_yaw_delta_deg": round(yaw_conflict_deg, 2),
             "visual_odometry_conflict": conflict,
+            "visual_odometry_hard_jump": hard_jump,
         }
+
+    def visual_pose_physical_rejection_reason(self, pose: RobotPose) -> Optional[str]:
+        """Return a hard physical rejection without consulting inflation/cost."""
+        map_obj = getattr(self, "map", None)
+        if map_obj is not None and hasattr(map_obj, "physical_pose_rejection_reason"):
+            return map_obj.physical_pose_rejection_reason(pose.xy())
+        map_cfg = self.config.get("map", {})
+        width = float(map_cfg.get("width_cm", 300.0))
+        height = float(map_cfg.get("height_cm", 300.0))
+        if not (0.0 <= pose.x_cm <= width and 0.0 <= pose.y_cm <= height):
+            return "pose_outside_field"
+        return None
 
     def capture_visual_pose_once(self, pan: float, reason: str) -> dict:
         """Capture and estimate one visual pose without moving or mutating RobotState."""
@@ -1280,7 +1299,53 @@ class TaskManager:
         prior_pose: Optional[RobotPose],
     ) -> dict:
         """Atomically accept a normal pose or confirm a suspect visual jump."""
+        physical_reason = self.visual_pose_physical_rejection_reason(pose)
+        if physical_reason is not None:
+            self.debug.event(
+                "localization_pose_physical_rejected",
+                reason=physical_reason,
+                localization_reason=reason,
+                visual_pose=pose.as_dict(),
+                prior_pose=None if prior_pose is None else prior_pose.as_dict(),
+                result="pose_unavailable_with_tags",
+                pose_installed=False,
+            )
+            return {
+                "accepted": False,
+                "pose": None,
+                "tags": tags,
+                "frame": None,
+                "annotated": None,
+                "localization_detail": {},
+                "decision": physical_reason,
+                "result_category": "pose_unavailable_with_tags",
+            }
         detail = self.assess_visual_localization(pose, tags, prior_pose)
+        if detail.get("visual_odometry_hard_jump"):
+            self.debug.event(
+                "pose_jump_rejected",
+                reason=reason,
+                rejection_reason="pose_jump_rejected",
+                position_jump_cm=detail["visual_odometry_position_delta_cm"],
+                yaw_jump_deg=detail["visual_odometry_yaw_delta_deg"],
+                hard_distance_cm=float(self.config["navigation"].get("localization_hard_jump_distance_cm", 40.0)),
+                hard_yaw_deg=float(self.config["navigation"].get("localization_hard_jump_yaw_deg", 60.0)),
+                visual_pose=pose.as_dict(),
+                prior_pose=None if prior_pose is None else prior_pose.as_dict(),
+                prior_pose_retained=True,
+                pose_installed=False,
+                result="pose_unavailable_with_tags",
+            )
+            return {
+                "accepted": False,
+                "pose": None,
+                "tags": tags,
+                "frame": None,
+                "annotated": None,
+                "localization_detail": detail,
+                "decision": "pose_jump_rejected",
+                "result_category": "pose_unavailable_with_tags",
+            }
         enabled = bool(self.config["navigation"].get(
             "localization_suspect_confirmation_enabled", True
         ))
@@ -1353,6 +1418,22 @@ class TaskManager:
             if confirmation_pose is None:
                 decision = "confirmation_pose_unavailable"
             else:
+                confirmation_physical_reason = self.visual_pose_physical_rejection_reason(
+                    confirmation_pose
+                )
+                if confirmation_physical_reason is not None:
+                    self.debug.event(
+                        "localization_pose_physical_rejected",
+                        reason=confirmation_physical_reason,
+                        localization_reason=reason + ":suspect_confirmation",
+                        visual_pose=confirmation_pose.as_dict(),
+                        prior_pose=None if prior_pose is None else prior_pose.as_dict(),
+                        result="pose_unavailable_with_tags",
+                        pose_installed=False,
+                    )
+                    decision = confirmation_physical_reason
+                    confirmation_pose = None
+            if confirmation_pose is not None:
                 confirmation_position_delta = distance_xy(
                     suspect_pose.xy(), confirmation_pose.xy()
                 )
@@ -1366,13 +1447,18 @@ class TaskManager:
                     confirmation_detail = self.assess_visual_localization(
                         confirmation_pose, confirmation.get("tags", []), prior_pose
                     )
-                    decision = "confirmed_visual_jump"
-                    accepted_pose = confirmation_pose
+                    if confirmation_detail.get("visual_odometry_hard_jump"):
+                        decision = "pose_jump_rejected"
+                    else:
+                        decision = "confirmed_visual_jump"
+                        accepted_pose = confirmation_pose
                 else:
                     confirmation_detail = self.assess_visual_localization(
                         confirmation_pose, confirmation.get("tags", []), prior_pose
                     )
-                    if not confirmation_detail.get("visual_odometry_conflict"):
+                    if confirmation_detail.get("visual_odometry_hard_jump"):
+                        decision = "pose_jump_rejected"
+                    elif not confirmation_detail.get("visual_odometry_conflict"):
                         decision = "confirmation_pose_matches_prior"
                         accepted_pose = confirmation_pose
                     else:
@@ -1565,6 +1651,7 @@ class TaskManager:
         captured_frame = False
         accepted_any_pose = False
         rejected_suspect_pose = False
+        physical_or_hard_rejection = False
         last_scan_pan = None
         required_target_id = (
             None
@@ -1604,7 +1691,18 @@ class TaskManager:
                         pose, tags, pan, reason, prior_pose
                     )
                     if not acceptance["accepted"]:
-                        rejected_suspect_pose = True
+                        rejection_decision = str(acceptance.get("decision", ""))
+                        is_physical_or_hard = rejection_decision in (
+                            "pose_outside_field",
+                            "pose_inside_building",
+                            "pose_jump_rejected",
+                        )
+                        physical_or_hard_rejection = (
+                            physical_or_hard_rejection or is_physical_or_hard
+                        )
+                        rejected_suspect_pose = (
+                            rejected_suspect_pose or not is_physical_or_hard
+                        )
                         self.emit_localization_diagnostics(
                             tags,
                             pan,
@@ -1766,7 +1864,9 @@ class TaskManager:
                     target_reacquired=False,
                 )
                 return False
-            if rejected_suspect_pose:
+            if physical_or_hard_rejection:
+                attempt_result = "pose_unavailable_with_tags"
+            elif rejected_suspect_pose:
                 attempt_result = "suspect_visual_pose_rejected"
             elif saw_any_tag:
                 attempt_result = "pose_unavailable_with_tags"
@@ -2849,8 +2949,17 @@ class TaskManager:
                         "reason": acceptance["decision"],
                     },
                 )
+                rejection_decision = str(acceptance.get("decision", ""))
                 self.record_localization_failure(
-                    "suspect_visual_pose_rejected",
+                    (
+                        "pose_unavailable_with_tags"
+                        if rejection_decision in {
+                            "pose_outside_field",
+                            "pose_inside_building",
+                            "pose_jump_rejected",
+                        }
+                        else "suspect_visual_pose_rejected"
+                    ),
                     saw_any_tag=bool(tags),
                     reason="scan_after_turn:" + reason,
                 )
@@ -2946,7 +3055,7 @@ class TaskManager:
         )
 
     def navigate_directly_to_target(self, screen: Screen) -> bool:
-        """Run the independent close approach to the 25 cm interaction point."""
+        """Deprecated compatibility wrapper for formal target navigation."""
         goal = getattr(self, "current_target_goal", None)
         if goal is None or int(goal.screen_id) != int(screen.screen_id):
             goal = self.lock_target_goal(screen)
@@ -2955,7 +3064,7 @@ class TaskManager:
             return False
         return self.navigate_to_xy(
             goal.interaction_target_xy,
-            reason="interaction_target",
+            reason="interaction_target_compat",
             arrival_radius_cm=float(self.config["navigation"]["target_arrival_radius_cm"]),
             max_steps=int(self.config["navigation"]["max_steps_per_target"]),
             target_yaw_deg=goal.desired_yaw_deg,
@@ -2965,7 +3074,7 @@ class TaskManager:
             allow_goal_high_cost=True,
             target_screen=screen,
             target_goal=goal,
-            bypass_action_safety=True,
+            bypass_action_safety=False,
         )
 
     def execute_final_forward(self, screen: Screen) -> bool:
@@ -5197,94 +5306,142 @@ class TaskManager:
             and int(locked.screen_id) not in temporary
             and int(locked.screen_id) not in nfc_gave_up
         ):
+            interaction_xy = (
+                locked.interaction_target_xy
+                or locked.task_target_xy
+                or locked.interaction_xy
+            )
             self.last_target_plan = {
                 "selection_rule": "preserve_locked_target",
                 "screen_id": locked.screen_id,
-                "navigation_staging_xy": list(
-                    locked.navigation_staging_xy
-                    or locked.task_target_xy
-                    or locked.interaction_xy
-                ),
+                "navigation_staging_xy": list(interaction_xy),
+                "interaction_target_xy": list(interaction_xy),
                 "task_target_xy": list(locked.task_target_xy or locked.interaction_xy),
             }
             return locked
-        ranked = sorted(
-            (
-                screen
-                for screen in self.map.screens.values()
-                if (
-                    not screen.done()
-                    and int(screen.screen_id) not in temporary
-                    and int(screen.screen_id) not in nfc_gave_up
-                )
-            ),
-            key=lambda screen: (
-                distance_xy(
-                    pose.xy(),
-                    screen.navigation_staging_xy
-                    or screen.task_target_xy
-                    or screen.interaction_xy,
-                ),
-                int(screen.screen_id),
-            ),
-        )
-        if not ranked:
+        eligible = [
+            screen
+            for screen in self.map.screens.values()
+            if (
+                not screen.done()
+                and int(screen.screen_id) not in temporary
+                and int(screen.screen_id) not in nfc_gave_up
+            )
+        ]
+        if not eligible:
             self.last_target_plan = {}
             return None
-        best = ranked[0]
-        navigation_staging = (
-            best.navigation_staging_xy or best.task_target_xy or best.interaction_xy
+        cfg = self.config["interaction"]
+        distance_window = max(0.0, float(cfg.get(
+            "target_selection_distance_window_cm", 25.0
+        )))
+        behind_scale = max(0.0, float(cfg.get(
+            "target_selection_behind_turn_penalty_cm_per_deg", 0.20
+        )))
+        final_scale = max(0.0, float(cfg.get(
+            "target_selection_final_yaw_penalty_cm_per_deg", 0.03
+        )))
+        penalty_cap = max(0.0, float(cfg.get(
+            "target_selection_orientation_penalty_max_cm", 25.0
+        )))
+        candidates = []
+        for screen in eligible:
+            target_xy = (
+                screen.interaction_target_xy
+                or screen.task_target_xy
+                or screen.interaction_xy
+            )
+            distance = distance_xy(pose.xy(), target_xy)
+            bearing = math.degrees(math.atan2(
+                float(target_xy[1]) - pose.y_cm,
+                float(target_xy[0]) - pose.x_cm,
+            ))
+            bearing_error = angle_diff_deg(bearing, pose.yaw_deg)
+            behind_turn = max(0.0, abs(bearing_error) - 90.0)
+            desired_yaw = (
+                screen.task_target_yaw_deg
+                if screen.task_target_yaw_deg is not None
+                else screen.interaction_yaw_deg
+            )
+            final_yaw_error = abs(angle_diff_deg(desired_yaw, pose.yaw_deg))
+            orientation_penalty = min(
+                penalty_cap,
+                behind_turn * behind_scale + final_yaw_error * final_scale,
+            )
+            candidates.append({
+                "screen": screen,
+                "screen_id": int(screen.screen_id),
+                "tag_id": int(screen.screen_id),
+                "interaction_target_xy": list(target_xy),
+                "navigation_staging_xy": list(target_xy),
+                "distance_cm": float(distance),
+                "bearing_error_deg": float(bearing_error),
+                "behind_turn_deg": float(behind_turn),
+                "final_yaw_error_deg": float(final_yaw_error),
+                "orientation_penalty": float(orientation_penalty),
+                "score": float(distance + orientation_penalty),
+                "desired_yaw_deg": float(desired_yaw),
+            })
+        nearest_distance = min(item["distance_cm"] for item in candidates)
+        shortlist = [
+            item for item in candidates
+            if item["distance_cm"] <= nearest_distance + distance_window + 1e-9
+        ]
+        selected = min(
+            shortlist,
+            key=lambda item: (item["score"], item["distance_cm"], item["screen_id"]),
         )
-        task_target = best.task_target_xy or best.interaction_xy
-        distance = distance_xy(pose.xy(), navigation_staging)
-        sorted_candidates = [
-            {
-                "screen_id": screen.screen_id,
-                "tag_id": screen.screen_id,
-                "surface_face": screen.surface_face,
-                "cardinal_normal_xy": list(screen.cardinal_normal_xy),
-                "navigation_staging_xy": list(
-                    screen.navigation_staging_xy
-                    or screen.task_target_xy
-                    or screen.interaction_xy
-                ),
-                "interaction_target_xy": list(
-                    screen.interaction_target_xy
-                    or screen.task_target_xy
-                    or screen.interaction_xy
-                ),
-                "task_target_xy": list(screen.task_target_xy or screen.interaction_xy),
-                "task_target_yaw_deg": screen.task_target_yaw_deg,
-                "distance_cm": round(
-                    distance_xy(
-                        pose.xy(),
-                        screen.navigation_staging_xy
-                        or screen.task_target_xy
-                        or screen.interaction_xy,
-                    ), 2
-                ),
-            }
-            for screen in ranked
+        best = selected["screen"]
+        for item in sorted(candidates, key=lambda value: (value["distance_cm"], value["screen_id"])):
+            item["within_distance_window"] = item in shortlist
+            item["selected"] = item is selected
+            if hasattr(self, "debug"):
+                self.debug.event(
+                "target_selection_candidate",
+                screen_id=item["screen_id"],
+                tag_id=item["tag_id"],
+                interaction_target_xy=item["interaction_target_xy"],
+                distance_cm=round(item["distance_cm"], 2),
+                nearest_distance_cm=round(nearest_distance, 2),
+                distance_window_cm=distance_window,
+                within_distance_window=item["within_distance_window"],
+                bearing_error_deg=round(item["bearing_error_deg"], 2),
+                behind_turn_deg=round(item["behind_turn_deg"], 2),
+                final_yaw_error_deg=round(item["final_yaw_error_deg"], 2),
+                orientation_penalty=round(item["orientation_penalty"], 2),
+                score=round(item["score"], 2),
+                selected=item["selected"],
+                )
+        task_target = tuple(selected["interaction_target_xy"])
+        serializable_candidates = [
+            {key: (round(value, 2) if isinstance(value, float) else value)
+             for key, value in item.items() if key != "screen"}
+            for item in sorted(candidates, key=lambda value: (value["distance_cm"], value["screen_id"]))
         ]
         self.last_target_plan = {
-            "selection_rule": "euclidean_current_pose_to_navigation_staging_then_tag_id",
+            "selection_rule": "nearest_interaction_target_window_then_orientation_score_then_id",
             "tag_id": best.screen_id,
             "screen_id": best.screen_id,
-            "distance_cm": round(distance, 2),
+            "distance_cm": round(selected["distance_cm"], 2),
+            "nearest_distance_cm": round(nearest_distance, 2),
+            "distance_window_cm": distance_window,
+            "bearing_error_deg": round(selected["bearing_error_deg"], 2),
+            "behind_turn_deg": round(selected["behind_turn_deg"], 2),
+            "final_yaw_error_deg": round(selected["final_yaw_error_deg"], 2),
+            "orientation_penalty": round(selected["orientation_penalty"], 2),
+            "score": round(selected["score"], 2),
             "surface_face": best.surface_face,
             "cardinal_normal_xy": list(best.cardinal_normal_xy),
             "tag_front_xy": list(best.tag_front_xy or best.interaction_xy),
-            "navigation_staging_xy": [
-                round(float(navigation_staging[0]), 2),
-                round(float(navigation_staging[1]), 2),
-            ],
+            "navigation_staging_xy": list(task_target),
             "interaction_target_xy": [
                 round(float(task_target[0]), 2), round(float(task_target[1]), 2)
             ],
             "task_target_xy": [round(float(task_target[0]), 2), round(float(task_target[1]), 2)],
             "task_target_yaw_deg": best.task_target_yaw_deg,
-            "remaining_ids": [screen.screen_id for screen in ranked],
-            "sorted_candidates": sorted_candidates,
+            "remaining_ids": [item["screen_id"] for item in serializable_candidates],
+            "candidates": serializable_candidates,
+            "sorted_candidates": serializable_candidates,
         }
         return best
 
@@ -7597,6 +7754,371 @@ class TaskManager:
         self.visual_no_progress_count = 0
         return False
 
+    def execute_motion_astar_action(
+        self,
+        plan: NavigationPlan,
+        target: Screen,
+        goal: TargetGoal,
+    ) -> bool:
+        """Execute the planner's first action batch verbatim, then request replan."""
+        if not plan.actions or self.state.pose is None:
+            self.last_navigation_failure_reason = "motion_astar_empty_action_plan"
+            return False
+        first = plan.actions[0]
+        same = []
+        for item in plan.actions:
+            if item.action_key != first.action_key:
+                break
+            same.append(item)
+        requested = sum(max(1, int(item.cycles)) for item in same)
+        kind = (
+            "strafe" if first.kind.startswith("strafe_")
+            else "turn" if first.kind.startswith("turn_")
+            else first.kind
+        )
+        if kind in ("forward", "reverse"):
+            unit = abs(float(self.config["motion"]["actions"][first.action_key].get("forward_cm", 1.0)))
+        elif kind == "strafe":
+            unit = abs(float(self.config["motion"]["actions"][first.action_key].get("lateral_cm", 1.0)))
+        else:
+            unit = abs(float(self.config["motion"]["actions"][first.action_key].get("yaw_deg", 1.0)))
+        goal_distance = distance_xy(self.state.pose.xy(), goal.interaction_target_xy)
+        cycles, batch_reason = self.select_adaptive_action_batch(
+            kind,
+            requested,
+            unit,
+            requested * unit,
+            goal_distance,
+            navigation_mode="normal",
+        )
+        pose_before = self.copy_pose(self.state.pose)
+        predicted_pose = first.predicted_end_pose
+        if cycles != max(1, int(first.cycles)):
+            if kind == "turn":
+                signed_yaw = float(
+                    self.config["motion"]["actions"][first.action_key].get("yaw_deg", 0.0)
+                ) * cycles
+                predicted_pose = RobotPose(
+                    x_cm=pose_before.x_cm,
+                    y_cm=pose_before.y_cm,
+                    yaw_deg=normalize_angle_deg(pose_before.yaw_deg + signed_yaw),
+                    source="motion_astar_prediction",
+                )
+            else:
+                signed_forward = cycles * unit * (-1.0 if kind == "reverse" else 1.0 if kind == "forward" else 0.0)
+                signed_lateral = cycles * unit * (
+                    1.0 if first.kind == "strafe_left" else -1.0 if first.kind == "strafe_right" else 0.0
+                )
+                predicted_xy = self.translated_pose_xy(
+                    pose_before,
+                    forward_cm=signed_forward,
+                    lateral_cm=signed_lateral,
+                )
+                predicted_pose = RobotPose(
+                    x_cm=predicted_xy[0],
+                    y_cm=predicted_xy[1],
+                    yaw_deg=pose_before.yaw_deg,
+                    source="motion_astar_prediction",
+                )
+        predicted = predicted_pose.as_dict()
+        self.debug.event(
+            "planned_action",
+            screen_id=target.screen_id,
+            kind=first.kind,
+            action_key=first.action_key,
+            planned_cycles=requested,
+            batch_cycles=cycles,
+            predicted_pose=predicted,
+            predicted_distance_cm=round(first.predicted_distance_cm, 3),
+            predicted_yaw_deg=round(first.predicted_yaw_deg, 3),
+            action_cost=round(first.cost, 3),
+            goal_xy=goal.interaction_target_xy,
+            goal_yaw=goal.desired_yaw_deg,
+        )
+        if kind in ("forward", "reverse", "strafe"):
+            signed_forward = 0.0
+            signed_lateral = 0.0
+            if kind == "forward":
+                signed_forward = cycles * unit
+            elif kind == "reverse":
+                signed_forward = -cycles * unit
+            else:
+                signed_lateral = cycles * unit * (1.0 if first.kind == "strafe_left" else -1.0)
+            end_xy = self.translated_pose_xy(
+                pose_before, forward_cm=signed_forward, lateral_cm=signed_lateral
+            )
+            corridor = self.map.target_direct_corridor_metrics(
+                pose_before.xy(),
+                end_xy,
+                target.screen_id,
+                float(self.config["navigation"].get("translation_corridor_half_width_cm", 8.0)),
+                float(self.config["navigation"].get("action_planner_segment_max_cost", 55.0)),
+                minimum_non_target_clearance_cm=0.0,
+            )
+            if (
+                not corridor.get("clear")
+                and not corridor.get("physical_collision")
+                and not corridor.get("clearance_rejected")
+                and self.map.non_target_obstacle_cost_xy(end_xy, target.screen_id)
+                < self.map.non_target_obstacle_cost_xy(pose_before.xy(), target.screen_id)
+            ):
+                corridor = dict(corridor)
+                corridor["clear"] = True
+                corridor["start_escape"] = True
+            if not corridor.get("clear"):
+                self.last_navigation_failure_reason = "planned_action_safety_rejected"
+                self.debug.event(
+                    "executed_action",
+                    action_key=first.action_key,
+                    executed=False,
+                    reason=self.last_navigation_failure_reason,
+                    corridor=corridor,
+                )
+                return False
+            if kind == "reverse":
+                local_forward, local_lateral = self.local_vector_to(
+                    pose_before, goal.interaction_target_xy
+                )
+                reverse_reason = None
+                if goal_distance > float(self.config["navigation"].get("reverse_prefer_max_goal_distance_cm", 5.0)):
+                    reverse_reason = "goal_too_far"
+                elif local_forward >= 0.0:
+                    reverse_reason = "goal_not_behind"
+                elif distance_xy(end_xy, goal.interaction_target_xy) >= goal_distance:
+                    reverse_reason = "would_not_reduce_goal_distance"
+                if reverse_reason is not None:
+                    self.last_navigation_failure_reason = "reverse_rule_violation"
+                    self.debug.event(
+                        "reverse_rejected",
+                        reason=reverse_reason,
+                        distance_to_final_goal=round(goal_distance, 3),
+                        target_local_forward_cm=round(local_forward, 3),
+                        target_local_lateral_cm=round(local_lateral, 3),
+                    )
+                    return False
+                self.debug.event(
+                    "reverse_allowed",
+                    reason="near_goal_behind_and_reduces_distance",
+                    distance_to_final_goal=round(goal_distance, 3),
+                )
+        elif not self.map.target_rotation_sweep_clear(
+            pose_before.xy(),
+            float(self.config["navigation"].get("turn_sweep_radius_cm", 10.0)),
+            float(self.config["navigation"].get("normal_navigation_max_cost", 55.0)),
+            target.screen_id,
+        ):
+            self.last_navigation_failure_reason = "planned_turn_safety_rejected"
+            return False
+
+        result = self.motion.run(first.action_key, times_override=cycles)
+        actual_cycles = getattr(result, "executed_times", None)
+        if actual_cycles is None:
+            actual_cycles = result.times if result.ok else 0
+        self.debug.event(
+            "executed_action",
+            screen_id=target.screen_id,
+            kind=first.kind,
+            action_key=first.action_key,
+            batch_cycles=cycles,
+            actual_cycles=int(actual_cycles),
+            predicted_pose=predicted,
+            dead_reckoning_pose=None if self.state.pose is None else self.state.pose.as_dict(),
+            ok=bool(result.ok),
+            replan_reason="planned_batch_completed",
+            adaptive_batch_reason=batch_reason,
+        )
+        if not result.ok:
+            self.last_navigation_failure_reason = "hardware_failure"
+            return False
+        if kind == "turn":
+            if not self.monitor_turn_result(
+                pose_before,
+                predicted_pose.yaw_deg,
+                result,
+                "motion_astar_turn",
+            ):
+                return False
+        else:
+            if kind == "forward":
+                self.set_pending_forward_progress(pose_before, abs(float(result.model_forward_cm)))
+            self.post_action_relocalize(
+                "motion_astar_{}".format(kind),
+                pose_before,
+                result,
+                goal.interaction_target_xy,
+                navigation_mode="normal",
+            )
+        self.pending_post_action_replan = True
+        return True
+
+    def navigate_motion_plan_to_target(self, screen: Screen, goal: TargetGoal) -> bool:
+        """Closed-loop formal navigation to 25 cm XY plus desired yaw."""
+        nav = self.config["navigation"]
+        radius = float(nav.get("target_arrival_radius_cm", 4.0))
+        yaw_tolerance = float(nav.get("target_arrival_yaw_tolerance_deg", 10.0))
+        max_steps = int(nav.get("max_steps_per_target", 80))
+        self.active_navigation_phase = "target_navigation"
+        self.last_navigation_failure_reason = ""
+        self.clear_plan_failure_watchdog("new_motion_astar_target")
+        for step in range(max_steps):
+            if self.time_left_s() <= 0:
+                self.last_navigation_failure_reason = "time_limit"
+                return False
+            if self.state.pose is None:
+                if not self.localize_scan(reason="target_navigation_pose_missing"):
+                    self.recover_from_no_tag_if_needed("target_navigation_pose_missing")
+                if self.state.pose is None:
+                    self.last_navigation_failure_reason = "localization_required"
+                    return False
+            if not self.validate_target_goal(goal, requested_xy=goal.interaction_target_xy):
+                self.last_navigation_failure_reason = "target_pose_mismatch"
+                return False
+            pose = self.state.pose
+            relocalization = self.adaptive_relocalization_decision(
+                "normal",
+                last_action=getattr(self, "last_motion_action", ""),
+                emit=False,
+            )
+            if relocalization["decision"] == "relocalize_now":
+                self.adaptive_relocalization_decision(
+                    "normal",
+                    last_action=getattr(self, "last_motion_action", ""),
+                )
+                if not self.localize_scan(
+                    reason="adaptive_navigation_budget",
+                    allow_failure_escalation=False,
+                ):
+                    self.recover_from_no_tag_if_needed(
+                        "target_navigation:adaptive_relocalization"
+                    )
+                continue
+            distance = distance_xy(pose.xy(), goal.interaction_target_xy)
+            yaw_error = abs(angle_diff_deg(goal.desired_yaw_deg, pose.yaw_deg))
+            if distance <= radius and yaw_error <= yaw_tolerance:
+                if not self.visual_pose_is_fresh(float(nav.get("arrival_visual_pose_max_age_s", 3.0))):
+                    if not self.localize_scan(
+                        reason="before_arrived_at_target", allow_failure_escalation=False
+                    ):
+                        self.last_navigation_failure_reason = "arrival_visual_localization_required"
+                    continue
+                self.debug.event(
+                    "navigate_xy_arrived",
+                    reason="target_navigation",
+                    target_xy=goal.interaction_target_xy,
+                    desired_yaw=goal.desired_yaw_deg,
+                    distance_cm=round(distance, 3),
+                    yaw_error_deg=round(yaw_error, 3),
+                    step=step,
+                )
+                return True
+            if self.near_wall_now(pose) and distance > radius:
+                recovery = self.recover_from_near_wall("target_navigation:near_wall")
+                if recovery == NearWallRecoveryResult.HARDWARE_FAILURE:
+                    return False
+                if (
+                    recovery == NearWallRecoveryResult.STILL_NEAR_WALL
+                    and self.last_navigation_failure_reason == "near_wall_recovery_exhausted"
+                ):
+                    return False
+                continue
+            self.debug.event(
+                "motion_astar_started",
+                screen_id=screen.screen_id,
+                goal_xy=goal.interaction_target_xy,
+                goal_yaw=goal.desired_yaw_deg,
+                start_pose=pose.as_dict(),
+            )
+            plan = self.map.plan_motion_actions(
+                pose,
+                goal.interaction_target_xy,
+                goal.desired_yaw_deg,
+                nav,
+                self.config["motion"],
+                target_screen_id=screen.screen_id,
+                goal_position_tolerance_cm=radius,
+                goal_yaw_tolerance_deg=yaw_tolerance,
+            )
+            metrics = dict(getattr(self.map, "last_action_plan_metrics", {}))
+            selected_reverse = bool(
+                plan is not None and any(item.kind == "reverse" for item in plan.actions)
+            )
+            self.debug.event(
+                "reverse_allowed" if selected_reverse else "reverse_rejected",
+                reason=(
+                    "selected_by_motion_astar"
+                    if selected_reverse
+                    else "not_selected_or_normal_navigation_rule"
+                ),
+                distance_to_final_goal=round(distance, 3),
+                reverse_limit_cm=float(nav.get("reverse_prefer_max_goal_distance_cm", 5.0)),
+                planner_reverse_allowed_expansions=metrics.get("reverse_allowed", 0),
+                planner_reverse_rejected_expansions=metrics.get("reverse_rejected", 0),
+            )
+            if plan is None:
+                self.debug.event(
+                    "motion_astar_failed",
+                    screen_id=screen.screen_id,
+                    **metrics
+                )
+                self.active_navigation_plan = {
+                    "goal_type": "motion_astar_failed",
+                    "goal_xy": list(goal.interaction_target_xy),
+                    "goal_yaw": goal.desired_yaw_deg,
+                }
+                count, _ = self.register_plan_failure(
+                    pose, goal.interaction_target_xy, "motion_astar_no_path"
+                )
+                threshold = int(nav.get("identical_local_replan_failure_threshold", 3))
+                if count >= max(1, threshold):
+                    self.set_mission_state(MissionState.NAVIGATION_RECOVERY)
+                    if not self.recover_via_indoor_waypoint("motion_astar_no_path"):
+                        self.last_navigation_failure_reason = "navigation_blocked"
+                        return False
+                    self.clear_plan_failure_watchdog("interior_recovery_success")
+                else:
+                    self.localize_scan(
+                        reason="motion_astar_failed", allow_failure_escalation=False
+                    )
+                continue
+            self.clear_plan_failure_watchdog("motion_astar_success")
+            self.active_navigation_plan = {
+                "goal_type": "motion_astar",
+                "goal_xy": list(goal.interaction_target_xy),
+                "goal_yaw": goal.desired_yaw_deg,
+                "path_xy": [list(point) for point in plan.path_xy],
+                "actions": [item.as_dict() for item in plan.actions],
+            }
+            self.debug.event(
+                "motion_astar_success",
+                screen_id=screen.screen_id,
+                goal_xy=goal.interaction_target_xy,
+                goal_yaw=goal.desired_yaw_deg,
+                expanded_nodes=metrics.get("expanded_nodes"),
+                total_cost=round(plan.total_cost, 3),
+                turn_cost=round(float(metrics.get("turn_cost", 0.0)), 3),
+                selected_actions=[item.kind for item in plan.actions],
+            )
+            self.debug.render_map(
+                self.map,
+                pose=pose,
+                path=plan.path_xy,
+                target_screen=screen,
+                target_goal=goal,
+                recovery_waypoint=getattr(self, "active_recovery_waypoint", None),
+                navigation_plan=self.active_navigation_plan,
+            )
+            self.publish_state(path=plan.path_xy)
+            if not self.execute_motion_astar_action(plan, screen, goal):
+                if self.last_navigation_failure_reason.startswith("planned_"):
+                    recovery = self.recover_from_near_wall(
+                        "target_navigation:" + self.last_navigation_failure_reason
+                    )
+                    if recovery != NearWallRecoveryResult.HARDWARE_FAILURE:
+                        continue
+                return False
+        self.last_navigation_failure_reason = "navigation_step_limit"
+        return False
+
     def navigate_to_xy(
         self,
         target_xy: Tuple[float, float],
@@ -8147,129 +8669,33 @@ class TaskManager:
         return False
 
     def navigate_to_screen(self, screen: Screen) -> bool:
-        """Navigate to 40 cm staging, force vision, then approach 25 cm."""
+        """Navigate directly to the formal 25 cm interaction pose and yaw."""
         goal = getattr(self, "current_target_goal", None)
         if goal is None or int(goal.screen_id) != int(screen.screen_id):
             goal = self.lock_target_goal(screen)
         if not self.validate_target_goal(goal):
             self.last_navigation_failure_reason = "target_pose_mismatch"
             return False
-
-        pose = None if self.state.pose is None else self.state.pose.as_dict()
         geometry = {
             "screen_id": int(screen.screen_id),
             "face_center": None if screen.face_center_xy is None else list(screen.face_center_xy),
             "navigation_staging_xy": list(goal.navigation_staging_xy),
             "interaction_target_xy": list(goal.interaction_target_xy),
-            "pose": pose,
+            "goal_yaw": goal.desired_yaw_deg,
+            "pose": None if self.state.pose is None else self.state.pose.as_dict(),
         }
         self.debug.event("target_geometry_created", **geometry)
-        staging_distance = (
-            None
-            if self.state.pose is None
-            else round(distance_xy(self.state.pose.xy(), goal.navigation_staging_xy), 3)
-        )
         self.debug.event(
-            "target_staging_navigation_started",
-            distance_to_goal_cm=staging_distance,
+            "target_navigation_started",
+            distance_to_goal_cm=(
+                None if self.state.pose is None else round(
+                    distance_xy(self.state.pose.xy(), goal.interaction_target_xy), 3
+                )
+            ),
             **geometry
         )
-        staging_ok = self.navigate_to_xy(
-            goal.navigation_staging_xy,
-            reason="target_staging",
-            arrival_radius_cm=float(
-                self.config["interaction"].get("navigation_staging_arrival_radius_cm", 8.0)
-            ),
-            max_steps=int(self.config["navigation"]["max_steps_per_target"]),
-            target_yaw_deg=goal.desired_yaw_deg,
-            target_yaw_tolerance_deg=float(
-                self.config["navigation"]["arrival_yaw_tolerance_deg"]
-            ),
-            allow_goal_high_cost=False,
-            target_screen=None,
-            target_goal=goal,
-            bypass_action_safety=False,
-            # The mandatory scan below is the staging arrival localization.
-            require_fresh_visual_on_arrival=False,
-        )
-        if not staging_ok:
+        if not self.navigate_motion_plan_to_target(screen, goal):
             return False
-
-        staging_pose = None if self.state.pose is None else self.state.pose.as_dict()
-        staging_distance = (
-            None
-            if self.state.pose is None
-            else round(distance_xy(self.state.pose.xy(), goal.navigation_staging_xy), 3)
-        )
-        self.debug.event(
-            "target_staging_arrived",
-            distance_to_goal_cm=staging_distance,
-            **dict(geometry, pose=staging_pose)
-        )
-        stand = self.motion.run("stand", times_override=1)
-        if not stand.ok:
-            self.last_navigation_failure_reason = "target_staging_stop_failed"
-            self.debug.event(
-                "target_staging_relocalize_failed",
-                reason=self.last_navigation_failure_reason,
-                distance_to_goal_cm=staging_distance,
-                **dict(geometry, pose=staging_pose)
-            )
-            return False
-        try:
-            self.hardware.center_head()
-        except Exception as exc:
-            self.last_navigation_failure_reason = "target_staging_head_center_failed"
-            self.debug.event(
-                "target_staging_relocalize_failed",
-                reason=self.last_navigation_failure_reason,
-                error=str(exc),
-                distance_to_goal_cm=staging_distance,
-                **dict(geometry, pose=staging_pose)
-            )
-            return False
-
-        self.debug.event(
-            "target_staging_relocalize_started",
-            reason="target_staging_relocalize",
-            distance_to_goal_cm=staging_distance,
-            **dict(geometry, pose=staging_pose)
-        )
-        localized = bool(self.localize_scan(
-            reason="target_staging_relocalize",
-            allow_pan_search=True,
-            allow_failure_escalation=False,
-        ))
-        latest_pose = None if self.state.pose is None else self.state.pose.as_dict()
-        localization_event = (
-            "target_staging_relocalize_success"
-            if localized
-            else "target_staging_relocalize_failed"
-        )
-        self.debug.event(
-            localization_event,
-            reason="target_staging_relocalize",
-            distance_to_goal_cm=(
-                None
-                if self.state.pose is None
-                else round(distance_xy(self.state.pose.xy(), goal.interaction_target_xy), 3)
-            ),
-            **dict(geometry, pose=latest_pose)
-        )
-        if not localized:
-            self.last_navigation_failure_reason = "target_staging_visual_localization_required"
-            return False
-
-        self.debug.event(
-            "interaction_approach_started",
-            distance_to_goal_cm=round(
-                distance_xy(self.state.pose.xy(), goal.interaction_target_xy), 3
-            ),
-            **dict(geometry, pose=latest_pose)
-        )
-        if not self.navigate_directly_to_target(screen):
-            return False
-        final_pose = None if self.state.pose is None else self.state.pose.as_dict()
         self.debug.event(
             "interaction_target_arrived",
             distance_to_goal_cm=(
@@ -8277,7 +8703,10 @@ class TaskManager:
                 if self.state.pose is None
                 else round(distance_xy(self.state.pose.xy(), goal.interaction_target_xy), 3)
             ),
-            **dict(geometry, pose=final_pose)
+            **dict(
+                geometry,
+                pose=None if self.state.pose is None else self.state.pose.as_dict(),
+            )
         )
         return True
 

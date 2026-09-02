@@ -9,17 +9,16 @@ TonyPi competition controller for a 300 × 300 cm field. Before changing task lo
 - Head pan 100° is center, larger angles look left, smaller angles look right.
 - AprilTag ID == `screen_id` == NFC `worker_id`.
 - Tag positions in `load_pos.py` and camera calibration are immutable unless a dedicated calibration task explicitly changes them.
-- The locked `TargetGoal` atomically owns screen ID, tag ID, anchor, navigation staging point, interaction point, desired yaw, source and generation. Never update those fields independently.
+- The locked `TargetGoal` atomically owns screen ID, tag ID, anchor, 25 cm interaction point, desired yaw, source and generation. Never update those fields independently. The deprecated `navigation_staging_xy` compatibility field equals `interaction_target_xy`.
 
 ## Current target geometry
 
-- `navigation_standoff_cm = 40.0`; ordinary A*/Action Planner navigation ends at this staging point.
 - `target_distance_cm = 25.0`.
 - `target_lateral_offset_cm = -1.0` in the robot-left frame.
 - `target_yaw_offset_deg = 5.0`; it affects only desired yaw, never target XY.
 - `target_final_forward_cm = 17.0`.
-- Both points are derived from the same building `face_center` and outward cardinal normal. The interaction point additionally retains the robot-left lateral offset.
-- `interaction_target_xy`, `target_xy`, `interaction_xy` and `task_target_xy` are the same 25 cm interaction point; `task_target_xy` is compatibility-only and must not be used as the ordinary planner destination. The Screen/Tag anchor is separate.
+- The point is derived from the building `face_center` and outward cardinal normal and retains the robot-left lateral offset.
+- `goal_xy`, `navigation_staging_xy`, `interaction_target_xy`, `target_xy`, `interaction_xy` and `task_target_xy` resolve to the same 25 cm interaction point. The Screen/Tag anchor is separate.
 - Cardinal normals are exactly `(-1,0)`, `(1,0)`, `(0,-1)`, `(0,1)`. Desired yaw is the screen-facing cardinal yaw plus `5°`, normalized to `[-180, 180)`.
 
 ## Vision and authorization boundary
@@ -64,9 +63,10 @@ The following invariants are mandatory:
 
 ## Navigation and recovery contracts
 
-- Ordinary planners keep hard occupancy, footprint, soft cost, clearance, A*, action-space planning, near-wall recovery and interior recovery.
-- Ordinary target navigation calls `navigate_to_xy()` for `navigation_staging_xy` with normal action safety. After staging arrival it stops, centers the head and must accept a fresh `localize_scan(reason="target_staging_relocalize")` visual Pose before replanning toward `interaction_target_xy`.
-- Only the bounded 40→25 cm interaction approach calls `navigate_to_xy(..., allow_goal_high_cost=True, bypass_action_safety=True)`. Its already selected TURN/FORWARD/BACK/LATERAL action is not vetoed again by near-wall/corridor/footprint/center-free gates.
+- Formal target navigation uses Motion-Aware A* over `(x_grid, y_grid, yaw_bin)` and requires both interaction XY and desired yaw. `NavigationPlan.actions` is the authoritative executor input; do not re-derive motion from `path_xy`.
+- Each executed batch is followed by adaptive relocalization and replanning. Above 15 cm, high-confidence forward/strafe may batch; at or below 15 cm execution is single-cycle.
+- Formal navigation never uses `bypass_action_safety=True`. Only the locked target building's soft inflation may be excluded; field bounds, hard occupancy, footprint, unrelated buildings, dynamic obstacles and corridor checks stay active.
+- Normal REVERSE is expandable only within 5 cm of the final goal when the goal is behind, the move reduces goal distance and the rear corridor is safe. Recovery and interaction retreats are independent of this limit.
 - Interaction geometry may change Screen target XY/yaw fields only. Building bounds, hard cells, inflation and cost remain derived solely from immutable Tag coordinates and map configuration.
 - The current target building's soft inflation may be ignored only by the bounded target-owned direct/approach rules. Hard occupancy, boundaries, unrelated buildings and dynamic obstacles remain hard constraints outside task-target bypass semantics.
 - Repeated identical planning failures escalate at 3; they must not wait for the 80-step target limit.
@@ -81,6 +81,8 @@ The following invariants are mandatory:
 - `no_tag`, `pose_unavailable_with_tags` and `capture_failed` are distinct failure results.
 - Startup and configured recovery reuse `run_localization_search_sequence()`: full pan, configured body action, full pan.
 - A large turn triggers one relocalization only while actions remain since the previous accepted visual Pose.
+- Before installation, every visual Pose must be inside exact field bounds and outside every real building rectangle. Soft inflation never makes a Pose physically invalid.
+- Normal conflicts use the existing 15 cm / 25° suspect confirmation. A jump over 40 cm or 60° is rejected immediately and cannot be accepted by a matching second far frame.
 
 ## Run and test
 

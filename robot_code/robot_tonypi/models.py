@@ -29,7 +29,7 @@ class MissionState(str, Enum):
     SELECT_NEAREST_TARGET = "SELECT_NEAREST_TARGET"
     BUILD_CARDINAL_TARGET_POSE = "BUILD_CARDINAL_TARGET_POSE"
     NAVIGATE_TO_TARGET = "NAVIGATE_TO_TARGET"
-    TARGET_DIRECT_APPROACH = "TARGET_DIRECT_APPROACH"
+    TARGET_DIRECT_APPROACH = "TARGET_DIRECT_APPROACH"  # deprecated compatibility state
     ARRIVED_AT_TARGET = "ARRIVED_AT_TARGET"
     CONFIRM_TARGET_SCREEN = "CONFIRM_TARGET_SCREEN"
     TARGET_TAG_CONFIRMED = "TARGET_TAG_CONFIRMED"
@@ -87,12 +87,11 @@ class RobotPose:
 
 @dataclass(frozen=True)
 class TargetGoal:
-    """Atomic target identity with separate staging and interaction poses."""
+    """Atomic target identity for the formal 25 cm interaction pose."""
     screen_id: int
     tag_id: int
     anchor_xy: Tuple[float, float]
-    # Compatibility alias for the historical 25 cm task target.  Ordinary
-    # navigation must use navigation_staging_xy instead.
+    # Compatibility aliases all resolve to the same formal navigation goal.
     goal_xy: Tuple[float, float]
     navigation_staging_xy: Tuple[float, float]
     interaction_target_xy: Tuple[float, float]
@@ -111,6 +110,54 @@ class TargetGoal:
             "desired_yaw_deg": self.desired_yaw_deg,
             "source": self.source,
             "generation_id": self.generation_id,
+        }
+
+
+@dataclass(frozen=True)
+class PlannedNavigationAction:
+    """One executable edge reconstructed from motion-aware A*."""
+
+    kind: str
+    action_key: str
+    cycles: int
+    predicted_start_pose: RobotPose
+    predicted_end_pose: RobotPose
+    predicted_distance_cm: float
+    predicted_yaw_deg: float
+    cost: float
+
+    def as_dict(self) -> Dict[str, Any]:
+        return {
+            "kind": self.kind,
+            "action_key": self.action_key,
+            "cycles": self.cycles,
+            "predicted_start_pose": self.predicted_start_pose.as_dict(),
+            "predicted_end_pose": self.predicted_end_pose.as_dict(),
+            "predicted_distance_cm": self.predicted_distance_cm,
+            "predicted_yaw_deg": self.predicted_yaw_deg,
+            "cost": self.cost,
+        }
+
+
+@dataclass
+class NavigationPlan:
+    """Motion-aware A* result consumed directly by the normal executor."""
+
+    goal_xy: Tuple[float, float]
+    goal_yaw_deg: float
+    total_cost: float
+    path_xy: List[Tuple[float, float]]
+    actions: List[PlannedNavigationAction]
+    metrics: Dict[str, Any] = field(default_factory=dict)
+
+    def as_dict(self) -> Dict[str, Any]:
+        return {
+            "goal_xy": list(self.goal_xy),
+            "goal_yaw_deg": self.goal_yaw_deg,
+            "total_cost": self.total_cost,
+            "path_xy": [list(point) for point in self.path_xy],
+            "actions": [action.as_dict() for action in self.actions],
+            "metrics": dict(self.metrics),
         }
 
 
@@ -149,8 +196,7 @@ class Screen:
     navigation_staging_xy: Optional[Tuple[float, float]] = None
     interaction_target_xy: Optional[Tuple[float, float]] = None
     tag_front_xy: Optional[Tuple[float, float]] = None
-    # Compatibility alias for interaction_target_xy.  Do not use this field as
-    # the ordinary A*/Action Planner destination.
+    # Compatibility alias for interaction_target_xy.
     task_target_xy: Optional[Tuple[float, float]] = None
     task_target_yaw_deg: Optional[float] = None
     worker_id: Optional[int] = None

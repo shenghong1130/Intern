@@ -1,6 +1,6 @@
 # TonyPi 测试使用说明
 
-本目录包含 9 个离线 `unittest` 模块和 2 个需要人工启动的实机脚本。命令应从包含 `robot_tonypi` 包的 `robot_code` 目录执行。
+本目录包含 11 个离线 `unittest` 模块和 2 个需要人工启动的实机脚本。命令应从包含 `robot_tonypi` 包的 `robot_code` 目录执行。
 
 机器人：
 
@@ -52,7 +52,7 @@ python3 -m unittest robot_tonypi.tests.test_interaction_flow -v
 检查：
 
 - Tag/Screen/Worker 同 ID、地图参考坐标和 TargetGoal；
-- 最近 navigation staging 选择、同距 ID 破平局、完成后按新 Pose 重排；
+- 25 cm interaction target 的最近距离窗口 + 朝向惩罚选择、同分 ID 破平局、完成后按新 Pose 重排；
 - classifier/authorization 必须锁定且已到达；
 - 已是目标花不执行物理交互；
 - turn progress、scan-after-turn 和 stale pose；
@@ -66,7 +66,15 @@ python3 -m unittest robot_tonypi.tests.test_interaction_flow -v
 python3 -m unittest robot_tonypi.tests.test_mission_scheduler -v
 ```
 
-## 5. `test_navigation_adaptive.py`（72 项）
+## 5. `test_mission_refactor.py`（15 项）
+
+集中检查本次主链路重构：严格场界/真实建筑 Pose gate、soft inflation 合法 Pose、moderate suspect 与 hard jump、失败分类计数、25 cm 两阶段目标评分、locked/exclusion 规则、XY+yaw action-space goal、早转/末转两类规划、turn cost 对真实序列的影响、5 cm normal reverse，以及 Planner action key 被 Executor 原样执行。
+
+```bash
+python3 -m unittest robot_tonypi.tests.test_mission_refactor -v
+```
+
+## 6. `test_navigation_adaptive.py`（72 项）
 
 当前覆盖最广的导航单元测试：
 
@@ -77,43 +85,43 @@ python3 -m unittest robot_tonypi.tests.test_mission_scheduler -v
 - no-tag 和 `pose_unavailable_with_tags` 计数、full pan、startup-equivalent body recovery；
 - 失败定位保留运动累计，接受视觉 Pose 才清零；
 - 多 Tag 中前一个失败不能阻止后一个成功；
-- 短距离正后方 reverse、平移、task-target safety bypass；
+- 5 cm 内正后方 reverse、平移与 corridor safety；
 - 执行层重复 veto 的 decision-stall 防线。
 
 ```bash
 python3 -m unittest robot_tonypi.tests.test_navigation_adaptive -v
 ```
 
-## 6. `test_navigation_path_fallback.py`（19 项）
+## 7. `test_navigation_path_fallback.py`（19 项）
 
-检查普通导航 `25 cm` clearance、Screen 4/17/18/35 复现场景、target-owned soft cost 例外、无关障碍、blocked anchor、staging 真实作为规划终点、替代 approach、start/map/goal failure signature、interior recovery 和 ARRIVED 前新鲜视觉 Pose。
+检查普通导航 `25 cm` clearance、Screen 4/17/18/35 复现场景、target-owned soft cost 例外、无关障碍、blocked anchor、兼容二维 fallback、start/map/goal failure signature、interior recovery 和 ARRIVED 前新鲜视觉 Pose。
 
 ```bash
 python3 -m unittest robot_tonypi.tests.test_navigation_path_fallback -v
 ```
 
-## 7. `test_recovery_target_consistency.py`（6 项）
+## 8. `test_recovery_target_consistency.py`（6 项）
 
-检查所有配置 Screen 的 TargetGoal 双目标点原子一致性、Screen26 的 goal/anchor 区别、stale interaction/staging goal 拒绝、边缘 interior waypoint，以及保 yaw 的 strafe/reverse recovery。
+检查所有配置 Screen 的 TargetGoal 单一正式目标原子一致性、Screen26 的 goal/anchor 区别、stale goal 拒绝、边缘 interior waypoint，以及保 yaw 的 strafe/reverse recovery。
 
 ```bash
 python3 -m unittest robot_tonypi.tests.test_recovery_target_consistency -v
 ```
 
-## 8. `test_target_direct_approach.py`（10 项）
+## 9. `test_target_direct_approach.py`（10 项）
 
-检查 40 cm 内的 target-direct corridor、只忽略当前目标建筑软 inflation、硬障碍/其他建筑仍生效、短末步、forward 优先、短后方 reverse、转向成本，以及 task-target 选中动作不会被二次 safety veto。
+检查 target-owned corridor 只忽略当前目标建筑软 inflation、硬障碍/其他建筑仍生效、短末步、forward 优先、5 cm 内短后方 reverse 和转向成本。该模块保留兼容测试，正式 mission 使用 Motion-Aware A*。
 
 ```bash
 python3 -m unittest robot_tonypi.tests.test_target_direct_approach -v
 ```
 
-## 9. `test_target_standoff_flow.py`（46 项）
+## 10. `test_target_standoff_flow.py`（46 项）
 
 检查完整到点交互状态机：
 
-- 同一 `face_center + outward normal` 生成 `40 cm` staging 和 `25 cm / -1 cm` interaction target，不受建筑中心/尺寸变化影响；
-- 普通导航只到 staging；到达后强制 `localize_scan()`，并从最新视觉 Pose 重规划 interaction approach；
+- 同一 `face_center + outward normal` 生成 `25 cm / -1 cm` interaction target，兼容 staging 字段与其相同；
+- 正式导航一次规划到 25 cm + desired yaw，不存在中途 staging stop 或 staging relocalize；
 - `20→25 cm` 只沿 cardinal normal 移动 task-target XY，`0→+5°` 只改变目标 yaw；
 - 所有 interaction 几何/final-forward 参数都不改变 building bounds、grid、inflation 或 cost；
 - 当前 Tag 与同 ID Screen 绑定后才授权；
@@ -134,7 +142,7 @@ python3 -m unittest robot_tonypi.tests.test_target_direct_approach -v
 python3 -m unittest robot_tonypi.tests.test_target_standoff_flow -v
 ```
 
-## 10. `test_vision_tag_binding.py`（12 项）
+## 11. `test_vision_tag_binding.py`（12 项）
 
 检查左上 Tag↔Screen 绑定、错误侧/过远/非 1–36 ID 拒绝、最新有效缓存、失败不覆盖成功、1 秒分类 rate limit、15 秒 TTL、错误 Screen 拒绝，以及到点必须实时看到当前 Tag 才能采用缓存。
 
@@ -142,7 +150,15 @@ python3 -m unittest robot_tonypi.tests.test_target_standoff_flow -v
 python3 -m unittest robot_tonypi.tests.test_vision_tag_binding -v
 ```
 
-## 11. `test_capture_fpga_change.py`：人工实机集成测试
+## 12. `test_classifier.py`（9 项）
+
+检查 FPGA classifier 请求、响应解析、错误处理与既有 HTTP 通信语义。
+
+```bash
+python3 -m unittest robot_tonypi.tests.test_classifier -v
+```
+
+## 13. `test_capture_fpga_change.py`：人工实机集成测试
 
 这个脚本不属于正式任务状态机。操作者必须先把机器人放在正确目标点并正对 Screen。它不做定位和导航，只做：
 
@@ -152,14 +168,14 @@ python3 -m unittest robot_tonypi.tests.test_vision_tag_binding -v
 → 否则按开关模拟或真实执行 NFC
 ```
 
-### 11.1 无硬件
+### 13.1 无硬件
 
 ```bash
 python3 -u -m robot_tonypi.tests.test_capture_fpga_change \
   --screen-id 2 --target-flower hehua --dry-run
 ```
 
-### 11.2 真实相机和 FPGA，模拟 NFC
+### 13.2 真实相机和 FPGA，模拟 NFC
 
 ```bash
 python3 -u -m robot_tonypi.tests.test_capture_fpga_change \
@@ -168,7 +184,7 @@ python3 -u -m robot_tonypi.tests.test_capture_fpga_change \
   --skip-change
 ```
 
-### 11.3 真实 NFC
+### 13.3 真实 NFC
 
 ```bash
 python3 -u -m robot_tonypi.tests.test_capture_fpga_change \
@@ -180,7 +196,7 @@ python3 -u -m robot_tonypi.tests.test_capture_fpga_change \
 
 只有视觉和分类通过后，操作者再次输入 `EXECUTE 2` 才会发起真实事务。
 
-## 12. `test_capture_15_frames.py`：人工相机采集
+## 14. `test_capture_15_frames.py`：人工相机采集
 
 ```bash
 python3 -u -m robot_tonypi.tests.test_capture_15_frames
@@ -188,10 +204,10 @@ python3 -u -m robot_tonypi.tests.test_capture_15_frames
 
 第 1 张立即拍摄；之后每次按 Enter 拍下一张，输入 `q` 提前结束。默认写入 `/home/pi/capture_15_frames_runs/<timestamp>/`。
 
-## 13. 语法检查与注意事项
+## 15. 语法检查与注意事项
 
 ```bash
 python3 -m compileall -q robot_tonypi
 ```
 
-自动化测试不会证明以下真机参数正确：动作实际位移、相机内参、Tag 世界坐标、NFC 耦合距离、FPGA 网络稳定性、40 cm staging、25 cm interaction target、5° yaw offset 和 17 cm final forward。正式运行前仍需现场验证。
+自动化测试不会证明以下真机参数正确：动作实际位移、相机内参、Tag 世界坐标、NFC 耦合距离、FPGA 网络稳定性、25 cm interaction target、5° yaw offset 和 17 cm final forward。正式运行前仍需现场验证。
