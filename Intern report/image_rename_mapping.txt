@@ -1,0 +1,37 @@
+﻿图片重命名映射（依据实际画面内容逐张确认）
+
+6f30dc72801d09ed7aea44026656065.jpg -> 01_TonyPi机器人硬件调试.jpg -> 俯拍新 TonyPi，机身控制板、舵机和接线清晰可见
+83838d28b61b7363759c5e01e9df490.jpg -> 02_修改后比赛场地_01.jpg -> 修改后的完整比赛场地，含道路、障碍物、AprilTag 与机器人
+a0ce561d9d558c1b80fdbe4ea05b9a6.jpg -> 02_修改后比赛场地_02.jpg -> 修改后的完整比赛场地（同场景备份照片）
+568a2bdedc7ec35f38250a114bf2553.jpg -> 03_机器人现场完整运行_01.jpg -> TonyPi 在新场地道路与 AprilTag 标记旁运行
+90860359586e61aa41f60a6d0104a29.jpg -> 03_机器人现场完整运行_02.jpg -> TonyPi 在新场地障碍物旁进行现场运行
+截图 2026-08-31 11-20-38.png -> 04_SD卡读卡器异常日志.png -> 终端显示 SD 卡/读卡器 write fault、I/O error 和 access beyond end of device
+1c6924c13f297a843d0c413ec810598.jpg -> 05_KV260首次启动_成功.jpg -> KV260 首次启动时 systemd、cloud-init 和网络服务正常加载
+979793c50c484522a3a9ad3187a0baa.jpg -> 06_KV260首次启动_Initramfs故障.jpg -> KV260 启动进入 BusyBox initramfs，提示 No init found
+35522ca3a2131f1121d5a883aa60aa3.jpg -> 07_七台KV260批量部署_01.jpg -> 七台 KV260 机架式集中接线与批量部署实物
+77164fd2f42eb1b33e3736d42cba4f6.jpg -> 07_七台KV260批量部署_02.jpg -> 七台 KV260 批量部署实物正面视角
+9be2710d1d755a9c390a786ac9728c7.jpg -> 07_七台KV260批量部署_03.jpg -> 七台 KV260 集中供电与网络连接侧面视角
+e01f26b0b9f7663a894fe2b768ee361.jpg -> 07_七台KV260批量部署_04.jpg -> 七台 KV260 批量部署近景
+Screenshot 2026-08-28 140626.png -> 08_HTTP_FPGA分类请求测试.png -> curl 向 Central Server 提交图片并获得 FPGA 花卉分类结果
+Screenshot 2026-09-02 140848.png -> 09_多学生并发调度测试_01.png -> 五名学生持久化与并发预测请求测试第一阶段
+Screenshot 2026-09-02 140859.png -> 09_多学生并发调度测试_02.png -> 五个并发请求的 Worker 分配、完成状态和审计结果
+Screenshot 2026-09-02 140905.png -> 09_多学生并发调度测试_03.png -> 多学生并发测试汇总，五个请求全部完成
+截图 2026-09-02 14-09-53.png -> 09_多学生并发调度测试_04.png -> 多学生持久化测试的 Artifact、Request 与 Worker 事件记录
+截图 2026-09-02 14-10-14.png -> 09_多学生并发调度测试_05.png -> 多学生持久化测试的部署、调度和资源释放事件记录
+截图 2026-08-27 17-46-59.png -> 10_Central_Server_Worker总览.png -> Central Server Worker 总览，展示 20 个节点的在线状态
+截图 2026-08-27 17-50-28.png -> 11_Worker节点详情.png -> Central Server 中 KV260 Worker 的 READY 状态和 FPGA Ready 信息
+截图 2026-08-31 11-28-26.png -> 12_Request查询页面.png -> Central Server 计算请求按 Request ID 查询页面
+截图 2026-08-31 11-45-16.png -> 13_Request调度记录_01.png -> Central Server 已完成计算请求列表和查询入口
+截图 2026-08-31 11-58-35.png -> 13_Request调度记录_02.png -> Central Server 最近计算请求与分类结果记录
+截图 2026-08-31 14-31-05.png -> 14_Central_Server平台总览.png -> Central Server 总览统计、Worker 利用率和节点状态
+截图 2026-08-31 14-31-30.png -> 15_管理员操作令牌.png -> Central Server 管理员操作令牌会话配置界面
+截图 2026-08-31 14-40-58.png -> 16_Worker调度状态_01.png -> Worker 页面显示两台在线 KV260 与其余离线节点
+截图 2026-09-01 16-24-13.png -> 16_Worker调度状态_02.png -> 按 Worker 查询的已完成请求与分类结果
+截图 2026-09-01 15-17-45.png -> 17_Student请求与状态_01.png -> 按 Student ID 查询历史请求和结果
+截图 2026-09-01 16-24-18.png -> 17_Student请求与状态_02.png -> Student 状态页面展示学生版本、租约和任务统计
+截图 2026-09-01 15-20-37.png -> 18_系统事件与异常追踪_01.png -> 按 REQUEST_FAILED 与学生筛选系统事件
+截图 2026-09-01 16-24-24.png -> 18_系统事件与异常追踪_02.png -> 系统事件页面及事件类型筛选项
+截图 2026-09-01 16-24-51.png -> 18_系统事件与异常追踪_03.png -> 系统事件日志展示请求、Worker 和 Artifact 全流程记录
+截图 2026-09-01 16-24-03.png -> 19_Artifact管理页面.png -> Artifact 上传、归档、版本和哈希管理页面
+截图 2026-09-01 18-25-54.png -> 20_七台KV260在线调度_01.png -> Central Server 总览显示七台 Worker 在线可调度
+截图 2026-09-01 18-26-09.png -> 20_七台KV260在线调度_02.png -> 七台 KV260 IDLE 在线状态的完整 Worker 列表
