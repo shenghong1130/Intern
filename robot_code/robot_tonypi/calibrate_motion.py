@@ -14,7 +14,7 @@ import statistics
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Dict, Iterable, Optional, Tuple
 
 from .config import default_config_path, load_config
 from .hardware import TonyPiHardware

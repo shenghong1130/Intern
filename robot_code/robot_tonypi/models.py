@@ -62,6 +62,14 @@ class NearWallRecoveryResult(str, Enum):
     HARDWARE_FAILURE = "HARDWARE_FAILURE"
 
 
+class TurnProgressStatus(str, Enum):
+    """What reliable post-turn vision can establish about physical motion."""
+
+    VERIFIED_PROGRESS = "VERIFIED_PROGRESS"
+    PROGRESS_UNVERIFIED = "PROGRESS_UNVERIFIED"
+    VERIFIED_NO_PROGRESS = "VERIFIED_NO_PROGRESS"
+
+
 @dataclass
 class RobotPose:
     x_cm: float
@@ -123,6 +131,7 @@ class PlannedNavigationAction:
     predicted_start_pose: RobotPose
     predicted_end_pose: RobotPose
     predicted_distance_cm: float
+    configured_yaw_deg: float
     predicted_yaw_deg: float
     cost: float
 
@@ -134,6 +143,7 @@ class PlannedNavigationAction:
             "predicted_start_pose": self.predicted_start_pose.as_dict(),
             "predicted_end_pose": self.predicted_end_pose.as_dict(),
             "predicted_distance_cm": self.predicted_distance_cm,
+            "configured_yaw_deg": self.configured_yaw_deg,
             "predicted_yaw_deg": self.predicted_yaw_deg,
             "cost": self.cost,
         }

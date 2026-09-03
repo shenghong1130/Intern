@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """Screen candidate detection and crop extraction."""
 
-from typing import Iterable, List, Optional, Tuple
+from typing import Iterable, List, Optional
 
 import numpy as np
 

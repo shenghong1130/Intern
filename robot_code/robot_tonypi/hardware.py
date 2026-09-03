@@ -2,7 +2,6 @@
 # -*- coding: utf-8 -*-
 """TonyPi hardware adapters."""
 
-import os
 import sys
 import threading
 import time

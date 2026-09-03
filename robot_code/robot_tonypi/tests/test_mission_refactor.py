@@ -301,7 +301,7 @@ class MotionAStarTests(unittest.TestCase):
         manager.state.set_pose(start)
         end = RobotPose(153.5, 50.0, 0.0, Confidence.HIGH, "MOTION_ASTAR", 1.0)
         action = PlannedNavigationAction(
-            "forward", "forward_fast", 1, start, end, 3.5, 0.0, 3.5
+            "forward", "forward_fast", 1, start, end, 3.5, 0.0, 0.0, 3.5
         )
         plan = NavigationPlan(goal.interaction_target_xy, goal.desired_yaw_deg, 3.5, [start.xy(), end.xy()], [action])
         calls = []

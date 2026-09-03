@@ -1,6 +1,6 @@
 # TonyPi 比赛程序使用手册
 
-本文只描述当前仓库的真实运行方式。模块职责见 [FILES.md](FILES.md)，完整状态与分支见 [robot_decision_tree.html](robot_decision_tree.html)，测试入口见 [tests/README.md](tests/README.md)。
+本文只描述当前仓库的真实运行方式。模块职责见 [FILES.md](FILES.md)，完整状态与分支见 [robot_decision_tree.md](robot_decision_tree.md) 或离线版 [robot_decision_tree.html](robot_decision_tree.html)，测试入口见 [tests/README.md](tests/README.md)。
 
 ## 1. 当前比赛流程
 
@@ -14,7 +14,7 @@
 → 实时确认当前 Tag
 → 使用 15 秒内同 ID 的 Tag↔Screen 分类缓存，或有限拍摄新帧
 → flower == target：ALREADY_TARGET，不执行 final forward / NFC
-→ flower != target：执行一次 interaction_forward_final（大步×3 + 小步×1，约 17 cm）
+→ flower != target：执行一次 interaction_forward_final（大步×4，约 20 cm）
 → NFC Attempt 1
 → 成功：CHANGED
 → 失败：后退 10 cm、重新定位、最多 3 轮重新寻找当前目标并重新 FPGA
@@ -42,9 +42,9 @@
 - 云台中心角是 `100°`；更大角度向左看，更小角度向右看。
 - AprilTag ID、`screen_id` 和 NFC `worker_id` 必须完全相同。
 - Screen 任务目标由完整建筑面的中心、cardinal 外法线和机器人横向补偿共同生成。
-- 当前正式参数：`target_distance_cm=25.0`、`target_lateral_offset_cm=-1.0`、`target_yaw_offset_deg=5.0`、`target_final_forward_cm=17.0`。
+- 当前正式参数：`target_distance_cm=25.0`、`target_lateral_offset_cm=-1.0`、`target_yaw_offset_deg=5.0`、`target_final_forward_cm=20.0`。
 - `goal_xy`、`navigation_staging_xy`、`interaction_target_xy`、`target_xy`、`interaction_xy` 和 `task_target_xy` 运行时都指向同一 25 cm interaction point；`navigation_staging_xy` 仅保留为兼容字段。
-- `interaction_forward_final` 的实体序列为 `go_forward_one_step×3 + go_forward_one_small_step×1`；按现有 5 cm/2 cm 标定约为 17 cm，两个 step 都使用 `repeat=true`，因此 `times_override` 会同步放大实体动作和 dead reckoning。
+- `interaction_forward_final` 的实体序列为 `go_forward_one_step×4`；按现有约 5 cm 标定约为 20 cm，step 使用 `repeat=true`，因此 `times_override` 会同步放大实体动作和 dead reckoning。
 - 建筑边界、硬障碍、inflation 和 cost 只来自 `load_pos.py` 的 Tag 坐标与 map 配置；交互距离、横移、yaw 和 final-forward 参数不会改变地图层。
 - 当前配置排除 Screen：`2, 6, 9, 20, 28`。
 
@@ -112,6 +112,10 @@ cp /home/pi/robot_tonypi/action_groups/*.d6a /home/pi/TonyPi/ActionGroups/
 | `edge_margin_px` | `35` | 图像边缘过滤 |
 | `no_tag_recovery_failures` | `2` | no-tag 恢复阈值 |
 | `no_tag_recovery_cooldown_s` | `4.0` | 防止重复进入恢复 |
+| `no_tag_recovery_back_cm` | `5.0` | 普通位置每轮后退距离 |
+| `no_tag_recovery_turn_deg` | `45.0°` | 普通位置向场内身体转角 |
+| `no_tag_recovery_strafe_cm` | `4.0` | 靠墙/边界安全横移参考距离 |
+| `no_tag_recovery_max_cycles` | `3` | 中央视角重获最大轮数 |
 | normal pose conflict | `15 cm / 25°` | 进入 suspect 二次确认 |
 | hard jump | `40 cm / 60°` | 直接拒绝，不允许二次远跳确认 |
 
@@ -153,7 +157,7 @@ cp /home/pi/robot_tonypi/action_groups/*.d6a /home/pi/TonyPi/ActionGroups/
 | 最低分类置信度 | `0.2` |
 | 目标确认新鲜帧上限 | `3` 次 |
 | 目标可见性恢复 | `2` 轮 |
-| final forward | `17 cm`，一次逻辑动作 |
+| final forward | `20 cm`，一次逻辑动作（实体大步×4） |
 | post-interaction retreat | `10 cm`，`back_fast` |
 | NFC 单次物理尝试 deadline | `15 s` |
 | NFC 物理尝试上限 | `2` 次 |
@@ -219,7 +223,7 @@ python3 -u -m robot_tonypi.main \
   --time-limit-s 570
 ```
 
-`--skip-change` 保留真实相机、定位、导航和 FPGA 分类，但跳过专用 17 cm 动作、举手和 NFC；`--skip-api` 是同一参数的旧别名。
+`--skip-change` 保留真实相机、定位、导航和 FPGA 分类，但跳过专用 20 cm 动作、举手和 NFC；`--skip-api` 是同一参数的旧别名。
 
 ### 5.6 正式运行（直连 KV260 Worker）
 
@@ -325,7 +329,9 @@ shuixianhua taohua yinghua yuanweihua zijinghua
 ## 6. 失败与恢复的实际语义
 
 - 初始定位失败不会立即退出；主循环反复执行初始搜索，直到得到 Pose 或全局 timeout。
-- `no_tag` 与“看见 Tag 但没有 Pose”分开计数；no-tag 恢复只在无 Tag 达阈值且 Pose 缺失、朝场外或边界受困时启动。
+- `no_tag` 与“看见 Tag 但没有 Pose”分开计数；只有完整扫描连续 2 次零 Tag 才启动专用恢复。墙边优先安全横移，普通位置后退约 5 cm 并向场内身体转约 45°，每轮只先做中央复拍，最多 3 轮后升级全局恢复。
+- Turn watchdog 区分 `VERIFIED_PROGRESS`、`PROGRESS_UNVERIFIED` 和 `VERIFIED_NO_PROGRESS`；无可信 post-turn Pose 不增加 verified-no-progress counter，也不能产生 `RECOVERY_NO_PROGRESS`。
+- Motion A* 的 15° yaw bin 可能把物理 `-18°` 动作量化成 `-30°` transition；硬件、dead reckoning 和 watchdog 始终使用动作配置的物理 yaw，日志分别显示两者。
 - 正式目标规划使用 Motion-Aware A*；相同输入失败 3 次后仍按既有规则升级到 interior recovery。普通二维 A* 保留给 debug、fallback 和 Recovery 兼容。
 - near-wall 恢复顺序为后退、左右平移、小转向；普通动作全被拒绝时可进入 bounded forced escape。真实动作后会重新定位。
 - 单个导航目标失败进入临时失败集合，不是永久黑名单；所有未完成目标都临时失败时执行全局恢复并释放它们。
@@ -394,7 +400,7 @@ curl -i http://192.168.31.81:8080/predict
 [ ] FPGA /predict 可访问
 [ ] Tag ID == screen_id == worker_id
 [ ] 25 cm / -1 cm interaction point、Motion-Aware A* 动作序列和正对屏幕 + 左偏 5° yaw 已现场验证
-[ ] interaction_forward_final（实体大步×3 + 小步×1，模型 17 cm）与 10 cm retreat 已现场验证
+[ ] interaction_forward_final（实体大步×4，模型 20 cm）与 10 cm retreat 已现场验证
 [ ] --skip-change 全流程已通过
 [ ] 正式命令已删除 --skip-change
 [ ] 操作员可随时 Ctrl+C / emergency stop

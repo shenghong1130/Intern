@@ -3,223 +3,240 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>TonyPi 正式任务决策树</title>
+  <title>TonyPi 机器人决策流程</title>
   <style>
-    :root{--text:#1f2937;--muted:#64748b;--line:#cbd5e1;--soft:#e5e7eb;--blue:#eff6ff;--green:#f0fdf4;--orange:#fff7ed;--red:#fef2f2;--purple:#faf5ff}
-    *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;color:var(--text);background:#fff;font:15px/1.6 system-ui,-apple-system,"Segoe UI","Microsoft YaHei",sans-serif}
-    a{color:#1d4ed8;text-decoration:none}code{font-family:ui-monospace,Consolas,monospace;font-size:.92em}header{border-bottom:1px solid var(--soft)}
-    .inner,main,.links{width:min(1160px,calc(100% - 32px));margin:auto}.inner{padding:34px 0 26px}h1{margin:0 0 8px;font-size:clamp(28px,5vw,42px);line-height:1.2}header p,.lead{max-width:920px;margin:0;color:var(--muted)}
-    nav{position:sticky;top:0;z-index:3;border-bottom:1px solid var(--soft);background:#fffffff2;backdrop-filter:blur(8px)}.links{display:flex;flex-wrap:wrap;gap:6px 17px;padding:10px 0;font-size:13px}
-    main{padding:26px 0 70px}section{padding:30px 0;border-bottom:1px solid var(--soft);scroll-margin-top:54px}h2{margin:0 0 7px;font-size:25px}h3{margin:23px 0 7px;font-size:18px}.lead{margin-bottom:18px}
-    .flowchart{max-width:1060px;margin:18px auto;padding:20px;border:1px solid var(--soft);border-radius:12px}.flow-node{width:min(100%,500px);margin:auto;padding:10px 14px;border:2px solid #94a3b8;border-radius:8px;background:#fff;text-align:center;font-weight:650}.flow-node small{display:block;color:var(--muted);font-weight:400;line-height:1.45}.start{border-color:#2563eb}.decision{border-color:#fb923c;background:var(--orange)}.success{border-color:#4ade80;background:var(--green)}.failure{border-color:#f87171;background:var(--red)}.recovery{border-color:#c084fc;background:var(--purple)}.io{border-color:#60a5fa;background:var(--blue)}
-    .flow-arrow{height:31px;display:grid;place-items:center;color:#64748b;font-size:22px}.flow-arrow:before{content:"↓"}.flow-branch{position:relative;display:grid;grid-template-columns:1fr 1fr;gap:42px;margin-top:26px;padding-top:25px}.flow-branch:before{content:"";position:absolute;left:25%;right:25%;top:0;border-top:2px solid var(--line)}.flow-branch:after{content:"";position:absolute;left:50%;top:-25px;height:25px;border-left:2px solid var(--line)}.branch-column{position:relative;min-width:0}.branch-column:before{content:"";position:absolute;left:50%;top:-25px;height:25px;border-left:2px solid var(--line)}.branch-label{display:block;width:max-content;max-width:100%;margin:-14px auto 8px;padding:2px 9px;border:1px solid var(--line);border-radius:999px;background:#fff;font-size:12px;font-weight:750}.yes{color:#15803d}.no{color:#b91c1c}.merge{position:relative;margin-top:27px;padding-top:25px}.merge:before{content:"";position:absolute;left:25%;right:25%;top:0;border-top:2px solid var(--line)}.merge:after{content:"";position:absolute;left:50%;top:0;height:25px;border-left:2px solid var(--line)}
-    .jump,.note{margin:14px auto 0;padding:10px 13px;border-left:3px solid #60a5fa;background:#f8fafc;color:#475569}.note{border-left-color:#fb923c;background:var(--orange)}.invariants{max-width:960px;margin:14px auto;padding-left:22px;color:#475569}.invariants strong{color:var(--text)}
-    table{width:100%;margin-top:18px;border-collapse:collapse;font-size:13px}th,td{padding:8px 9px;border:1px solid var(--line);text-align:left;vertical-align:top}th{background:#f8fafc}.formula{margin:14px 0;padding:12px 15px;border:1px solid var(--soft);border-radius:8px;background:#f8fafc;overflow:auto}
-    footer{padding:27px;text-align:center;color:var(--muted);font-size:13px}@media(max-width:720px){.inner,main,.links{width:calc(100% - 22px)}section{padding:24px 0}.flowchart{padding:14px 9px}.flow-branch{grid-template-columns:1fr;gap:27px;padding-top:0}.flow-branch:before,.flow-branch:after,.branch-column:before,.merge:before,.merge:after{display:none}.branch-label{margin:0 auto 7px}.branch-column+.branch-column{padding-top:8px;border-top:1px dashed var(--line)}.merge{padding-top:0}th,td{padding:7px 5px}}
+    :root{--ink:#172033;--muted:#596579;--line:#d7deea;--blue:#eef6ff;--green:#effbf3;--amber:#fff8e8;--red:#fff0f0;--purple:#f7f1ff}
+    *{box-sizing:border-box}body{margin:0;background:#f7f9fc;color:var(--ink);font:15px/1.65 system-ui,-apple-system,"Segoe UI","Microsoft YaHei",sans-serif}
+    header,nav,main,footer{width:min(1120px,calc(100% - 28px));margin:auto}header{padding:34px 0 20px}h1{margin:0;font-size:clamp(28px,5vw,43px)}header p{max-width:850px;color:var(--muted)}
+    nav{position:sticky;top:0;z-index:2;display:flex;gap:7px;flex-wrap:wrap;padding:10px;background:#f7f9fcf2;border-block:1px solid var(--line)}nav a{padding:4px 9px;border-radius:999px;background:white;color:#245aa5;text-decoration:none;font-size:13px}
+    main{padding:12px 0 55px}section{margin:18px 0;padding:22px;background:white;border:1px solid var(--line);border-radius:14px}h2{margin:0 0 7px;font-size:23px}h3{margin:22px 0 6px}.lead,.code-ref{color:var(--muted)}.code-ref{font-size:13px}code{font-family:ui-monospace,SFMono-Regular,Consolas,monospace}
+    .flow-ascii{max-width:100%;margin:14px 0;padding:16px;overflow-x:auto;border:1px solid var(--line);border-radius:10px;background:#fbfcfe;font:14px/1.45 ui-monospace,SFMono-Regular,Consolas,"Microsoft YaHei",monospace;white-space:pre}
+    .cards{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.card{padding:14px;border:1px solid var(--line);border-radius:10px;background:var(--blue)}.card h3{margin:0 0 4px}.ok{background:var(--green)}.warn{background:var(--amber)}.stop{background:var(--red)}.recovery{background:var(--purple)}
+    table{display:block;width:100%;overflow-x:auto;border-collapse:collapse;font-size:13px}tbody,thead{display:table;width:100%;table-layout:auto}th,td{padding:8px;border:1px solid var(--line);text-align:left;vertical-align:top}th{background:#f2f5fa}.nowrap{white-space:nowrap}
+    ul{padding-left:21px}.rule{padding:11px 14px;border-left:4px solid #2f72c8;background:var(--blue)}footer{padding:0 0 35px;color:var(--muted);text-align:center}
+    @media(max-width:700px){header,nav,main,footer{width:min(100% - 16px,1120px)}section{padding:15px}.cards{grid-template-columns:1fr}.flow-ascii{font-size:12px;padding:11px}nav{position:static}th,td{min-width:125px}}
   </style>
 </head>
 <body>
-<header><div class="inner"><h1>TonyPi 正式任务决策树</h1><p>依据当前 Python 实现和 <code>competition_config.json</code> 重建。蓝色表示视觉/外部 I/O，橙色表示判断，绿色表示成功，红色表示拒绝或失败，紫色表示沿用的 Recovery。</p></div></header>
-<nav><div class="links"><a href="#overview">0 总览</a><a href="#localization">1 定位</a><a href="#target">2 目标选择</a><a href="#planning">3 Motion A*</a><a href="#navigation">4 动作执行</a><a href="#arrival">5 到点确认</a><a href="#interaction">6 FPGA/NFC</a><a href="#recovery">7 Recovery</a><a href="#finish">8 结束</a><a href="#parameters">9 参数索引</a></div></nav>
+<header>
+  <h1>TonyPi 机器人决策流程</h1>
+  <p>主文字说明机器人实际正在做什么；内部函数名只放在小字参考中。本文与 <code>robot_decision_tree.md</code> 同步，无 CDN、无脚本、可离线打开。</p>
+</header>
+<nav>
+  <a href="#main">主流程</a><a href="#localize">定位</a><a href="#notag">无Tag恢复</a><a href="#plan">规划执行</a><a href="#watchdog">转向证据</a><a href="#interaction">识别换花</a><a href="#recoveries">恢复总表</a><a href="#states">状态表</a>
+</nav>
 <main>
-
-<section id="overview">
-  <h2>0. 全局主流程</h2>
-  <p class="lead">正式任务只有一段目标导航：定位成功后按“最近优先、窗口内考虑朝向”锁定目标，Motion-Aware A* 直接规划到距建筑面约 25 cm 的位置及目标朝向。到达后才允许进行 Tag/Screen 确认和既有 FPGA/NFC 流程。</p>
-  <div class="flowchart">
-    <div class="flow-node start">START</div><div class="flow-arrow"></div>
-    <div class="flow-node io">LOCALIZE</div><div class="flow-arrow"></div>
-    <div class="flow-node">SELECT_TARGET</div><div class="flow-arrow"></div>
-    <div class="flow-node">PLAN_TO_TARGET<small>goal = 25 cm XY + desired yaw</small></div><div class="flow-arrow"></div>
-    <div class="flow-node">NAVIGATE<small>执行 planned actions → 定位 → 重规划</small></div><div class="flow-arrow"></div>
-    <div class="flow-node success">ARRIVED_AT_TARGET<small>XY 与 yaw 均满足容差</small></div><div class="flow-arrow"></div>
-    <div class="flow-node io">CONFIRM TARGET TAG + SCREEN</div><div class="flow-arrow"></div>
-    <div class="flow-node io">FPGA → NFC（如有需要）</div><div class="flow-arrow"></div>
-    <div class="flow-node success">MARK TARGET COMPLETE</div><div class="flow-arrow"></div>
-    <div class="flow-node decision">仍有合格目标？</div>
-    <div class="flow-branch"><div class="branch-column"><span class="branch-label yes">YES</span><div class="flow-node">返回 SELECT_TARGET</div></div><div class="branch-column"><span class="branch-label no">NO</span><div class="flow-node success">MISSION_COMPLETE</div></div></div>
-  </div>
-  <div class="jump">章节跳转：<a href="#localization">从 §1 Localization 开始逐段阅读</a>；任意阶段超时则 <a href="#finish">跳到 §8 Mission Timeout</a>。</div>
-  <table><thead><tr><th>参数</th><th>当前值</th><th>单位</th><th>用途</th><th>调大 / 调小</th><th>来源</th></tr></thead><tbody>
-    <tr><td><code>mission.time_limit_s</code></td><td>570</td><td>s</td><td>全局硬 deadline</td><td>调大允许更长任务；调小更早 safe stop</td><td>Python defaults（正式 JSON 继承）</td></tr>
-    <tr><td><code>interaction_standoff_cm</code></td><td>25</td><td>cm</td><td>正式导航目标距建筑面的距离</td><td>调大更保守；调小更靠近硬建筑</td><td>interaction</td></tr>
-  </tbody></table>
-  <ul class="invariants"><li><strong>不变量：</strong>正式主链路不存在中途导航点或强制中途重定位阶段。</li><li>Mission deadline 在所有循环中持续检查。</li></ul>
+<section id="main">
+  <h2>0–1. 比赛主流程与首次定位</h2>
+  <pre class="flow-ascii">启动、站稳、云台回中
+        │
+        ▼
+完整视角拍摄 AprilTag ──失败──→ 有界身体搜索 → 再次完整拍摄
+        │可信位置
+        ▼
+选择最近的未完成 Screen，并锁定 25 cm 目标位置与朝向
+        │
+        ▼
+Motion A* 规划 → 执行动作 → 视觉定位 → 重规划
+        │到达
+        ▼
+实时确认当前 Tag + Screen → FPGA 识别
+        │
+   ┌────┴────┐
+已是目标      不是目标
+   │          │
+直接完成      前进约 20 cm → NFC（最多两次物理 Attempt）
+   └────┬─────┘
+        ▼
+必要时后退 10 cm → 下一个目标 → 全部完成或超时安全停止</pre>
+  <p class="code-ref">代码参考：<code>initial_localize()</code>、<code>run_mission()</code>、<code>choose_nearest_screen()</code>。</p>
 </section>
 
-<section id="localization">
-  <h2>1. 定位：视觉 Pose 的物理与时间合法性</h2>
-  <p class="lead">输入是相机帧、AprilTag 检测和当前可信/里程计 Pose。既有标定、Tag 世界坐标、solvePnP 和 head-pan 补偿先生成 RobotPose；TaskManager 随后用同一 MapModel 做精确物理 gate，再做 normal / suspect / hard-jump 时间一致性判断。</p>
-  <div class="flowchart">
-    <div class="flow-node io">Capture</div><div class="flow-arrow"></div>
-    <div class="flow-node decision">相机捕获成功？</div>
-    <div class="flow-branch"><div class="branch-column"><span class="branch-label no">NO</span><div class="flow-node failure">capture_failed</div></div><div class="branch-column"><span class="branch-label yes">YES</span><div class="flow-node decision">检测到 AprilTag？</div><div class="flow-branch"><div class="branch-column"><span class="branch-label no">NO</span><div class="flow-node failure">no_tag<small>仅此分支增加 no-tag counter</small></div></div><div class="branch-column"><span class="branch-label yes">YES</span><div class="flow-node">quality gate + solvePnP</div></div></div></div></div>
-    <div class="merge"><div class="flow-node decision">生成 Pose candidate？</div></div>
-    <div class="flow-branch"><div class="branch-column"><span class="branch-label no">NO</span><div class="flow-node failure">pose_unavailable_with_tags</div></div><div class="branch-column"><span class="branch-label yes">YES</span><div class="flow-node decision">0 ≤ x ≤ width 且 0 ≤ y ≤ height？</div></div></div>
-    <div class="merge"><div class="flow-node decision">XY 位于真实建筑 hard rectangle 内？</div></div>
-    <div class="flow-branch"><div class="branch-column"><span class="branch-label yes">YES / 场外</span><div class="flow-node failure">localization_pose_physical_rejected<small>pose_inside_building / pose_outside_field；归类 pose_unavailable_with_tags</small></div></div><div class="branch-column"><span class="branch-label no">物理合法</span><div class="flow-node decision">相对 prior 超过 40 cm 或 60°？</div></div></div>
-    <div class="merge"><div class="flow-node decision">HARD JUMP？</div></div>
-    <div class="flow-branch"><div class="branch-column"><span class="branch-label yes">YES</span><div class="flow-node failure">pose_jump_rejected<small>不拍确认帧；保留 prior Pose</small></div></div><div class="branch-column"><span class="branch-label no">NO</span><div class="flow-node decision">超过普通 15 cm 或 25°？</div><div class="flow-branch"><div class="branch-column"><span class="branch-label no">NO</span><div class="flow-node success">接受并写入 RobotState</div></div><div class="branch-column"><span class="branch-label yes">SUSPECT</span><div class="flow-node io">同 pan 再捕获一次</div><div class="flow-arrow"></div><div class="flow-node decision">确认帧物理合法、非 hard jump，且支持候选或 prior？</div><div class="flow-branch"><div class="branch-column"><span class="branch-label yes">YES</span><div class="flow-node success">接受确认 Pose</div></div><div class="branch-column"><span class="branch-label no">NO</span><div class="flow-node failure">拒绝并保留 prior</div></div></div></div></div></div></div></div>
-  </div>
-  <div class="jump">成功：<a href="#target">↪ 转到 §2 Target Selection</a>。连续失败：仅 genuine <code>no_tag</code> 可进入 <a href="#recovery">§7 no-tag Recovery</a>。</div>
-  <table><thead><tr><th>参数</th><th>值</th><th>单位</th><th>用途</th><th>调大 / 调小</th><th>来源</th></tr></thead><tbody>
-    <tr><td><code>localization_pose_conflict_distance_cm</code></td><td>15</td><td>cm</td><td>普通 suspect 距离阈值</td><td>大：更易直接接受；小：更多二次确认</td><td>navigation</td></tr>
-    <tr><td><code>localization_pose_conflict_yaw_deg</code></td><td>25</td><td>°</td><td>普通 suspect 朝向阈值</td><td>大：更宽松；小：更敏感</td><td>navigation</td></tr>
-    <tr><td><code>localization_hard_jump_distance_cm</code></td><td>40</td><td>cm</td><td>直接拒绝的极端位移</td><td>大：允许更大跳变；小：保护更强</td><td>navigation</td></tr>
-    <tr><td><code>localization_hard_jump_yaw_deg</code></td><td>60</td><td>°</td><td>直接拒绝的极端朝向变化</td><td>大：允许更大跳变；小：保护更强</td><td>navigation</td></tr>
-  </tbody></table>
-  <ul class="invariants"><li><strong>不变量：</strong>物理 gate 只检查真实场界和真实建筑 hard rectangle，不读取 inflation、soft cost 或 25 cm clearance。</li><li><code>pose_outside_field</code>、<code>pose_inside_building</code>、<code>pose_jump_rejected</code> 都不是 <code>no_tag</code>。</li></ul>
+<section id="localize">
+  <h2>2. AprilTag 定位：看到与定位成功是两件事</h2>
+  <pre class="flow-ascii">拍摄 capture
+   ├─ 无帧 → capture_failed
+   ▼
+AprilTag detector
+   ├─ detected_tag_ids=[] → no_tag（唯一增加 no-tag counter 的分支）
+   ▼ 至少一个 Tag
+面积 / 边缘 / ID / quality gate
+   ├─ 不合格 ───────────────┐
+   ▼                         │
+solvePnP / 多 Tag 一致性      │
+   ├─ 无 Pose ───────────────┤→ pose_unavailable_with_tags
+   ▼                         │  / TAG_SEEN_POSE_UNAVAILABLE
+候选 RobotPose               │  不增加 genuine no-tag counter
+   ├─ 场外 / 建筑实体内 ─────┤
+   ├─ hard jump >40cm/60° ───┤
+   ├─ suspect 未通过确认 ─────┘
+   ▼
+接受可信视觉 Pose → 清零动作累计、uncertainty 与 no-tag counter</pre>
+  <div class="rule">`too_small`、edge margin、quality gate、ID filter、PnP failure、pose conflict、physical rejection 和 hard jump 都表示“看到了 Tag，但本帧不能提供可信位置”，绝不是 `no_tag`。</div>
+  <p class="code-ref">代码参考：<code>localize_scan()</code>、<code>record_localization_failure()</code>、<code>evaluate_and_accept_visual_pose()</code>。</p>
 </section>
 
-<section id="target">
-  <h2>2. 目标选择：nearest-first + orientation penalty</h2>
-  <p class="lead">输入是当前 Pose 和所有 Screen。合法 locked target 始终优先保持；否则排除 completed、temporary failed 和 NFC gave-up，距离统一量到 25 cm <code>interaction_target_xy</code>。只有落入最近距离窗口的候选才比较朝向。</p>
-  <div class="formula"><code>shortlist: distance ≤ nearest_distance + 25 cm<br>behind_turn = max(0, |bearing_error| − 90°)<br>orientation_penalty = min(25 cm, behind_turn × 0.20 + final_yaw_error × 0.03)<br>score = distance + orientation_penalty</code></div>
-  <div class="flowchart">
-    <div class="flow-node start">SELECT_TARGET</div><div class="flow-arrow"></div><div class="flow-node decision">已有仍合格的 locked TargetGoal？</div>
-    <div class="flow-branch"><div class="branch-column"><span class="branch-label yes">YES</span><div class="flow-node success">保持锁定目标</div></div><div class="branch-column"><span class="branch-label no">NO</span><div class="flow-node">过滤不可选目标</div><div class="flow-arrow"></div><div class="flow-node">计算到每个 25 cm goal 的 distance</div><div class="flow-arrow"></div><div class="flow-node">求 nearest_distance → 建立 distance window</div><div class="flow-arrow"></div><div class="flow-node">窗口内计算 bearing / behind / final yaw penalty</div><div class="flow-arrow"></div><div class="flow-node success">按 score、distance、screen_id 确定性选择</div></div></div>
+<section id="notag">
+  <h2>3. 真正的 NO-TAG Recovery</h2>
+  <p class="lead">只在完整扫描连续两次完全没有 AprilTag 时触发。每轮动作后云台回中、等待 settled capture，并首先只拍中央视角；最多 3 轮。</p>
+  <pre class="flow-ascii">genuine no_tag：detected_tag_ids=[]
+                 │
+          连续次数达到 2？
+          /             \
+        否               是
+        │                ▼
+      继续扫描      最近可信 Pose 靠墙/边界？
+                    /                  \
+                  是                    否
+                  │                     │
+       选择增加 clearance 的方向       后退约 5 cm
+       横移左或右约 4 cm                │
+                  │              朝场地内部身体转约 45°
+                  └─────────┬───────────┘
+                            ▼
+                       云台回到 100°
+                            │
+                       中央视角重新拍摄
+             ┌──────────────┼───────────────┐
+          可信 Pose      看到 Tag 无 Pose       仍无 Tag
+             │              │                  │
+       清零并恢复导航    停止继续盲动       cycle + 1
+                                            │
+                                <3 重复 / =3 高级恢复</pre>
+  <div class="cards">
+    <div class="card"><h3>普通位置动作</h3><code>back_fast ×2</code>（模型约 5 cm），再按左右 fast-turn 的配置 yaw 计算约 45° cycle。专用转向不走 LOW confidence batch cap。</div>
+    <div class="card recovery"><h3>墙边动作</h3>用地图 clearance 选安全的左/右横移；不优先做大幅原地转身。</div>
+    <div class="card ok"><h3>成功</h3>中央视角获得可信 Pose；立即清零 no-tag counter，保留当前目标并回到导航。</div>
+    <div class="card stop"><h3>耗尽</h3>3 轮仍完全无 Tag；记录 <code>no_tag_recovery_exhausted</code> 并进入全局恢复。没有无限左右摇头。</div>
   </div>
-  <div class="jump">选择成功：锁定原子化 TargetGoal，<a href="#planning">↪ 转到 §3 Motion-Aware A*</a>。无候选时按既有规则进入 <a href="#recovery">§7 Global Recovery</a> 或完成。</div>
-  <table><thead><tr><th>参数</th><th>值</th><th>单位</th><th>用途</th><th>调大 / 调小</th><th>来源</th></tr></thead><tbody>
-    <tr><td><code>target_selection_distance_window_cm</code></td><td>25</td><td>cm</td><td>允许朝向参与比较的最近距离窗口</td><td>大：更多目标比朝向；小：更严格最近优先</td><td>interaction</td></tr>
-    <tr><td><code>target_selection_behind_turn_penalty_cm_per_deg</code></td><td>0.20</td><td>cm/°</td><td>目标真正位于后方时的惩罚</td><td>大：更避开后方目标</td><td>interaction</td></tr>
-    <tr><td><code>target_selection_final_yaw_penalty_cm_per_deg</code></td><td>0.03</td><td>cm/°</td><td>最终朝向的小幅偏好</td><td>大：更偏好自然终向</td><td>interaction</td></tr>
-    <tr><td><code>target_selection_orientation_penalty_max_cm</code></td><td>25</td><td>cm</td><td>总朝向惩罚上限</td><td>防止朝向压过距离原则</td><td>interaction</td></tr>
-  </tbody></table>
-  <ul class="invariants"><li><strong>不变量：</strong>左右目标可由 strafe 到达，<code>|bearing_error| ≤ 90°</code> 时 behind penalty 为 0。</li><li>每个候选的所有中间量和 selected 标记进入 <code>last_target_plan</code> 与 JSONL。</li></ul>
+  <p class="code-ref">代码参考：<code>recover_from_no_tag_if_needed()</code>、<code>no_tag_recovery_turn()</code>、<code>choose_near_wall_lateral_direction()</code>。</p>
 </section>
 
-<section id="planning">
-  <h2>3. Motion-Aware A* 路径规划</h2>
-  <p class="lead">正式 planner 的状态是 <code>(x_grid, y_grid, yaw_bin, previous_turn_sign, previous_motion_code)</code>。它在搜索时直接展开 TonyPi 已配置的动作，所以 turn penalty、动作后 yaw 和连续动作代价最终会反映在真实执行序列，而不是只生成 XY waypoint。</p>
-  <div class="flowchart">
-    <div class="flow-node start">当前 RobotPose + 25 cm goal XY + desired yaw</div><div class="flow-arrow"></div>
-    <div class="flow-node">量化 (x_grid, y_grid, yaw_bin)</div><div class="flow-arrow"></div>
-    <div class="flow-node">A* expand<small>FORWARD / STRAFE L/R / TURN L/R / 条件式 REVERSE</small></div><div class="flow-arrow"></div>
-    <div class="flow-node decision">动作 corridor / rotation sweep 安全？</div>
-    <div class="flow-branch"><div class="branch-column"><span class="branch-label no">NO</span><div class="flow-node failure">丢弃 successor<small>hard collision 永不豁免</small></div></div><div class="branch-column"><span class="branch-label yes">YES</span><div class="flow-node">累计动作、turn、连续转向、soft-cost 代价</div></div></div>
-    <div class="merge"><div class="flow-node decision">distance ≤ goal position tolerance 且 yaw error ≤ yaw tolerance？</div></div>
-    <div class="flow-branch"><div class="branch-column"><span class="branch-label no">NO</span><div class="flow-node">继续 open set</div></div><div class="branch-column"><span class="branch-label yes">YES</span><div class="flow-node success">重建 NavigationPlan<small>path_xy + ordered actions + costs + predicted poses</small></div></div></div>
+<section id="plan">
+  <h2>4–6. 选目标、Motion A* 与动作执行</h2>
+  <pre class="flow-ascii">未完成目标 → 到各 25 cm interaction point 的距离
+                         │
+                 最近距离窗口 + 有界朝向惩罚
+                         │
+                    锁定 TargetGoal
+                         │
+                         ▼
+当前 Pose + 目标 XY/yaw → (x_grid,y_grid,yaw_bin) A*
+                         │
+          展开 forward/reverse/strafe/turn
+                         │
+             corridor / rotation 安全检查
+                         │
+                    NavigationPlan.actions
+                         │
+             置信度与近目标规则决定 batch
+                         │
+             执行 → dead reckoning → 定位 → REPLAN</pre>
+  <div class="cards">
+    <div class="card"><h3>物理 yaw</h3><code>configured_yaw_deg</code> 来自 <code>motion.actions.*.yaw_deg</code>，供硬件、里程计和 watchdog 使用。</div>
+    <div class="card warn"><h3>规划 yaw</h3>15° bin 下，物理 -18° 必须跨 2 bin，所以 <code>planner_yaw_delta_deg=-30°</code>。它只代表离散搜索状态。</div>
   </div>
-  <div class="jump">成功：<a href="#navigation">↪ 将完整 action sequence 交给 §4 Executor</a>。失败：<a href="#recovery">↪ 转到 §7 既有导航 Recovery</a>，成功后重新定位并回到本节。</div>
-  <table><thead><tr><th>参数</th><th>值</th><th>单位</th><th>用途</th><th>调大 / 调小</th><th>来源</th></tr></thead><tbody>
-    <tr><td><code>action_planner_yaw_bin_deg</code></td><td>15</td><td>°</td><td>A* yaw 离散粒度</td><td>大：更快更粗；小：更细但节点更多</td><td>navigation</td></tr>
-    <tr><td><code>action_planner_forward_cost</code></td><td>1.0</td><td>倍率</td><td>前进基准代价</td><td>大：减少 forward 倾向</td><td>navigation</td></tr>
-    <tr><td><code>action_planner_strafe_cost</code></td><td>1.05</td><td>倍率</td><td>平移代价，接近 forward</td><td>大：减少 strafe 倾向</td><td>navigation</td></tr>
-    <tr><td><code>action_planner_turn_fixed_cost</code> / <code>turn_cost_per_deg</code></td><td>既有配置</td><td>cost</td><td>让 turn 明显贵于平移</td><td>大：更偏好平移；小：更常转向</td><td>navigation</td></tr>
-    <tr><td><code>action_planner_goal_yaw_tolerance_deg</code></td><td>10</td><td>°</td><td>planner goal 的 yaw 条件</td><td>大：更易结束；小：终向更精确</td><td>navigation</td></tr>
-    <tr><td><code>reverse_prefer_max_goal_distance_cm</code></td><td>5</td><td>cm</td><td>normal planner 可展开 reverse 的最大终点距离</td><td>大：更多倒退候选；小：更严格</td><td>navigation</td></tr>
-  </tbody></table>
-  <ul class="invariants"><li><strong>不变量：</strong>XY 到达但 yaw 未到达时不是 planner goal。</li><li>仅 locked target 自身 soft inflation/endpoint cost 可按既有目标规则豁免；场界、hard occupancy、机器人 footprint、其他建筑和动态障碍继续生效。</li><li>普通二维 A* 仅保留给 debug、fallback 和 Recovery 兼容。</li></ul>
+  <p>距目标 ≤15 cm 时只执行单周期。普通 REVERSE 仅允许在最终目标 5 cm 内、目标在后方、确实缩短距离且后方通道安全时使用。</p>
+  <p class="code-ref">代码参考：<code>plan_motion_actions()</code>、<code>execute_motion_astar_action()</code>、<code>post_action_relocalize()</code>。</p>
 </section>
 
-<section id="navigation">
-  <h2>4. 导航动作执行与闭环重规划</h2>
-  <p class="lead">Executor 读取 NavigationPlan 的 <code>action_key</code> 和 cycles，不再由 waypoint 猜动作。连续同 key 动作可在置信度和距离上限内合批；每批后更新 dead reckoning，并按 adaptive relocalization 决策重新定位，然后从最新 Pose 重规划。</p>
-  <div class="flowchart">
-    <div class="flow-node start">读取下一项 PlannedNavigationAction</div><div class="flow-arrow"></div>
-    <div class="flow-node">合并连续相同 action_key</div><div class="flow-arrow"></div>
-    <div class="flow-node decision">距目标 ≤ 15 cm 或置信度/通道要求单步？</div>
-    <div class="flow-branch"><div class="branch-column"><span class="branch-label yes">YES</span><div class="flow-node">batch_cycles = 1</div></div><div class="branch-column"><span class="branch-label no">NO</span><div class="flow-node">按 HIGH/MEDIUM/LOW batch cap</div></div></div>
-    <div class="merge"><div class="flow-node decision">计划动作仍满足实时 corridor / turn sweep / reverse gate？</div></div>
-    <div class="flow-branch"><div class="branch-column"><span class="branch-label no">NO</span><div class="flow-node recovery">拒绝动作 → <a href="#recovery">§7 Recovery</a></div></div><div class="branch-column"><span class="branch-label yes">YES</span><div class="flow-node io">直接执行 planner 给出的 TonyPi action_key</div><div class="flow-arrow"></div><div class="flow-node">dead reckoning + adaptive relocalization</div><div class="flow-arrow"></div><div class="flow-node decision">真实 Pose 满足 XY + yaw？</div><div class="flow-branch"><div class="branch-column"><span class="branch-label no">NO</span><div class="flow-node">replan from latest Pose</div></div><div class="branch-column"><span class="branch-label yes">YES</span><div class="flow-node success">ARRIVED_AT_TARGET</div></div></div></div></div>
-  </div>
-  <div class="jump">到达：<a href="#arrival">↪ 转到 §5 Target Confirmation</a>。无进展或安全拒绝：<a href="#recovery">↪ 转到 §7 Recovery</a>。</div>
-  <table><thead><tr><th>参数</th><th>值</th><th>单位</th><th>用途</th><th>调大 / 调小</th><th>来源</th></tr></thead><tbody>
-    <tr><td><code>near_target_distance_cm</code></td><td>15</td><td>cm</td><td>进入精细单步区</td><td>大：更早谨慎；小：大胆批量更久</td><td>navigation</td></tr>
-    <tr><td><code>near_target_max_action_cycles</code></td><td>1</td><td>cycle</td><td>近目标动作上限</td><td>维持 1 避免过冲</td><td>navigation</td></tr>
-    <tr><td><code>max_forward_cycles_high</code> / <code>max_strafe_cycles_high</code></td><td>既有值</td><td>cycle</td><td>远于 15 cm 且 HIGH confidence 的批量上限</td><td>大：更快但误差积累更多</td><td>navigation</td></tr>
-    <tr><td><code>target_arrival_radius_cm</code></td><td>4</td><td>cm</td><td>真实执行 XY 到达容差</td><td>大：更易到达；小：位置更精确</td><td>navigation</td></tr>
-    <tr><td><code>target_arrival_yaw_tolerance_deg</code></td><td>10</td><td>°</td><td>真实执行 yaw 到达容差</td><td>大：更宽松；小：更多微转</td><td>navigation</td></tr>
-  </tbody></table>
-  <ul class="invariants"><li><strong>Reverse gate：</strong>仅 normal navigation 中，距最终目标 ≤ 5 cm、目标确在后方、动作缩短距离且 rear corridor 安全时可执行。</li><li>Recovery backoff、bounded escape、NFC retry retreat、post-interaction retreat 调用各自原有路径，不受 5 cm normal gate 限制。</li><li>日志同时记录 planned/executed action、batch、预测/里程计 Pose 和 replan reason。</li></ul>
-</section>
-
-<section id="arrival">
-  <h2>5. 到点与 Target Tag / Screen 确认</h2>
-  <p class="lead">A* 与真实执行都要求 XY + yaw 到达。由于步态误差，XY 已合格但 yaw 略超差时允许既有 final micro-turn 补偿；规划器本身仍不能忽略 yaw。到点坐标也不会自动授权 FPGA/NFC，必须重新获取当前目标视觉证据。</p>
-  <div class="flowchart">
-    <div class="flow-node start">ARRIVED_AT_TARGET<small>XY radius + yaw tolerance</small></div><div class="flow-arrow"></div>
-    <div class="flow-node io">扫描 live current Target Tag</div><div class="flow-arrow"></div>
-    <div class="flow-node decision">Tag ID == locked target ID？</div>
-    <div class="flow-branch"><div class="branch-column"><span class="branch-label no">NO</span><div class="flow-node recovery">target visibility recovery</div></div><div class="branch-column"><span class="branch-label yes">YES</span><div class="flow-node io">确认 same-ID Screen binding</div><div class="flow-arrow"></div><div class="flow-node decision">Tag ID == Screen ID == locked target？</div><div class="flow-branch"><div class="branch-column"><span class="branch-label no">NO</span><div class="flow-node failure">拒绝授权 / 重获目标</div></div><div class="branch-column"><span class="branch-label yes">YES</span><div class="flow-node success">Target confirmed</div></div></div></div></div>
-  </div>
-  <div class="jump">确认成功：<a href="#interaction">↪ 转到 §6 FPGA / NFC</a>；确认失败：<a href="#recovery">↪ 转到 §7 当前目标 Recovery</a>。</div>
-  <table><thead><tr><th>参数</th><th>值</th><th>单位</th><th>用途</th><th>调大 / 调小</th><th>来源</th></tr></thead><tbody>
-    <tr><td><code>arrival_visual_pose_max_age_s</code></td><td>3</td><td>s</td><td>到达判定前视觉 Pose 新鲜度</td><td>大：接受更旧 Pose；小：更常重定位</td><td>navigation</td></tr>
-    <tr><td><code>target_arrival_radius_cm</code></td><td>4</td><td>cm</td><td>目标 XY 到达</td><td>见 §4</td><td>navigation</td></tr>
-    <tr><td><code>target_arrival_yaw_tolerance_deg</code></td><td>10</td><td>°</td><td>目标 yaw 到达</td><td>见 §4</td><td>navigation</td></tr>
-  </tbody></table>
-  <ul class="invariants"><li><strong>不变量：</strong>确认绑定是 current-target-specific，不能用其他 Tag 或陈旧 crop 授权。</li><li>到达、Tag 确认和 Screen binding 是三个独立条件。</li></ul>
+<section id="watchdog">
+  <h2>7. 转向动作证据 Watchdog</h2>
+  <pre class="flow-ascii">转向动作硬件成功
+       │
+       ▼
+有可靠 post-turn RobotPose？
+   /                         \
+ 是                           否
+ │                            │
+比较 before/after yaw     PROGRESS_UNVERIFIED
+ │                       不增加 verified counter
+ ▼
+yaw 变化足够？
+ /          \
+是            否
+│             │
+VERIFIED_    VERIFIED_NO_PROGRESS
+PROGRESS            │
+清零 counter         ▼
+              可靠无进展累计达到 2
+                     │
+               强制再定位复核
+             ┌───────┼────────┐
+           已转动    无法验证   再次确认没转
+             │        │          │
+           清零   不报“没动”  RECOVERY_NO_PROGRESS</pre>
+  <div class="rule">没有可信 Pose 只能说明“无法验证”，不能说明“硬件没动”。看到 Tag/Screen 但因 too small、quality、conflict、physical gate 等不能定位时同样是 <code>PROGRESS_UNVERIFIED</code>。</div>
+  <p class="code-ref">代码参考：<code>evaluate_turn_progress()</code>、<code>scan_after_turn()</code>、<code>monitor_turn_result()</code>。</p>
 </section>
 
 <section id="interaction">
-  <h2>6. FPGA / NFC（业务语义保持）</h2>
-  <p class="lead">本次不改变 classifier HTTP、Central Server 认证、worker/seq/authorization、最多两次物理 NFC Attempt 或 <code>CHANGED</code> 终态。唯一导航接口变化是需要重新靠近目标时，直接重新规划到同一个 25 cm XY + yaw。</p>
-  <div class="flowchart">
-    <div class="flow-node io">live bound crop → FPGA classify</div><div class="flow-arrow"></div><div class="flow-node decision">flower == target？</div>
-    <div class="flow-branch"><div class="branch-column"><span class="branch-label yes">YES</span><div class="flow-node success">ALREADY_TARGET<small>无 final forward；无 NFC</small></div></div><div class="branch-column"><span class="branch-label no">NO</span><div class="flow-node">NEEDS_CHANGE → final forward ≈ 17 cm</div><div class="flow-arrow"></div><div class="flow-node io">fresh visual authorization → NFC Attempt1<small>Tag ID == Screen ID == Worker ID；新 seq</small></div><div class="flow-arrow"></div><div class="flow-node decision">ACK / 结果成功？</div><div class="flow-branch"><div class="branch-column"><span class="branch-label yes">YES</span><div class="flow-node success">CHANGED</div></div><div class="branch-column"><span class="branch-label no">NO</span><div class="flow-node">retreat → relocalize → reacquire current target → fresh FPGA</div><div class="flow-arrow"></div><div class="flow-node decision">fresh flower == target？</div><div class="flow-branch"><div class="branch-column"><span class="branch-label yes">YES</span><div class="flow-node success">CHANGED<small>ACK 可能丢失；禁止 Attempt2</small></div></div><div class="branch-column"><span class="branch-label no">NO</span><div class="flow-node io">必要时 NFC Attempt2<small>最终物理尝试；无 Attempt3</small></div></div></div></div></div></div></div>
-  </div>
-  <div class="jump">目标终态：返回 <a href="#target">§2 Select Next Target</a>。重获/导航失败：<a href="#recovery">↪ 转到 §7 Recovery</a>。</div>
-  <table><thead><tr><th>参数</th><th>当前值</th><th>单位</th><th>用途</th><th>调大 / 调小</th><th>来源</th></tr></thead><tbody>
-    <tr><td><code>interaction_forward_cm</code></td><td>约 17</td><td>cm</td><td>仅 NEEDS_CHANGE 后进入 NFC close pose</td><td>机械接近距离；本次未改</td><td>interaction / motion</td></tr>
-    <tr><td>NFC physical attempts</td><td>最多 2</td><td>次</td><td>Attempt1 + 条件式 Attempt2</td><td>硬业务规则，不调整</td><td>interaction client / manager</td></tr>
-    <tr><td>interaction timeout / response timeout</td><td>既有值</td><td>s</td><td>worker 通信边界</td><td>大：等待更久；小：更快失败</td><td>interaction</td></tr>
-    <tr><td><code>min_confidence</code></td><td>0.2</td><td>ratio</td><td>FPGA 视觉授权阈值</td><td>大：更严格；小：更易授权</td><td>vision</td></tr>
-  </tbody></table>
-  <ul class="invariants"><li><strong>不变量：</strong><code>ALREADY_TARGET</code> 不执行 final forward 或 NFC；<code>CHANGED</code> 是终态。</li><li>Attempt1 失败后必须 retreat、重定位、重获当前目标并取得 fresh FPGA 结果，才可能进入 Attempt2。</li></ul>
+  <h2>8–24. 到达确认、FPGA、20 cm final forward 与 NFC</h2>
+  <pre class="flow-ascii">XY ≤4 cm 且 yaw error ≤10° 且视觉 Pose 足够新
+                      │
+                实时确认当前 Tag + Screen
+                      │
+                  FPGA 识别花朵
+              ┌───────┴────────┐
+          flower==target     flower!=target
+              │                │
+        ALREADY_TARGET     go_forward_one_step ×4
+       无 final forward       约 20 cm（只一次）
+       无 NFC                  │
+                         授权复核 → NFC Attempt 1
+                            /             \
+                          成功             失败
+                          │                │
+                       CHANGED      后退10cm→定位→重获当前目标
+                                           │最多3轮
+                                        fresh FPGA
+                                      /             \
+                                  已是目标           仍非目标
+                                     │                │
+                                  CHANGED        NFC Attempt 2
+                                                  │
+                                           CHANGED / GAVE_UP</pre>
+  <ul>
+    <li><code>target_distance_cm=25.0</code> 不变；final forward 的实体序列和模型都改为约 20 cm。</li>
+    <li>其他 Tag 可以更新 Pose，但不能算“当前目标已重获”。</li>
+    <li><code>CHANGED</code> 是终态；Attempt 2 只能在 Attempt 1 失败且 fresh FPGA 明确仍非目标后执行。</li>
+    <li>进入过近距离交互位后，保持既有一次 10 cm retreat 和重新定位。</li>
+  </ul>
 </section>
 
-<section id="recovery">
-  <h2>7. Recovery（策略保持）</h2>
-  <p class="lead">新 planner/executor 只适配入口和成功后的 replan；near-wall backoff/lateral/small-turn、bounded escape、indoor waypoint、global recovery、no-tag/boundary recovery 和临时目标轮换的顺序、上限与语义保持既有实现。</p>
-  <div class="flowchart">
-    <div class="flow-node recovery">NAVIGATION_RECOVERY</div><div class="flow-arrow"></div>
-    <div class="flow-node decision">near wall / corridor failure？</div>
-    <div class="flow-branch"><div class="branch-column"><span class="branch-label yes">YES</span><div class="flow-node recovery">recover_from_near_wall<small>backoff → lateral → small turn</small></div></div><div class="branch-column"><span class="branch-label no">NO / 重复局部规划失败</span><div class="flow-node recovery">bounded escape / indoor waypoint / global recovery</div></div></div>
-    <div class="merge"><div class="flow-node decision">Recovery 成功？</div></div>
-    <div class="flow-branch"><div class="branch-column"><span class="branch-label yes">YES</span><div class="flow-node io">Relocalize<small>允许时保留当前 TargetGoal</small></div><div class="flow-arrow"></div><div class="flow-node success">返回 Motion-Aware A* REPLAN</div></div><div class="branch-column"><span class="branch-label no">NO</span><div class="flow-node failure">temporary target failure / release<small>按既有次数和全局规则</small></div></div></div>
-  </div>
-  <div class="jump">Recovery success：<a href="#navigation">↪ 返回 §4 Navigation / REPLAN</a>；目标被释放：<a href="#target">↪ 返回 §2 Target Selection</a>。</div>
-  <table><thead><tr><th>参数</th><th>当前值</th><th>单位</th><th>用途</th><th>调大 / 调小</th><th>来源</th></tr></thead><tbody>
-    <tr><td>near-wall back / lateral / turn</td><td>既有 5×3 / 4×2 / 7.5°</td><td>cycle / °</td><td>固定有界脱困顺序</td><td>本次未调整</td><td>recovery / navigation</td></tr>
-    <tr><td><code>identical_local_replan_failure_threshold</code></td><td>既有值</td><td>次</td><td>局部 A* 连续失败后升级</td><td>大：更多原地重试；小：更早 Recovery</td><td>navigation</td></tr>
-    <tr><td>no-tag threshold / cooldown</td><td>2 / 4</td><td>次 / s</td><td>仅 genuine no_tag 专用恢复</td><td>大：更耐心；小：更快触发</td><td>localization / recovery</td></tr>
-  </tbody></table>
-  <ul class="invariants"><li><strong>不变量：</strong>Recovery 动作不套用 normal reverse ≤ 5 cm 规则。</li><li>物理非法 Pose 和 hard jump 只增加一般定位失败，绝不触发 no-tag 专用计数。</li></ul>
+<section id="recoveries">
+  <h2>25–28. Recovery 唯一入口与去向</h2>
+  <table>
+    <thead><tr><th>恢复</th><th>触发</th><th>机器人实际动作</th><th>成功 / 失败 / 最大次数</th><th>之后去哪</th><th>目标</th></tr></thead>
+    <tbody>
+      <tr><td>无 Tag 恢复</td><td>连续 2 次完整扫描零 Tag</td><td>墙边安全横移；否则后退 5 cm + 向内身体转 45°；中央复拍</td><td>可信 Pose 成功；3 cycle 仍零 Tag 耗尽</td><td>导航 / 全局恢复</td><td>保留</td></tr>
+      <tr><td>靠墙恢复</td><td>靠墙、通道失败或局部恢复入口</td><td>安全后退 → clearance 最优横移 → 最后小转；每步定位</td><td>back 3、lateral 2、总动作 12；离墙或 clearance 改善成功</td><td>重规划 / bounded escape / 导航失败</td><td>保留</td></tr>
+      <tr><td>碰撞/前进停滞恢复</td><td>前方障碍或前进视觉/位姿证据触发，且配置启用</td><td>有界后退并定位</td><td>最多 3 次定位；独立使用 collision 参数</td><td>恢复导航或失败调度</td><td>通常保留</td></tr>
+      <tr><td>全局恢复</td><td>NO-TAG 耗尽或全部目标临时失败</td><td>完整定位；near-wall 或室内安全 waypoint；无 Pose 时有界搜索</td><td>每次一轮，受各子上限与全局 timeout 限制</td><td>释放临时失败并重新选目标</td><td>按调度规则</td></tr>
+      <tr><td>目标临时轮换</td><td>重复同类规划失败达到 3</td><td>不做交互动作，选择其他目标</td><td>全部都临时失败时升级全局恢复</td><td>选目标</td><td>暂时释放</td></tr>
+    </tbody>
+  </table>
 </section>
 
-<section id="finish">
-  <h2>8. Mission Complete / Timeout</h2>
-  <p class="lead">所有目标进入完成或既有终态后正常完成；任意循环发现 deadline 耗尽则立即走既有 timeout/safe-stop。临时失败目标仍按当前 global recovery 规则释放和轮换，不改变其业务意义。</p>
-  <div class="flowchart">
-    <div class="flow-node decision">time_left ≤ 0？</div><div class="flow-branch"><div class="branch-column"><span class="branch-label yes">YES</span><div class="flow-node failure">MISSION_TIMEOUT → safe stop</div></div><div class="branch-column"><span class="branch-label no">NO</span><div class="flow-node decision">还有 eligible target？</div><div class="flow-branch"><div class="branch-column"><span class="branch-label yes">YES</span><div class="flow-node">继续 SELECT_TARGET</div></div><div class="branch-column"><span class="branch-label no">NO</span><div class="flow-node success">MISSION_COMPLETE → stand / safe end</div></div></div></div></div>
-  </div>
-  <div class="jump">继续任务：<a href="#target">↪ 返回 §2 Target Selection</a>。结束后不再进入任何交互阶段。</div>
-  <table><thead><tr><th>参数</th><th>当前值</th><th>单位</th><th>用途</th><th>调大 / 调小</th><th>来源</th></tr></thead><tbody><tr><td><code>mission.time_limit_s</code></td><td>570</td><td>s</td><td>任务总时限</td><td>大：允许更多重试；小：更早结束</td><td>Python defaults（正式 JSON 继承）</td></tr></tbody></table>
-  <ul class="invariants"><li><strong>不变量：</strong>timeout 优先于继续规划、Recovery 和 NFC。</li><li>Mission Complete 与 temporary failure exhaustion 使用既有判定。</li></ul>
+<section id="states">
+  <h2>错误与证据状态说明</h2>
+  <table>
+    <thead><tr><th>状态</th><th>中文含义 / 触发</th><th>硬件真的没动？</th><th>放弃目标？</th><th>下一步</th></tr></thead>
+    <tbody>
+      <tr><td class="nowrap"><code>no_tag</code></td><td>有帧但检测到零 AprilTag</td><td>否</td><td>否</td><td>连续 2 次进入专用恢复</td></tr>
+      <tr><td><code>pose_unavailable_with_tags</code></td><td>看到 Tag，但无法形成可信 Pose</td><td>否</td><td>否</td><td>停止 no-tag 盲动，继续定位</td></tr>
+      <tr><td><code>TAG_SEEN_POSE_UNAVAILABLE</code></td><td>上一状态的统一 debug 事件</td><td>否</td><td>否</td><td>保留目标与 no-tag=0</td></tr>
+      <tr><td><code>LOCALIZATION_UNCERTAIN</code></td><td>视觉 Pose 暂不可信或待确认</td><td>否</td><td>否</td><td>缩短动作批次并重定位</td></tr>
+      <tr><td><code>PROGRESS_UNVERIFIED</code></td><td>转向后没有可靠 Pose，无法判断</td><td>否</td><td>否</td><td>不增加 verified counter</td></tr>
+      <tr><td><code>VERIFIED_NO_PROGRESS</code></td><td>可靠 before/after Pose 证明 yaw 变化不足</td><td>本次证据为是</td><td>否</td><td>计数并在阈值处复核</td></tr>
+      <tr><td><code>RECOVERY_NO_PROGRESS</code></td><td>连续可靠无进展且可靠复核仍确认</td><td>是</td><td>可能临时轮换</td><td>停止当前导航并恢复/调度</td></tr>
+      <tr><td><code>near_wall_recovery_exhausted</code></td><td>靠墙恢复有界尝试耗尽</td><td>不一定</td><td>默认否</td><td>bounded/global recovery</td></tr>
+      <tr><td><code>navigation_failed</code></td><td>本轮规划、动作、安全或恢复失败</td><td>不一定</td><td>临时</td><td>记录根因并轮换</td></tr>
+      <tr><td><code>target temporarily failed</code></td><td>当前目标达到可恢复失败上限</td><td>不一定</td><td>暂时</td><td>选择其他目标；全体失败后全局恢复</td></tr>
+    </tbody>
+  </table>
 </section>
-
-<section id="parameters">
-  <h2>9. 全局参数索引</h2>
-  <p class="lead">本表用于快速定位参数；各流程的解释和增减影响见对应章节。正式 JSON 与 Python defaults 使用相同语义。</p>
-  <div class="flowchart"><div class="flow-node start">调参入口</div><div class="flow-arrow"></div><div class="flow-node">定位：physical / conflict / hard jump</div><div class="flow-arrow"></div><div class="flow-node">选择：distance window / orientation weights / cap</div><div class="flow-arrow"></div><div class="flow-node">规划：action costs / yaw bin / goal tolerances / reverse</div><div class="flow-arrow"></div><div class="flow-node">执行：confidence batch / near target / relocalization</div><div class="flow-arrow"></div><div class="flow-node success">用 JSONL 与 Dashboard 验证原因链</div></div>
-  <div class="jump">返回：<a href="#overview">↪ §0 全局流程</a>；<a href="#localization">§1 定位</a>；<a href="#planning">§3 Planner</a>；<a href="#navigation">§4 Executor</a>。</div>
-  <table><thead><tr><th>类别</th><th>关键参数 / 当前默认</th><th>单位</th><th>用途</th><th>配置来源</th></tr></thead><tbody>
-    <tr><td>物理场地</td><td><code>width_cm</code>, <code>height_cm</code>, building bounds</td><td>cm</td><td>Pose 和动作 hard legality</td><td>map / Tag geometry</td></tr>
-    <tr><td>定位冲突</td><td>15 cm / 25°；hard 40 cm / 60°</td><td>cm / °</td><td>normal、suspect、hard jump 分层</td><td>navigation</td></tr>
-    <tr><td>目标选择</td><td>window 25；behind 0.20；final yaw 0.03；cap 25</td><td>cm, cm/°</td><td>nearest-first + 有界朝向偏好</td><td>interaction</td></tr>
-    <tr><td>正式目标</td><td>25 cm XY + desired yaw；radius 4；yaw tol 10</td><td>cm / °</td><td>A* 与真实到达条件</td><td>interaction / navigation</td></tr>
-    <tr><td>动作代价</td><td>forward 1.0；strafe 1.05；turn fixed/per-degree/extra</td><td>cost</td><td>平移优先、转向昂贵</td><td>navigation</td></tr>
-    <tr><td>Reverse</td><td>normal goal distance ≤ 5</td><td>cm</td><td>仅最终目标后方短修正</td><td>navigation</td></tr>
-    <tr><td>Near target</td><td>distance 15；max cycles 1</td><td>cm / cycle</td><td>精细控制入口</td><td>navigation</td></tr>
-    <tr><td>交互</td><td>final forward ≈17；NFC attempts ≤2；confidence ≥0.2</td><td>cm / 次 / ratio</td><td>既有 FPGA/NFC 边界</td><td>interaction / vision</td></tr>
-    <tr><td>Recovery</td><td>既有 near-wall / escape / retry 参数</td><td>各自单位</td><td>异常脱困；本次不重设计</td><td>navigation / recovery</td></tr>
-  </tbody></table>
-  <ul class="invariants"><li><strong>可观测性：</strong>关键事件包括 <code>localization_pose_physical_rejected</code>、具体 Pose reason、<code>target_selection_candidate</code>、<code>motion_astar_*</code>、<code>planned_action</code>、<code>executed_action</code>、<code>reverse_allowed/rejected</code>。</li><li>调参必须同步 Python defaults 和正式 JSON，并以测试与真实 JSONL 验证。</li></ul>
-</section>
-
 </main>
-<footer>离线文档：无 CDN、无外部 JavaScript、无网络依赖。</footer>
+<footer>单文件离线文档 · 浅层 CSS Grid · ASCII 连线不会因深层 DOM branch nesting 错位</footer>
 </body>
 </html>

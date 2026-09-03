@@ -1,6 +1,6 @@
 # robot_tonypi 文件说明
 
-本文按当前源码说明目录职责和调用关系。运行方法见 [README.md](README.md)，完整决策树见 [robot_decision_tree.html](robot_decision_tree.html)。
+本文按当前源码说明目录职责和调用关系。运行方法见 [README.md](README.md)，完整决策树见 [robot_decision_tree.md](robot_decision_tree.md) 和 [robot_decision_tree.html](robot_decision_tree.html)。
 
 ## 1. 当前调用关系
 
@@ -27,7 +27,11 @@ main.py
 
 ### `robot_decision_tree.html`
 
-从当前源码重新生成的完整可视化决策树。它区分普通定位和 NFC 当前目标重获，展示目标锁、规划、恢复、FPGA、两次 NFC 尝试、后退、完成和 timeout。
+单文件离线决策树。使用浅层卡片、表格和 ASCII 流程，避免深层 branch DOM 的连线错位。
+
+### `robot_decision_tree.md`
+
+长期维护的完整流程说明，覆盖定位事实、genuine NO-TAG、Turn Progress 三态、规划/动作 yaw 模型、FPGA/NFC 与所有 Recovery 去向。
 
 ### `FILES.md`
 
@@ -94,10 +98,16 @@ main.py
 #### 定位
 
 - `initial_localize()`；
-- `run_localization_search_sequence()`：启动与恢复共用“完整 pan → 身体搜索动作 → 完整 pan”；
+- `run_localization_search_sequence()`：启动与高级恢复共用“完整 pan → 身体搜索动作 → 完整 pan”；运行时 genuine NO-TAG 使用独立的有界位置恢复；
 - `localize_scan()`：普通模式在任意有效视觉 Pose 后停止；指定 `required_target_screen_id` 时必须等到该目标 Tag↔Screen 绑定；
 - `accept_visual_localization()`：只有接受视觉 Pose 才清零动作计数与运动不确定度；
 - `record_localization_failure()`：区分 `no_tag`、`pose_unavailable_with_tags` 和 `capture_failed`。
+
+#### NO-TAG 与转向证据
+
+- `recover_from_no_tag_if_needed()`：仅连续 genuine `no_tag` 触发；墙边横移，否则 5 cm 后退 + 向内 45° 身体转向，中央复拍最多 3 轮；
+- `evaluate_turn_progress()` / `monitor_turn_result()`：只让可靠视觉 Pose 产生 VERIFIED 结论；不可定位统一为 `PROGRESS_UNVERIFIED`；
+- Motion A* 计划同时记录 configured physical yaw 与 planner quantized yaw，watchdog 只使用前者。
 
 #### 途中视觉和目标确认
 
@@ -130,7 +140,7 @@ main.py
 
 - `latest_valid_bound_flower_observation()`：15 秒、同 ID、binding、置信度检查；
 - `adopt_cached_target_observation()`：实时当前 Tag 存在后把缓存变成授权；
-- `execute_final_forward()`：仅 NEEDS_CHANGE 时执行一次 `interaction_forward_final`（大步×3 + 小步×1，约 17 cm），并设置 retreat pending；
+- `execute_final_forward()`：仅 NEEDS_CHANGE 时执行一次 `interaction_forward_final`（大步×4，约 20 cm），并设置 retreat pending；
 - `process_screen_interaction()`：最多两次 NFC 物理尝试；
 - `restore_nfc_physical_contact()`：Attempt1 失败后后退、定位、最多 3 轮重新寻找当前目标；
 - `recalibrate_target_for_nfc_retry()`：只有当前目标重新分类仍不是 target 才重新导航/确认/final forward；

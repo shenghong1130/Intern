@@ -161,6 +161,21 @@ class TargetDirectApproachTests(unittest.TestCase):
         self.assertIn("turn_left_small", names)
         self.assertIn("turn_right_large", names)
 
+    def test_large_turn_keeps_physical_yaw_distinct_from_planner_bins(self):
+        actions = self.model.action_planner_actions(
+            self.config["navigation"], self.config["motion"]
+        )
+        turn = next(item for item in actions if item["name"] == "turn_right_large")
+        self.assertEqual(turn["yaw_deg"], -18.0)
+        state = (*self.model.grid_pos((100.0, 100.0)), 0, 0)
+        nxt, _ = self.model.action_planner_transition(
+            state, turn, 15.0, 24, 85.0, 1.0
+        )
+        self.assertEqual(nxt[2], 22)
+        self.assertEqual(
+            self.model.yaw_from_action_bin(nxt[2], 15.0), -30.0
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

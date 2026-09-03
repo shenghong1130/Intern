@@ -2,7 +2,6 @@
 # -*- coding: utf-8 -*-
 """Main competition decision tree."""
 
-import collections
 import json
 import math
 import time
@@ -37,6 +36,7 @@ from .models import (
     TargetGoal,
     TargetTagConfirmation,
     TargetVisualConfirmation,
+    TurnProgressStatus,
     VisualAuthorization,
 )
 from .motion import MotionController, RobotState
@@ -69,8 +69,13 @@ def evaluate_turn_progress(
     target_improvement = None
     if diff_before is not None and diff_after is not None:
         target_improvement = abs(diff_before) - abs(diff_after)
-    reject_visual_pose = stale_pose or direction_conflict or no_progress
+    status = (
+        TurnProgressStatus.VERIFIED_NO_PROGRESS
+        if no_progress
+        else TurnProgressStatus.VERIFIED_PROGRESS
+    )
     return {
+        "progress_status": status.value,
         "before_yaw": float(before_pose.yaw_deg),
         "after_yaw": float(visual_pose.yaw_deg),
         "expected_delta": float(expected_delta),
@@ -84,7 +89,9 @@ def evaluate_turn_progress(
         "suspect_stale_pose": stale_pose,
         "direction_conflict": direction_conflict,
         "turn_no_progress": no_progress,
-        "reject_visual_pose": reject_visual_pose,
+        # Advisory only: scan_after_turn keeps a trusted visual pose installed
+        # so replanning uses what the camera actually observed.
+        "reject_visual_pose": stale_pose or direction_conflict or no_progress,
     }
 
 
@@ -178,7 +185,6 @@ class TaskManager:
         self.last_no_tag_recovery_s = 0.0
         self.no_tag_recovery_active = False
         self.no_tag_recovery_exhausted = False
-        self.localization_recovery_exhausted = False
         self.last_localization_attempt_result = "never_attempted"
         self.recovery_count = 0
         self.last_recovery = {}
@@ -188,9 +194,9 @@ class TaskManager:
         self.collision_recovery_pending = False
         self.forward_map_block_count = 0
         self.navigation_noop_count = 0
-        self.turn_no_progress_count = 0
+        self.turn_progress_status = TurnProgressStatus.PROGRESS_UNVERIFIED.value
+        self.verified_no_progress_count = 0
         self.turn_navigation_abort = False
-        self.turn_progress_failure_start_diff = None
         self.near_wall_recovery_no_progress_count = 0
         self.near_wall_recovery_rejection_count = 0
         self.near_wall_recovery_actions = 0
@@ -704,10 +710,6 @@ class TaskManager:
             )
         return False
 
-    def is_retryable_target_failure(self, reason: str) -> bool:
-        """Navigation/localization/runtime failures never permanently blacklist a target."""
-        return str(reason) not in ("target_completed", "already_target")
-
     def register_temporary_target_failure(
         self,
         target: Screen,
@@ -844,7 +846,6 @@ class TaskManager:
         localized = bool(self.localize_scan(
             reason="global_recovery:" + reason,
             allow_pan_search=True,
-            allow_failure_escalation=False,
         ))
         self.debug.event(
             "relocalization_success" if localized else "relocalization_failed",
@@ -952,7 +953,6 @@ class TaskManager:
         self.state.set_pose(pose)
         self.last_localize_success_s = now_s()
         self.no_tag_recovery_exhausted = False
-        self.localization_recovery_exhausted = False
         self.last_localization_attempt_result = "accepted_visual_pose"
         self.debug.event(
             "localization_state_reset",
@@ -1096,7 +1096,6 @@ class TaskManager:
                 reason=reason + ":" + stage,
                 allow_pan_search=True,
                 pan_angles=pans,
-                allow_failure_escalation=False,
             ))
             if no_tag_recovery:
                 self.debug.event(
@@ -1618,6 +1617,13 @@ class TaskManager:
                 self, "consecutive_no_tag_scans", 0
             )) + 1
         self.last_localization_attempt_result = str(attempt_result)
+        if saw_any_tag:
+            self.debug.event(
+                "tag_seen_pose_unavailable",
+                status="TAG_SEEN_POSE_UNAVAILABLE",
+                reason=reason,
+                localization_result=str(attempt_result),
+            )
         self.debug.event(
             "localize_failed",
             reason=reason,
@@ -1643,7 +1649,6 @@ class TaskManager:
         reason: str = "routine",
         allow_pan_search: bool = False,
         pan_angles: Optional[List[float]] = None,
-        allow_failure_escalation: bool = True,
         required_target_screen_id: Optional[int] = None,
     ) -> bool:
         """Localize normally, or keep scanning until one required target is bound."""
@@ -1666,7 +1671,7 @@ class TaskManager:
         )
         scan_pans = (
             self.unique_pan_angles(requested_pans)
-            if required_target_id is not None
+            if required_target_id is not None or allow_pan_search
             else self.boundary_safe_pan_angles(requested_pans, reason=reason)
         )
         self.debug.event(
@@ -1967,18 +1972,6 @@ class TaskManager:
                 rejected=rejected,
             )
         return safe
-
-    def pan_angles_for_screen(self, screen_id: int, fallback: Optional[List[float]] = None) -> List[float]:
-        fallback = list(self.config["vision"]["harvest_pan_angles"] if fallback is None else fallback)
-        pose = self.state.pose
-        screen = self.map.screens.get(int(screen_id))
-        if pose is None or screen is None:
-            return self.unique_pan_angles(fallback)
-        dx = screen.center_xy[0] - pose.x_cm
-        dy = screen.center_xy[1] - pose.y_cm
-        desired_yaw = math.degrees(math.atan2(dy, dx))
-        pan = 100.0 + angle_diff_deg(desired_yaw, pose.yaw_deg)
-        return self.unique_pan_angles([pan] + fallback)
 
     def screen_visibility_score(self, screen: Screen, pose: RobotPose, pan_angle: float = 100.0) -> float:
         dx = screen.center_xy[0] - pose.x_cm
@@ -2611,7 +2604,6 @@ class TaskManager:
         )
         if not self.localize_scan(
             reason="target_visibility_recovery",
-            allow_failure_escalation=False,
         ) or self.state.pose is None:
             recovered = self.recover_via_indoor_waypoint(
                 "target_visibility_recovery:no_localization"
@@ -2662,7 +2654,6 @@ class TaskManager:
             self.hardware.center_head()
             if not self.localize_scan(
                 reason="target_visibility_recovery_after_action",
-                allow_failure_escalation=False,
             ):
                 return False
         self.set_mission_state(MissionState.ARRIVED_AT_TARGET)
@@ -2837,9 +2828,11 @@ class TaskManager:
         outcome = {
             "localized": False,
             "accepted": False,
-            "turn_no_progress": False,
+            "progress_status": TurnProgressStatus.PROGRESS_UNVERIFIED.value,
             "direction_conflict": False,
             "suspect_stale_pose": False,
+            "tag_ids": [],
+            "localization_result": "not_attempted",
         }
         if self.args.dry_run or not bool(self.config["vision"].get("scan_after_turn_enabled", True)):
             return outcome
@@ -2853,6 +2846,7 @@ class TaskManager:
         self.last_scan_after_turn_s = t
         center = float(self.config["camera"].get("head_center_angle", 100.0))
         frame, tags = self.capture_with_tags(center)
+        outcome["tag_ids"] = [int(tag.tag_id) for tag in tags]
         if frame is None:
             self.record_localization_failure(
                 "capture_failed",
@@ -2860,6 +2854,7 @@ class TaskManager:
                 reason="scan_after_turn:" + reason,
             )
             self.debug.event("scan_after_turn_failed", reason=reason, action_key=action_key, error="capture_failed")
+            outcome["localization_result"] = "capture_failed"
             return outcome
         pose, annotated = self.localizer.estimate_from_frame(frame, tags, head_pan_angle=center, annotate=True)
         localized = pose is not None
@@ -2928,6 +2923,7 @@ class TaskManager:
                     tags, center, "scan_after_turn:" + reason, True
                 )
                 outcome["accepted"] = True
+                outcome["localization_result"] = "accepted_visual_pose"
                 self.consecutive_localize_failures = 0
                 self.consecutive_no_tag_scans = 0
                 self.evaluate_pending_progress(pose)
@@ -2963,6 +2959,9 @@ class TaskManager:
                     saw_any_tag=bool(tags),
                     reason="scan_after_turn:" + reason,
                 )
+                outcome["localization_result"] = str(getattr(
+                    self, "last_localization_attempt_result", "unknown"
+                ))
         else:
             attempt_result = (
                 "pose_unavailable_with_tags" if tags else "no_tag"
@@ -2975,6 +2974,7 @@ class TaskManager:
                 saw_any_tag=bool(tags),
                 reason="scan_after_turn:" + reason,
             )
+            outcome["localization_result"] = attempt_result
         annotated = self.observe_transit_bindings(frame, tags, annotated, center, "scan_after_turn:" + reason)
         self.debug.save_image("latest_annotated.jpg", annotated, force=True)
         self.debug.event(
@@ -3052,29 +3052,6 @@ class TaskManager:
         return InteractionAuthorizationCheck(
             ready=not reasons,
             reasons=reasons,
-        )
-
-    def navigate_directly_to_target(self, screen: Screen) -> bool:
-        """Deprecated compatibility wrapper for formal target navigation."""
-        goal = getattr(self, "current_target_goal", None)
-        if goal is None or int(goal.screen_id) != int(screen.screen_id):
-            goal = self.lock_target_goal(screen)
-        if not self.validate_target_goal(goal):
-            self.last_navigation_failure_reason = "target_pose_mismatch"
-            return False
-        return self.navigate_to_xy(
-            goal.interaction_target_xy,
-            reason="interaction_target_compat",
-            arrival_radius_cm=float(self.config["navigation"]["target_arrival_radius_cm"]),
-            max_steps=int(self.config["navigation"]["max_steps_per_target"]),
-            target_yaw_deg=goal.desired_yaw_deg,
-            target_yaw_tolerance_deg=float(
-                self.config["navigation"]["target_arrival_yaw_tolerance_deg"]
-            ),
-            allow_goal_high_cost=True,
-            target_screen=screen,
-            target_goal=goal,
-            bypass_action_safety=False,
         )
 
     def execute_final_forward(self, screen: Screen) -> bool:
@@ -3204,7 +3181,6 @@ class TaskManager:
         localized = self.localize_scan(
             reason="{}_retreat".format(reason),
             allow_pan_search=True,
-            allow_failure_escalation=False,
         )
         self.debug.event(
             "post_interaction_relocalize",
@@ -3381,7 +3357,6 @@ class TaskManager:
                 target_reacquired = bool(self.localize_scan(
                     reason="nfc_retry_visual_check",
                     allow_pan_search=True,
-                    allow_failure_escalation=False,
                     required_target_screen_id=screen.screen_id,
                 ))
                 observation = latest_fresh_target_observation()
@@ -3516,7 +3491,7 @@ class TaskManager:
                 reason="repeat_existing_final_forward",
                 forward_cm=float(
                     self.config["interaction"].get(
-                        "target_final_forward_cm", 17.0
+                        "target_final_forward_cm", 20.0
                     )
                 ),
             )
@@ -5192,7 +5167,6 @@ class TaskManager:
             else:
                 localized = bool(self.localize_scan(
                     reason=reason,
-                    allow_failure_escalation=False,
                 ))
             if not localized and self.state.pose is not None:
                 self.state.pose.confidence = Confidence.LOW
@@ -5894,7 +5868,7 @@ class TaskManager:
             )
             self.debug.event("front_obstacle_recover", **context)
             reason = str(context.get("reason", "front_obstacle_visible"))
-            self.recover_toward_field_center(reason + ":front_obstacle_visible", backoff=True)
+            self.recover_from_collision_stall(reason + ":front_obstacle_visible", backoff=True)
             return "recovered"
 
         forward_dist = min(float(action["distance_cm"]), goal_dist_cm)
@@ -5929,7 +5903,7 @@ class TaskManager:
             else:
                 self.forward_map_block_count = 0
                 reason = str(context.get("reason", "forward_map_blocked"))
-                self.recover_toward_field_center(reason + ":forward_map_blocked", backoff=True)
+                self.recover_from_collision_stall(reason + ":forward_map_blocked", backoff=True)
             return "recovered"
 
         self.forward_map_block_count = 0
@@ -5963,7 +5937,7 @@ class TaskManager:
         self.evaluate_visual_forward_progress(visual_before, abs(float(result.model_forward_cm)))
         if self.collision_recovery_pending and not bypass_action_safety:
             reason = str(context.get("reason", "visual_forward_no_progress"))
-            self.recover_toward_field_center(reason + ":visual_forward_no_progress", backoff=True)
+            self.recover_from_collision_stall(reason + ":visual_forward_no_progress", backoff=True)
             return "recovered"
         if bypass_action_safety:
             self.collision_recovery_pending = False
@@ -6012,9 +5986,9 @@ class TaskManager:
         )
 
     def clear_turn_progress_watchdog(self, reason: str = "") -> None:
-        previous = self.turn_no_progress_count
-        self.turn_no_progress_count = 0
-        self.turn_progress_failure_start_diff = None
+        previous = int(getattr(self, "verified_no_progress_count", 0))
+        self.verified_no_progress_count = 0
+        self.turn_progress_status = TurnProgressStatus.VERIFIED_PROGRESS.value
         if previous:
             self.debug.event("turn_progress_restored", reason=reason, previous_count=previous)
 
@@ -6064,35 +6038,108 @@ class TaskManager:
             current_target_screen_id=getattr(self, "current_target_screen_id", None),
         )
         self.pending_post_action_replan = True
-        failed = bool(outcome.get("turn_no_progress") or outcome.get("direction_conflict"))
-        if not failed:
-            improvement = outcome.get("target_improvement_deg")
-            if outcome.get("accepted") and (improvement is None or float(improvement) >= 2.0):
+        status = str(outcome.get(
+            "progress_status", TurnProgressStatus.PROGRESS_UNVERIFIED.value
+        ))
+        self.turn_progress_status = status
+        if status == TurnProgressStatus.VERIFIED_PROGRESS.value:
+            if outcome.get("accepted"):
                 self.clear_turn_progress_watchdog("turn_progress")
+            self.debug.event(
+                "turn_progress_verified",
+                reason=reason,
+                action=action_result.key,
+                configured_yaw_deg=float(action_result.model_yaw_deg),
+                actual_visual_yaw_delta_deg=outcome.get("actual_delta"),
+                before_yaw=before_pose.yaw_deg,
+                after_yaw=outcome.get("after_yaw"),
+                target_yaw=target_yaw,
+                progress_status=status,
+                direction_conflict=bool(outcome.get("direction_conflict")),
+            )
+            return True
+        if status == TurnProgressStatus.PROGRESS_UNVERIFIED.value:
+            self.debug.event(
+                "turn_progress_unverified",
+                reason=reason,
+                action=action_result.key,
+                configured_yaw_deg=float(action_result.model_yaw_deg),
+                actual_visual_yaw_delta_deg=None,
+                before_yaw=before_pose.yaw_deg,
+                after_yaw=None,
+                target_yaw=target_yaw,
+                progress_status=status,
+                tag_ids=outcome.get("tag_ids", []),
+                localization_result=outcome.get("localization_result"),
+            )
             return True
 
-        self.turn_no_progress_count += 1
-        if self.turn_no_progress_count == 1:
-            self.turn_progress_failure_start_diff = outcome.get("diff_before")
-        if self.turn_no_progress_count < 2:
+        self.verified_no_progress_count += 1
+        self.debug.event(
+            "turn_progress_no_progress",
+            reason=reason,
+            action=action_result.key,
+            configured_yaw_deg=float(action_result.model_yaw_deg),
+            actual_visual_yaw_delta_deg=outcome.get("actual_delta"),
+            before_yaw=before_pose.yaw_deg,
+            after_yaw=outcome.get("after_yaw"),
+            target_yaw=target_yaw,
+            progress_status=status,
+            count=self.verified_no_progress_count,
+        )
+        threshold = max(2, int(self.config["navigation"].get(
+            "turn_progress_verified_no_progress_threshold", 2
+        )))
+        if self.verified_no_progress_count < threshold:
             return True
 
-        baseline_diff = self.turn_progress_failure_start_diff
         self.debug.event(
             "turn_progress_relocalize",
             reason=reason,
-            count=self.turn_no_progress_count,
+            count=self.verified_no_progress_count,
             target_yaw=round(float(target_yaw), 2),
         )
         localized = self.localize_scan(reset_turn_watchdog=False)
         relocalized_pose = self.state.pose if localized else None
         relocalized_diff = None
-        improved = False
-        if relocalized_pose is not None and baseline_diff is not None:
+        verified_progress = False
+        verified_stall = False
+        if relocalized_pose is not None:
             relocalized_diff = angle_diff_deg(target_yaw, relocalized_pose.yaw_deg)
-            improved = abs(float(baseline_diff)) - abs(relocalized_diff) >= 2.0
-        if improved:
+            forced = evaluate_turn_progress(
+                before_pose,
+                relocalized_pose,
+                float(action_result.model_yaw_deg),
+                target_yaw,
+            )
+            verified_progress = (
+                forced["progress_status"]
+                == TurnProgressStatus.VERIFIED_PROGRESS.value
+            )
+            verified_stall = (
+                forced["progress_status"]
+                == TurnProgressStatus.VERIFIED_NO_PROGRESS.value
+            )
+        if verified_progress:
             self.clear_turn_progress_watchdog("forced_relocalize_improved")
+            return True
+        if not verified_stall:
+            self.turn_progress_status = TurnProgressStatus.PROGRESS_UNVERIFIED.value
+            self.debug.event(
+                "turn_progress_unverified",
+                reason=reason + ":forced_relocalize",
+                action=action_result.key,
+                configured_yaw_deg=float(action_result.model_yaw_deg),
+                actual_visual_yaw_delta_deg=None,
+                before_yaw=before_pose.yaw_deg,
+                after_yaw=None,
+                target_yaw=target_yaw,
+                progress_status=self.turn_progress_status,
+                tag_ids=[],
+                localization_result=str(getattr(
+                    self, "last_localization_attempt_result", "unknown"
+                )),
+            )
             return True
 
         detail = {
@@ -6101,9 +6148,9 @@ class TaskManager:
             "expected_delta": round(float(outcome.get("expected_delta", action_result.model_yaw_deg)), 3),
             "actual_delta": None if outcome.get("actual_delta") is None else round(float(outcome["actual_delta"]), 3),
             "target_yaw": round(float(target_yaw), 3),
-            "diff_before": None if baseline_diff is None else round(float(baseline_diff), 3),
+            "diff_before": None if outcome.get("diff_before") is None else round(float(outcome["diff_before"]), 3),
             "diff_after": None if relocalized_diff is None else round(float(relocalized_diff), 3),
-            "count": self.turn_no_progress_count,
+            "count": self.verified_no_progress_count,
             "localized": bool(localized),
         }
         self.debug.event("turn_progress_failed", **detail)
@@ -6129,20 +6176,6 @@ class TaskManager:
             self.debug.event("navigation_noop_recover", **detail)
             self.clear_navigation_noop()
             self.localize_scan()
-
-    def should_strafe_toward(self, pose: RobotPose, waypoint: Tuple[float, float], diff_yaw: float) -> Tuple[bool, float]:
-        forward, lateral = self.local_vector_to(pose, waypoint)
-        min_lateral = float(self.config["navigation"].get("strafe_min_lateral_cm", 7.0))
-        max_yaw = float(self.config["navigation"].get("strafe_prefer_max_yaw_deg", 70.0))
-        if forward < -4.0:
-            return False, lateral
-        if abs(lateral) < min_lateral:
-            return False, lateral
-        if abs(diff_yaw) > max_yaw:
-            return False, lateral
-        if not self.strafe_target_clear(pose, lateral):
-            return False, lateral
-        return True, lateral
 
     def field_center_xy(self) -> Tuple[float, float]:
         return self.map.width_cm / 2.0, self.map.height_cm / 2.0
@@ -6186,19 +6219,6 @@ class TaskManager:
             return False
         margin = float(self.config["navigation"].get("boundary_trapped_margin_cm", 45.0))
         return self.distance_to_nearest_boundary(pose) <= margin
-
-    def is_boundary_trapped(self, pose: Optional[RobotPose] = None, reason: str = "") -> bool:
-        pose = self.state.pose if pose is None else pose
-        if pose is None:
-            return False
-        if not self.is_near_boundary(pose):
-            return False
-        if self.is_facing_outside(pose):
-            return True
-        limit = int(self.config["navigation"].get("no_tag_recovery_failures", 2))
-        if self.consecutive_no_tag_scans >= limit or self.consecutive_localize_failures >= limit:
-            return True
-        return any(key in reason for key in ("near_wall", "map_blocked", "no_tag", "front_obstacle"))
 
     def yaw_toward_field_center(self, pose: RobotPose) -> float:
         cx, cy = self.field_center_xy()
@@ -6425,7 +6445,6 @@ class TaskManager:
                 self.hardware.center_head()
                 if not self.localize_scan(
                     reason="interior_recovery_adaptive",
-                    allow_failure_escalation=False,
                 ):
                     return False
             self.publish_state(path=[pose.xy(), target_xy])
@@ -6528,10 +6547,6 @@ class TaskManager:
             pose.yaw_deg,
             float(self.config["navigation"]["safe_wall_distance_cm"]),
         )
-
-    def recovery_action_cycles(self, key: str, requested: float, model_field: str) -> int:
-        configured = abs(float(self.config["motion"]["actions"][key].get(model_field, requested)))
-        return max(1, int(math.ceil(abs(float(requested)) / max(0.1, configured))))
 
     def execute_near_wall_recovery_action(
         self,
@@ -6942,7 +6957,6 @@ class TaskManager:
         localized = bool(self.localize_scan(
             reason="forced_escape_head_scan",
             allow_pan_search=True,
-            allow_failure_escalation=False,
         ))
         self.debug.event(
             "relocalization_success" if localized else "relocalization_failed",
@@ -7101,7 +7115,6 @@ class TaskManager:
                 relocalized = bool(self.localize_scan(
                     reason="forced_escape_after_action",
                     allow_pan_search=True,
-                    allow_failure_escalation=False,
                 ))
                 self.debug.event(
                     "relocalization_success" if relocalized else "relocalization_failed",
@@ -7473,11 +7486,9 @@ class TaskManager:
         )
         return NearWallRecoveryResult.STILL_NEAR_WALL
 
-    def recover_toward_field_center(self, reason: str, backoff: bool = False) -> bool:
-        if (
-            not str(reason).startswith("no_tag:")
-            and not bool(self.config["navigation"].get("collision_recovery_enabled", True))
-        ):
+    def recover_from_collision_stall(self, reason: str, backoff: bool = False) -> bool:
+        """Legacy-free entry for visual/forward collision recovery only."""
+        if not bool(self.config["navigation"].get("collision_recovery_enabled", True)):
             return False
         pose = self.state.pose
         self.pending_progress_check = None
@@ -7534,10 +7545,6 @@ class TaskManager:
         )
         return localized
 
-    def localization_failure_recovery_needed(self) -> bool:
-        """Compatibility alias: only genuine consecutive no-Tag scans recover."""
-        return self.no_tag_recovery_needed()
-
     def no_tag_recovery_needed(self) -> bool:
         nav = self.config["navigation"]
         if not bool(nav.get("no_tag_recovery_enabled", True)):
@@ -7550,20 +7557,24 @@ class TaskManager:
         cooldown = float(nav.get("no_tag_recovery_cooldown_s", 4.0))
         if now_s() - float(getattr(self, "last_no_tag_recovery_s", 0.0)) < cooldown:
             return False
-        pose = self.state.pose
-        boundary_trapped = bool(
-            pose is not None
-            and hasattr(self, "map")
-            and self.is_boundary_trapped(pose, "no_tag")
-        )
-        return (
-            pose is None
-            or self.is_facing_outside(pose)
-            or boundary_trapped
-        )
+        return True
 
-    def recover_from_localization_failure_if_needed(self, reason: str) -> bool:
-        return self.recover_from_no_tag_if_needed(reason)
+    def no_tag_recovery_turn(self, pose: Optional[RobotPose], cycle: int):
+        """Turn about 45 degrees inward without confidence-based turn limits."""
+        nav = self.config["navigation"]
+        actions = self.config["motion"]["actions"]
+        requested_deg = abs(float(nav.get("no_tag_recovery_turn_deg", 45.0)))
+        if pose is None:
+            direction = 1.0 if cycle % 2 else -1.0
+            target_yaw = None
+        else:
+            target_yaw = self.yaw_toward_field_center(pose)
+            direction = 1.0 if angle_diff_deg(target_yaw, pose.yaw_deg) >= 0.0 else -1.0
+        key = "turn_left_fast" if direction > 0.0 else "turn_right_fast"
+        step_deg = abs(float(actions[key]["yaw_deg"]))
+        times = max(1, int(round(requested_deg / max(0.1, step_deg))))
+        result = self.motion.run(key, times_override=times)
+        return result, key, times, target_yaw
 
     def recover_from_no_tag_if_needed(self, reason: str) -> bool:
         if not self.no_tag_recovery_needed():
@@ -7571,19 +7582,166 @@ class TaskManager:
         self.last_no_tag_recovery_s = now_s()
         self.no_tag_recovery_active = True
         self.no_tag_recovery_exhausted = False
-        self.localization_recovery_exhausted = False
         pose = self.state.pose
+        nav = self.config["navigation"]
+        max_cycles = max(1, int(nav.get("no_tag_recovery_max_cycles", 3)))
         self.debug.event(
             "no_tag_recovery_triggered",
             reason=reason,
             no_tag_scans=self.consecutive_no_tag_scans,
             outward_facing=False if pose is None else self.is_facing_outside(pose),
+            cycle=0,
+            pose=None if pose is None else pose.as_dict(),
+            near_boundary=False if pose is None else self.is_near_boundary(pose),
+            near_wall=False if pose is None else self.near_wall_now(pose),
+            selected_action=None,
+            selected_direction=None,
+            tag_ids=[],
+            localization_result=self.last_localization_attempt_result,
         )
         try:
-            return self.recover_toward_field_center(
-                "no_tag:" + reason,
-                backoff=True,
+            for cycle in range(1, max_cycles + 1):
+                pose = self.state.pose
+                near_boundary = bool(pose is not None and self.is_near_boundary(pose))
+                near_wall = bool(pose is not None and self.near_wall_now(pose))
+                context = {
+                    "reason": reason,
+                    "cycle": cycle,
+                    "pose": None if pose is None else pose.as_dict(),
+                    "near_boundary": near_boundary,
+                    "near_wall": near_wall,
+                }
+                self.debug.event(
+                    "no_tag_recovery_context", **context,
+                    selected_action=None,
+                    selected_direction=None,
+                    tag_ids=[],
+                    localization_result=self.last_localization_attempt_result,
+                )
+                if pose is not None and (near_boundary or near_wall):
+                    step_cm = abs(float(nav.get("no_tag_recovery_strafe_cm", 4.0)))
+                    direction = self.choose_near_wall_lateral_direction(pose, step_cm)
+                    if direction is None:
+                        self.debug.event(
+                            "no_tag_recovery_strafe", **context,
+                            selected_action=None,
+                            selected_direction=None,
+                            tag_ids=[],
+                            localization_result="no_safe_lateral_action",
+                        )
+                        break
+                    key = "strafe_left_fast" if direction > 0.0 else "strafe_right_fast"
+                    result = self.motion.run(key, times_override=1)
+                    self.debug.event(
+                        "no_tag_recovery_strafe", **context,
+                        selected_action=key,
+                        selected_direction="left" if direction > 0.0 else "right",
+                        tag_ids=[],
+                        localization_result="motion_executed" if getattr(result, "ok", bool(result)) else "hardware_failure",
+                    )
+                    if not getattr(result, "ok", bool(result)):
+                        self.last_navigation_failure_reason = "hardware_failure"
+                        return False
+                else:
+                    back_cm = abs(float(nav.get("no_tag_recovery_back_cm", 5.0)))
+                    back_step = abs(float(
+                        self.config["motion"]["actions"]["back_fast"]["forward_cm"]
+                    ))
+                    back_times = max(1, int(round(back_cm / max(0.1, back_step))))
+                    result = self.motion.run("back_fast", times_override=back_times)
+                    self.debug.event(
+                        "no_tag_recovery_backoff", **context,
+                        selected_action="back_fast",
+                        selected_direction="backward",
+                        tag_ids=[],
+                        requested_cm=back_cm,
+                        action_cycles=back_times,
+                        localization_result="motion_executed" if getattr(result, "ok", bool(result)) else "hardware_failure",
+                    )
+                    if not getattr(result, "ok", bool(result)):
+                        self.last_navigation_failure_reason = "hardware_failure"
+                        return False
+                    current_pose = self.state.pose if self.state.pose is not None else pose
+                    result, key, times, target_yaw = self.no_tag_recovery_turn(
+                        current_pose, cycle
+                    )
+                    self.debug.event(
+                        "no_tag_recovery_turn", **context,
+                        selected_action=key,
+                        selected_direction="left" if key == "turn_left_fast" else "right",
+                        tag_ids=[],
+                        configured_yaw_deg=float(
+                            self.config["motion"]["actions"][key]["yaw_deg"]
+                        ) * times,
+                        requested_yaw_deg=float(nav.get("no_tag_recovery_turn_deg", 45.0)),
+                        target_yaw=target_yaw,
+                        action_cycles=times,
+                        localization_result="motion_executed" if getattr(result, "ok", bool(result)) else "hardware_failure",
+                    )
+                    if not getattr(result, "ok", bool(result)):
+                        self.last_navigation_failure_reason = "hardware_failure"
+                        return False
+                self.hardware.center_head()
+                center = float(self.config["camera"].get("head_center_angle", 100.0))
+                localized = bool(self.localize_scan(
+                    reason="no_tag_recovery:{}:cycle_{}".format(reason, cycle),
+                    allow_pan_search=True,
+                    pan_angles=[center],
+                ))
+                tag_ids = list(getattr(
+                    getattr(self, "localizer", None),
+                    "last_estimation_diagnostics", {}
+                ).get("detected_tag_ids", []))
+                localization_result = str(getattr(
+                    self, "last_localization_attempt_result", "unknown"
+                ))
+                selected_direction = (
+                    "left" if "left" in key
+                    else "right" if "right" in key
+                    else "backward"
+                )
+                self.debug.event(
+                    "no_tag_recovery_scan", **context,
+                    selected_action=key,
+                    selected_direction=selected_direction,
+                    tag_ids=tag_ids,
+                    localization_result=localization_result,
+                    accepted_visual_pose=localized,
+                )
+                if localized:
+                    self.consecutive_no_tag_scans = 0
+                    self.debug.event(
+                        "no_tag_recovery_success", **context,
+                        selected_action=key,
+                        selected_direction=selected_direction,
+                        tag_ids=tag_ids,
+                        localization_result=localization_result,
+                    )
+                    return True
+                # A visible but rejected Tag is not permission for another
+                # blind body recovery cycle.
+                if localization_result != "no_tag":
+                    return False
+            self.no_tag_recovery_exhausted = True
+            self.last_navigation_failure_reason = "no_tag_recovery_exhausted"
+            self.debug.event(
+                "no_tag_recovery_exhausted",
+                reason=reason,
+                cycle=max_cycles,
+                pose=None if self.state.pose is None else self.state.pose.as_dict(),
+                near_boundary=False if self.state.pose is None else self.is_near_boundary(self.state.pose),
+                near_wall=False if self.state.pose is None else self.near_wall_now(self.state.pose),
+                selected_action=None,
+                selected_direction=None,
+                tag_ids=[],
+                localization_result=self.last_localization_attempt_result,
+                higher_level_recovery="global_recovery",
             )
+            if not str(reason).startswith("global_recovery"):
+                return bool(self.perform_global_recovery(
+                    "no_tag_recovery_exhausted:" + reason
+                ))
+            return False
         finally:
             self.no_tag_recovery_active = False
 
@@ -7792,19 +7950,19 @@ class TaskManager:
             navigation_mode="normal",
         )
         pose_before = self.copy_pose(self.state.pose)
-        predicted_pose = first.predicted_end_pose
-        if cycles != max(1, int(first.cycles)):
-            if kind == "turn":
-                signed_yaw = float(
-                    self.config["motion"]["actions"][first.action_key].get("yaw_deg", 0.0)
-                ) * cycles
-                predicted_pose = RobotPose(
-                    x_cm=pose_before.x_cm,
-                    y_cm=pose_before.y_cm,
-                    yaw_deg=normalize_angle_deg(pose_before.yaw_deg + signed_yaw),
-                    source="motion_astar_prediction",
-                )
-            else:
+        planner_quantized_pose = first.predicted_end_pose
+        predicted_pose = planner_quantized_pose
+        if kind == "turn":
+            signed_yaw = float(
+                self.config["motion"]["actions"][first.action_key].get("yaw_deg", 0.0)
+            ) * cycles
+            predicted_pose = RobotPose(
+                x_cm=pose_before.x_cm,
+                y_cm=pose_before.y_cm,
+                yaw_deg=normalize_angle_deg(pose_before.yaw_deg + signed_yaw),
+                source="configured_motion_prediction",
+            )
+        elif cycles != max(1, int(first.cycles)):
                 signed_forward = cycles * unit * (-1.0 if kind == "reverse" else 1.0 if kind == "forward" else 0.0)
                 signed_lateral = cycles * unit * (
                     1.0 if first.kind == "strafe_left" else -1.0 if first.kind == "strafe_right" else 0.0
@@ -7830,11 +7988,22 @@ class TaskManager:
             batch_cycles=cycles,
             predicted_pose=predicted,
             predicted_distance_cm=round(first.predicted_distance_cm, 3),
-            predicted_yaw_deg=round(first.predicted_yaw_deg, 3),
+            configured_yaw_deg=round(signed_yaw if kind == "turn" else 0.0, 3),
+            planner_yaw_delta_deg=round(first.predicted_yaw_deg, 3),
+            planner_quantized_pose=planner_quantized_pose.as_dict(),
             action_cost=round(first.cost, 3),
             goal_xy=goal.interaction_target_xy,
             goal_yaw=goal.desired_yaw_deg,
         )
+        if kind == "turn":
+            self.debug.event(
+                "planner_action_yaw_model",
+                action=first.action_key,
+                configured_yaw_deg=round(signed_yaw, 3),
+                planner_yaw_delta_deg=round(first.predicted_yaw_deg, 3),
+                progress_status=self.turn_progress_status,
+                reason="yaw_bin_quantization",
+            )
         if kind in ("forward", "reverse", "strafe"):
             signed_forward = 0.0
             signed_lateral = 0.0
@@ -7986,7 +8155,6 @@ class TaskManager:
                 )
                 if not self.localize_scan(
                     reason="adaptive_navigation_budget",
-                    allow_failure_escalation=False,
                 ):
                     self.recover_from_no_tag_if_needed(
                         "target_navigation:adaptive_relocalization"
@@ -7997,7 +8165,7 @@ class TaskManager:
             if distance <= radius and yaw_error <= yaw_tolerance:
                 if not self.visual_pose_is_fresh(float(nav.get("arrival_visual_pose_max_age_s", 3.0))):
                     if not self.localize_scan(
-                        reason="before_arrived_at_target", allow_failure_escalation=False
+                        reason="before_arrived_at_target"
                     ):
                         self.last_navigation_failure_reason = "arrival_visual_localization_required"
                     continue
@@ -8077,7 +8245,7 @@ class TaskManager:
                     self.clear_plan_failure_watchdog("interior_recovery_success")
                 else:
                     self.localize_scan(
-                        reason="motion_astar_failed", allow_failure_escalation=False
+                        reason="motion_astar_failed"
                     )
                 continue
             self.clear_plan_failure_watchdog("motion_astar_success")
@@ -8205,7 +8373,6 @@ class TaskManager:
                 )
                 localized = self.localize_scan(
                     reason="adaptive_navigation_budget",
-                    allow_failure_escalation=False,
                 )
                 if not localized:
                     self.recover_from_no_tag_if_needed(reason + ":adaptive_relocalization")
@@ -8227,7 +8394,6 @@ class TaskManager:
                     )
                     if not self.localize_scan(
                         reason="before_arrived_at_target",
-                        allow_failure_escalation=False,
                     ):
                         self.last_navigation_failure_reason = "arrival_visual_localization_required"
                     continue
@@ -8349,7 +8515,6 @@ class TaskManager:
                     )
                     if not self.localize_scan(
                         reason="before_target_final_approach",
-                        allow_failure_escalation=False,
                     ):
                         self.last_navigation_failure_reason = "target_direct_visual_localization_required"
                     continue
@@ -8366,7 +8531,7 @@ class TaskManager:
                     self.collision_recovery_pending = False
                     self.debug.event("target_direct_recovery_suppressed", reason="collision_recovery_pending")
                 else:
-                    self.recover_toward_field_center(reason + ":forward_no_progress", backoff=True)
+                    self.recover_from_collision_stall(reason + ":forward_no_progress", backoff=True)
                     continue
             if (
                 not bypass_action_safety
@@ -8653,7 +8818,7 @@ class TaskManager:
             )
             if (
                 not direct_mode
-                and self.turn_no_progress_count == 0
+                and self.verified_no_progress_count == 0
                 and scheduled_relocalization["decision"] == "relocalize_now"
             ):
                 self.adaptive_relocalization_decision(
@@ -8663,7 +8828,7 @@ class TaskManager:
                 if not self.localize_scan():
                     self.recover_from_no_tag_if_needed(reason + ":scheduled_relocalize")
                 if self.collision_recovery_pending:
-                    self.recover_toward_field_center(reason + ":forward_no_progress_after_localize", backoff=True)
+                    self.recover_from_collision_stall(reason + ":forward_no_progress_after_localize", backoff=True)
         self.last_navigation_failure_reason = "navigation_step_limit"
         self.debug.event("navigate_xy_failed", reason=reason, failure_reason=self.last_navigation_failure_reason, target_xy=target_xy, max_steps=max_steps)
         return False
@@ -8846,7 +9011,6 @@ class TaskManager:
                 "last_error": getattr(self, "last_classifier_error", ""),
                 "last_error_kind": getattr(self, "last_classifier_error_kind", ""),
             },
-            "navigation_standoff_cm": float(self.config["interaction"]["navigation_standoff_cm"]),
             "target_distance_cm": float(self.config["interaction"]["target_distance_cm"]),
             "target_final_forward_cm": float(self.config["interaction"]["target_final_forward_cm"]),
             "target_confirmation_retry_count": getattr(self, "target_confirmation_retry_count", 0),
@@ -8880,7 +9044,7 @@ class TaskManager:
                 "last_localization_pose_conflict": self.last_localization_pose_conflict,
                 "last_localization_attempt_result": self.last_localization_attempt_result,
                 "localization_recovery_active": self.no_tag_recovery_active,
-                "localization_recovery_exhausted": self.localization_recovery_exhausted,
+                "no_tag_recovery_exhausted": self.no_tag_recovery_exhausted,
                 "actions_since_localize": self.state.actions_since_localize,
                 "motion_uncertainty": round(self.state.motion_uncertainty, 3),
             },
@@ -8898,6 +9062,8 @@ class TaskManager:
                 "plan_failure_signature": getattr(self, "plan_failure_signature", None),
                 "near_wall_recovery_actions": self.near_wall_recovery_actions,
                 "near_wall_recovery_no_progress": self.near_wall_recovery_no_progress_count,
+                "turn_progress_status": self.turn_progress_status,
+                "verified_no_progress_count": self.verified_no_progress_count,
                 "near_wall_recovery_rejections": int(getattr(
                     self, "near_wall_recovery_rejection_count", 0
                 )),

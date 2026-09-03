@@ -1217,6 +1217,10 @@ class MapModel:
                 predicted_start_pose=start_pred,
                 predicted_end_pose=end_pred,
                 predicted_distance_cm=distance_xy(before_xy, after_xy),
+                configured_yaw_deg=(
+                    float(motion_actions[key].get("yaw_deg", 0.0)) * cycles
+                    if kind.startswith("turn_") else 0.0
+                ),
                 predicted_yaw_deg=angle_diff_deg(after_yaw, before_yaw),
                 cost=action_cost,
             ))

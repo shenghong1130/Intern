@@ -16,7 +16,7 @@ TonyPi competition controller for a 300 × 300 cm field. Before changing task lo
 - `target_distance_cm = 25.0`.
 - `target_lateral_offset_cm = -1.0` in the robot-left frame.
 - `target_yaw_offset_deg = 5.0`; it affects only desired yaw, never target XY.
-- `target_final_forward_cm = 17.0`.
+- `target_final_forward_cm = 20.0`.
 - The point is derived from the building `face_center` and outward cardinal normal and retains the robot-left lateral offset.
 - `goal_xy`, `navigation_staging_xy`, `interaction_target_xy`, `target_xy`, `interaction_xy` and `task_target_xy` resolve to the same 25 cm interaction point. The Screen/Tag anchor is separate.
 - Cardinal normals are exactly `(-1,0)`, `(1,0)`, `(0,-1)`, `(0,1)`. Desired yaw is the screen-facing cardinal yaw plus `5°`, normalized to `[-180, 180)`.
@@ -35,7 +35,7 @@ Physical change is bounded and target-specific:
 
 ```text
 live current Tag + same-ID bound classification != target
-→ interaction_forward_final exactly once (go_forward_one_step×3 + go_forward_one_small_step×1, about 17 cm)
+→ interaction_forward_final exactly once (go_forward_one_step×4, about 20 cm)
 → visual authorization check
 → stand → lift_left_hand(stand=False)
 → authorization recheck
@@ -79,6 +79,8 @@ The following invariants are mandatory:
 - Required-target mode stops only when the requested Target Tag and Screen are bound; other successful localization Tags do not stop it.
 - Only `accept_visual_localization()` resets `actions_since_localize` and `motion_uncertainty`.
 - `no_tag`, `pose_unavailable_with_tags` and `capture_failed` are distinct failure results.
+- Only a completed scan with zero detected AprilTags increments `consecutive_no_tag_scans`. Runtime NO-TAG recovery starts at 2, uses a safe lateral move near a wall/boundary or about 5 cm back + a controlled inward 45° body turn elsewhere, then performs one centered reacquisition; it escalates after 3 genuine no-tag cycles.
+- Turn progress is `VERIFIED_PROGRESS`, `PROGRESS_UNVERIFIED`, or `VERIFIED_NO_PROGRESS`. Missing/untrusted post-turn Pose never increments the verified-no-progress counter. `RECOVERY_NO_PROGRESS` requires repeated reliable no-motion evidence and a reliable confirming scan.
 - Startup and configured recovery reuse `run_localization_search_sequence()`: full pan, configured body action, full pan.
 - A large turn triggers one relocalization only while actions remain since the previous accepted visual Pose.
 - Before installation, every visual Pose must be inside exact field bounds and outside every real building rectangle. Soft inflation never makes a Pose physically invalid.

@@ -62,8 +62,8 @@ def near_wall_manager(localized_poses, near_predicate):
     manager.near_wall_recovery_no_progress_count = 0
     manager.near_wall_recovery_actions = 0
     manager.last_navigation_failure_reason = ""
-    manager.turn_no_progress_count = 0
-    manager.turn_progress_failure_start_diff = None
+    manager.verified_no_progress_count = 0
+    manager.turn_progress_status = "PROGRESS_UNVERIFIED"
     manager.actions = []
     manager.events = []
     manager.localize_calls = 0
@@ -119,6 +119,7 @@ class MissionSchedulerTests(unittest.TestCase):
             target_yaw=30,
         )
         self.assertFalse(result["turn_no_progress"])
+        self.assertEqual(result["progress_status"], "VERIFIED_PROGRESS")
         self.assertFalse(result["direction_conflict"])
         self.assertFalse(result["reject_visual_pose"])
 
@@ -141,6 +142,7 @@ class MissionSchedulerTests(unittest.TestCase):
         )
         self.assertTrue(result["suspect_stale_pose"])
         self.assertTrue(result["turn_no_progress"])
+        self.assertEqual(result["progress_status"], "VERIFIED_NO_PROGRESS")
         self.assertTrue(result["reject_visual_pose"])
 
     def test_scan_after_turn_conflict_still_accepts_visual_pose(self):
@@ -311,22 +313,22 @@ class MissionSchedulerTests(unittest.TestCase):
 
     def test_successful_turn_clears_counter(self):
         manager = TaskManager.__new__(TaskManager)
-        manager.turn_no_progress_count = 2
-        manager.turn_progress_failure_start_diff = 40.0
+        manager.verified_no_progress_count = 2
         manager.debug = SimpleNamespace(event=lambda *args, **kwargs: None)
         manager.clear_turn_progress_watchdog("test")
-        self.assertEqual(manager.turn_no_progress_count, 0)
-        self.assertIsNone(manager.turn_progress_failure_start_diff)
+        self.assertEqual(manager.verified_no_progress_count, 0)
 
     def test_two_failed_turns_abort_navigation(self):
         manager = TaskManager.__new__(TaskManager)
-        manager.turn_no_progress_count = 1
-        manager.turn_progress_failure_start_diff = 60.0
+        manager.verified_no_progress_count = 1
+        manager.turn_progress_status = "VERIFIED_NO_PROGRESS"
         manager.turn_navigation_abort = False
         manager.debug = SimpleNamespace(event=lambda *args, **kwargs: None)
+        manager.config = load_config(None)
         manager.state = SimpleNamespace(pose=RobotPose(0, 0, 1, Confidence.HIGH, "RELOCALIZED", 3))
         manager.scan_after_turn = lambda *args, **kwargs: {
             "accepted": False,
+            "progress_status": "VERIFIED_NO_PROGRESS",
             "turn_no_progress": True,
             "direction_conflict": False,
             "before_yaw": 0.0,
@@ -346,7 +348,36 @@ class MissionSchedulerTests(unittest.TestCase):
         )
         self.assertFalse(ok)
         self.assertTrue(manager.turn_navigation_abort)
-        self.assertEqual(manager.turn_no_progress_count, 2)
+        self.assertEqual(manager.verified_no_progress_count, 2)
+
+    def test_visible_tag_without_pose_is_progress_unverified_and_not_counted(self):
+        manager = TaskManager.__new__(TaskManager)
+        manager.verified_no_progress_count = 1
+        manager.turn_progress_status = "VERIFIED_NO_PROGRESS"
+        manager.turn_navigation_abort = False
+        manager.pending_post_action_replan = False
+        manager.last_navigation_failure_reason = ""
+        manager.debug = SimpleNamespace(event=lambda *args, **kwargs: None)
+        manager.config = load_config(None)
+        manager.state = SimpleNamespace(
+            pose=RobotPose(0, 0, 15, Confidence.LOW, "DEAD_RECKONING", 3)
+        )
+        manager.scan_after_turn = lambda *args, **kwargs: {
+            "accepted": False,
+            "progress_status": "PROGRESS_UNVERIFIED",
+            "tag_ids": [26],
+            "localization_result": "pose_unavailable_with_tags",
+        }
+        result = SimpleNamespace(key="turn_left_large", model_yaw_deg=15.0, ok=True)
+        self.assertTrue(manager.monitor_turn_result(
+            RobotPose(0, 0, 0, Confidence.HIGH, "BEFORE", 1),
+            15.0,
+            result,
+            "test",
+        ))
+        self.assertEqual(manager.verified_no_progress_count, 1)
+        self.assertEqual(manager.turn_progress_status, "PROGRESS_UNVERIFIED")
+        self.assertNotEqual(manager.last_navigation_failure_reason, "RECOVERY_NO_PROGRESS")
 
     def test_nearest_target_uses_current_pose_to_interaction_target(self):
         old_near_new_far = screen(3, (30.0, 0.0))
@@ -440,20 +471,6 @@ class MissionSchedulerTests(unittest.TestCase):
         manager.current_target_screen_id = 2
         manager.arrived_at_target = False
         self.assertIn("target_not_arrived", manager.visual_authorization_check(target, "mudan").reasons)
-
-    def test_interaction_approach_goes_to_configured_interaction_target(self):
-        target = screen(2, (25.0, -2.0))
-        manager = TaskManager.__new__(TaskManager)
-        manager.config = load_config(None)
-        manager.arrived_at_target = False
-        calls = []
-        manager.navigate_to_xy = lambda *args, **kwargs: calls.append((args, kwargs)) or True
-        self.assertTrue(manager.navigate_directly_to_target(target))
-        self.assertFalse(manager.arrived_at_target)
-        self.assertEqual(calls[0][0][0], (25.0, -2.0))
-        self.assertEqual(calls[0][1]["target_yaw_deg"], 180.0)
-        self.assertTrue(calls[0][1]["allow_goal_high_cost"])
-        self.assertFalse(calls[0][1]["bypass_action_safety"])
 
     def test_only_bound_evidence_paths_call_classifier(self):
         source = (Path(__file__).resolve().parents[1] / "task_manager.py").read_text(encoding="utf-8")
@@ -693,8 +710,7 @@ class MissionSchedulerTests(unittest.TestCase):
         )
         manager.debug = SimpleNamespace(event=lambda *args, **kwargs: None)
         manager.time_left_s = lambda: 100.0
-        manager.turn_no_progress_count = 0
-        manager.turn_progress_failure_start_diff = None
+        manager.verified_no_progress_count = 0
         manager.collision_recovery_pending = False
         manager.last_navigation_failure_reason = ""
         calls = []

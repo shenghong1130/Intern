@@ -55,7 +55,7 @@ python3 -m unittest robot_tonypi.tests.test_interaction_flow -v
 - 25 cm interaction target 的最近距离窗口 + 朝向惩罚选择、同分 ID 破平局、完成后按新 Pose 重排；
 - classifier/authorization 必须锁定且已到达；
 - 已是目标花不执行物理交互；
-- turn progress、scan-after-turn 和 stale pose；
+- turn progress 的 VERIFIED_PROGRESS / PROGRESS_UNVERIFIED / VERIFIED_NO_PROGRESS 三态、scan-after-turn 和 stale pose；
 - near-wall 的 backoff/lateral/small-turn 顺序；
 - planner veto 与真实 no-progress 分离；
 - forced escape 可从高 cost 起点选择更安全 endpoint；
@@ -82,7 +82,7 @@ python3 -m unittest robot_tonypi.tests.test_mission_refactor -v
 - 不同动作的不确定度、自适应批次和 phase-specific relocalization budget；
 - 大转向只触发一次定位，新的大转向可再次触发；
 - 普通 pan 在首个 Pose 成功时停止；required-target 模式忽略错误 Tag 并继续；
-- no-tag 和 `pose_unavailable_with_tags` 计数、full pan、startup-equivalent body recovery；
+- no-tag 和 `pose_unavailable_with_tags` 严格分离、第二次 genuine no-tag 触发、墙边横移、5 cm 后退 + 向内 45° 身体转向、中央复拍和 3 cycle 升级；
 - 失败定位保留运动累计，接受视觉 Pose 才清零；
 - 多 Tag 中前一个失败不能阻止后一个成功；
 - 5 cm 内正后方 reverse、平移与 corridor safety；
@@ -129,7 +129,7 @@ python3 -m unittest robot_tonypi.tests.test_target_direct_approach -v
 - pan 找到目标后先消费帧再回中；
 - 目标确认和可见性恢复有界；
 - `ALREADY_TARGET` 跳过 final forward；
-- NEEDS_CHANGE 只执行一次 `interaction_forward_final`；mock AGC 验证 ×1 为大步×3+小步×1，×2 为大步×6+小步×2，模型同步为 17/34 cm；
+- NEEDS_CHANGE 只执行一次 `interaction_forward_final`；mock AGC 验证 ×1 为大步×4，×2 为大步×8，模型同步为 20/40 cm；
 - NFC Attempt1 成功、失败后 retreat/relocalize/reacquire；
 - 其他 Screen 分类不能用于当前目标；
 - 其他 Tag 定位成功不代表当前目标重获；
@@ -210,4 +210,4 @@ python3 -u -m robot_tonypi.tests.test_capture_15_frames
 python3 -m compileall -q robot_tonypi
 ```
 
-自动化测试不会证明以下真机参数正确：动作实际位移、相机内参、Tag 世界坐标、NFC 耦合距离、FPGA 网络稳定性、25 cm interaction target、5° yaw offset 和 17 cm final forward。正式运行前仍需现场验证。
+自动化测试不会证明以下真机参数正确：动作实际位移、相机内参、Tag 世界坐标、NFC 耦合距离、FPGA 网络稳定性、25 cm interaction target、5° yaw offset、NO-TAG 的 5 cm/45°/横移和 20 cm final forward。正式运行前仍需现场验证。
