@@ -223,21 +223,156 @@ class MotionAStarTests(unittest.TestCase):
         self.assertEqual(plan.actions, [])
         self.assertFalse(plan.metrics["require_goal_yaw"])
 
-    def test_normal_reverse_is_only_expanded_within_five_cm(self):
+    def test_normal_reverse_is_only_expanded_within_fifteen_cm(self):
         model, config = self.open_model()
         start = RobotPose(102.5, 102.5, 0.0, Confidence.HIGH, "TEST", 1.0)
-        near = model.plan_motion_actions(
-            start, (97.5, 102.5), 0.0, config["navigation"], config["motion"],
-            goal_position_tolerance_cm=1.0, goal_yaw_tolerance_deg=10.0,
+        at_limit = model.plan_motion_actions(
+            start, (87.5, 102.5), 0.0, config["navigation"], config["motion"],
+            goal_position_tolerance_cm=4.0, goal_yaw_tolerance_deg=10.0,
         )
-        self.assertIsNotNone(near)
-        self.assertEqual(near.actions[0].kind, "reverse")
-        far = model.plan_motion_actions(
-            start, (92.5, 102.5), 0.0, config["navigation"], config["motion"],
-            goal_position_tolerance_cm=1.0, goal_yaw_tolerance_deg=10.0,
+        self.assertIsNotNone(at_limit)
+        self.assertTrue(at_limit.actions)
+        self.assertEqual(set(item.kind for item in at_limit.actions), {"reverse"})
+        over_limit = model.plan_motion_actions(
+            start, (86.5, 102.5), 0.0, config["navigation"], config["motion"],
+            goal_position_tolerance_cm=4.0, goal_yaw_tolerance_deg=10.0,
         )
-        self.assertIsNotNone(far)
-        self.assertNotEqual(far.actions[0].kind, "reverse")
+        self.assertIsNotNone(over_limit)
+        self.assertNotIn("reverse", [item.kind for item in over_limit.actions])
+        self.assertEqual(
+            over_limit.metrics["reverse_start_evaluation"]["reason"],
+            "goal_too_far_for_reverse",
+        )
+
+    def test_position_action_preferences_front_far_rear_and_near_rear(self):
+        model, config = self.open_model()
+        start = RobotPose(102.5, 102.5, 0.0, Confidence.HIGH, "TEST", 1.0)
+
+        front = model.plan_motion_actions(
+            start, (162.5, 102.5), 90.0,
+            config["navigation"], config["motion"],
+            goal_position_tolerance_cm=4.0,
+        )
+        far_rear = model.plan_motion_actions(
+            start, (42.5, 102.5), 90.0,
+            config["navigation"], config["motion"],
+            goal_position_tolerance_cm=4.0,
+        )
+        near_rear = model.plan_motion_actions(
+            start, (90.5, 102.5), 90.0,
+            config["navigation"], config["motion"],
+            goal_position_tolerance_cm=4.0,
+        )
+
+        self.assertEqual([item.kind for item in front.actions], ["forward", "forward"])
+        self.assertEqual(
+            [item.kind for item in far_rear.actions],
+            ["turn_left_90", "turn_left_90", "forward", "forward"],
+        )
+        self.assertEqual(
+            [item.kind for item in near_rear.actions],
+            ["reverse", "reverse"],
+        )
+        self.assertEqual(far_rear.metrics["turn_cost"], 0.0)
+        self.assertFalse(far_rear.metrics["turn_primary_cost_enabled"])
+        self.assertEqual(far_rear.metrics["yaw_search_mode"], "quarter_turn_position")
+
+    def test_position_free_turn_prefers_shorter_translation(self):
+        model, config = self.open_model()
+        start = RobotPose(102.5, 102.5, 0.0, Confidence.HIGH, "TEST", 1.0)
+        plan = model.plan_motion_actions(
+            start, (42.5, 102.5), 0.0,
+            config["navigation"], config["motion"],
+            goal_position_tolerance_cm=4.0,
+        )
+        kinds = [item.kind for item in plan.actions]
+        self.assertEqual(kinds[:2], ["turn_left_90", "turn_left_90"])
+        self.assertEqual(kinds[2:], ["forward", "forward"])
+        self.assertAlmostEqual(plan.total_cost, 56.0)
+
+    def test_position_quarter_turn_can_enable_long_forward_segment(self):
+        model, config = self.open_model()
+        start = RobotPose(102.5, 102.5, 0.0, Confidence.HIGH, "TEST", 1.0)
+        plan = model.plan_motion_actions(
+            start, (102.5, 162.5), 0.0,
+            config["navigation"], config["motion"],
+            goal_position_tolerance_cm=4.0,
+        )
+        self.assertEqual(
+            [item.kind for item in plan.actions],
+            ["turn_left_90", "forward", "forward"],
+        )
+
+    def test_reverse_rejects_bad_rear_angle_and_lateral_error(self):
+        model, config = self.open_model()
+        start = RobotPose(102.5, 102.5, 0.0, Confidence.HIGH, "TEST", 1.0)
+        angled = model.plan_motion_actions(
+            start, (94.5, 108.5), 0.0,
+            config["navigation"], config["motion"],
+            goal_position_tolerance_cm=4.0,
+        )
+        self.assertNotIn("reverse", [item.kind for item in angled.actions])
+        self.assertEqual(
+            angled.metrics["reverse_start_evaluation"]["reason"],
+            "rear_angle_exceeds_tolerance",
+        )
+
+        lateral_cfg = copy.deepcopy(config["navigation"])
+        lateral_cfg["reverse_prefer_rear_angle_tolerance_deg"] = 90.0
+        lateral = model.plan_motion_actions(
+            start, (90.5, 111.5), 0.0,
+            lateral_cfg, config["motion"],
+            goal_position_tolerance_cm=4.0,
+        )
+        self.assertNotIn("reverse", [item.kind for item in lateral.actions])
+        self.assertEqual(
+            lateral.metrics["reverse_start_evaluation"]["reason"],
+            "lateral_error_too_large",
+        )
+
+    def test_reverse_corridor_blocked_is_rejected(self):
+        model, config = self.open_model()
+        start = RobotPose(102.5, 102.5, 0.0, Confidence.HIGH, "TEST", 1.0)
+        blocked = model.grid_pos((97.5, 102.5))
+        model.grid[blocked[0], blocked[1]] = 255
+        plan = model.plan_motion_actions(
+            start, (90.5, 102.5), 0.0,
+            config["navigation"], config["motion"],
+            goal_position_tolerance_cm=4.0,
+        )
+        self.assertIsNotNone(plan)
+        self.assertNotIn("reverse", [item.kind for item in plan.actions])
+        self.assertEqual(
+            plan.metrics["reverse_start_evaluation"]["reason"],
+            "rear_corridor_blocked",
+        )
+
+    def test_position_plan_has_no_zero_cost_turn_cycle(self):
+        model, config = self.open_model()
+        start = RobotPose(102.5, 102.5, 0.0, Confidence.HIGH, "TEST", 1.0)
+        plan = model.plan_motion_actions(
+            start, (42.5, 102.5), 0.0,
+            config["navigation"], config["motion"],
+            goal_position_tolerance_cm=4.0,
+        )
+        kinds = [item.kind for item in plan.actions]
+        cancelling_pairs = {
+            ("turn_left_90", "turn_right_90"),
+            ("turn_right_90", "turn_left_90"),
+        }
+        self.assertFalse(any(pair in cancelling_pairs for pair in zip(kinds, kinds[1:])))
+        self.assertEqual(plan.metrics["turn_count"], 2)
+
+    def test_position_free_turn_still_requires_rotation_sweep_clear(self):
+        model, config = self.open_model()
+        model.rotation_sweep_clear = lambda *args, **kwargs: False
+        start = RobotPose(102.5, 102.5, 0.0, Confidence.HIGH, "TEST", 1.0)
+        plan = model.plan_motion_actions(
+            start, (42.5, 102.5), 0.0,
+            config["navigation"], config["motion"],
+            goal_position_tolerance_cm=4.0,
+        )
+        self.assertIsNone(plan)
 
     def test_final_yaw_does_not_change_position_plan(self):
         model, config = self.open_model()
@@ -265,7 +400,7 @@ class MotionAStarTests(unittest.TestCase):
         model, config = self.open_model()
         start = RobotPose(102.5, 102.5, 0.0, Confidence.HIGH, "TEST", 1.0)
         plan = model.plan_motion_actions(
-            start, (102.5, 130.0), 90.0,
+            start, (102.5, 114.5), 90.0,
             config["navigation"], config["motion"],
             goal_position_tolerance_cm=4.0, goal_yaw_tolerance_deg=10.0,
         )
@@ -291,6 +426,8 @@ class MotionAStarTests(unittest.TestCase):
         self.assertAlmostEqual(action.predicted_end_pose.yaw_deg, -18.0)
         self.assertEqual(plan.metrics["requested_yaw_bin_deg"], 15.0)
         self.assertEqual(plan.metrics["physical_yaw_lattice_deg"], 1.5)
+        self.assertTrue(plan.metrics["turn_primary_cost_enabled"])
+        self.assertGreater(plan.metrics["turn_cost"], 0.0)
 
     def test_screen_navigation_aligns_yaw_only_after_position_arrival(self):
         manager = bare_manager()
@@ -351,11 +488,11 @@ class MotionAStarTests(unittest.TestCase):
             "action_planner_reverse_turn_penalty_cm": 0.0,
         })
         low_plan = model.plan_motion_actions(
-            start, (102.5, 130.0), 0.0, low, config["motion"],
+            start, (102.5, 114.5), 0.0, low, config["motion"],
             goal_position_tolerance_cm=4.0, goal_yaw_tolerance_deg=5.0,
         )
         high_plan = model.plan_motion_actions(
-            start, (102.5, 130.0), 0.0,
+            start, (102.5, 114.5), 0.0,
             config["navigation"], config["motion"],
             goal_position_tolerance_cm=4.0, goal_yaw_tolerance_deg=5.0,
         )

@@ -68,7 +68,7 @@ python3 -m unittest robot_tonypi.tests.test_mission_scheduler -v
 
 ## 5. `test_mission_refactor.py`（15 项）
 
-集中检查本次主链路重构：严格场界/真实建筑 Pose gate、soft inflation 合法 Pose、moderate suspect 与 hard jump、失败分类计数、25 cm 目标评分、locked/exclusion 规则、position-only Motion A*、到点后 final-yaw alignment、物理 yaw lattice、无意义转向抑制、5 cm normal reverse，以及 Planner action key 被 Executor 原样执行。
+集中检查本次主链路重构：严格场界/真实建筑 Pose gate、soft inflation 合法 Pose、moderate suspect 与 hard jump、失败分类计数、25 cm 目标评分、locked/exclusion 规则、position-only Motion A*、到点后 final-yaw alignment、物理 yaw lattice、Position 免费安全转向与 turn-count tie-break、15 cm normal reverse 边界/角度/横差/corridor gate，以及 Planner action key 被 Executor 原样执行。
 
 ```bash
 python3 -m unittest robot_tonypi.tests.test_mission_refactor -v

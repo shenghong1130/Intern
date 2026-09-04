@@ -302,7 +302,7 @@ hard jump 不做“两个远帧一致就接受”，因为它可能把机器人�
   ↓
 量化 XY 为 5 cm 网格；以当前真实 yaw 为原点建立 15° yaw state
   ↓
-以 forward / reverse / strafe / small turn / large turn 扩展 A*
+以 forward / reverse / strafe / ±90° quarter turn 扩展 Position A*
   ↓
 每条平移边检查机器人走廊、建筑/场界、非目标障碍代价和净空
 每条转向边检查 10 cm rotation sweep
@@ -323,7 +323,7 @@ hard jump 不做“两个远帧一致就接受”，因为它可能把机器人�
 
 ## 4.2 流程说明
 
-普通 XY A* 会假设机器人能沿任意方向连续移动，而 TonyPi 只能执行有限 ActionGroup，所以正式规划状态仍包含朝向。平移边按当前 yaw 解释 forward/reverse/左右横移，转向边按配置的物理角改变 yaw state；但终点条件和启发式只看 interaction XY。转向仍可为了让后续平移更自然、更安全而发生，不会从远处为了最终 Screen yaw 提前横移或绕路。
+普通 XY A* 会假设机器人能沿任意方向连续移动，而 TonyPi 只能执行有限 ActionGroup，所以正式规划状态仍包含朝向。平移边按当前 yaw 解释 forward/reverse/左右横移，转向边改变 yaw state；但终点条件和启发式只看 interaction XY。正式 Position 模式只扩展 ±90° quarter turn，转动本身不进入 primary cost，完全同代价时才用较少 turn 次数破平局。每个 turn 仍必须通过 rotation sweep safety。最终 Screen yaw 继续只在到达 XY 后处理。
 
 正式位置搜索只扩展对称的 ±90° quarter-turn macro，因此能被 15° state 精确表示，又不会探索大量细碎 yaw 组合。macro 由 `turn_left/right_fast` 的 7.5°/cycle 执行，Executor 按 batch 上限分批并重规划。action-level 精确 yaw 模式会把 15°请求细化成当前 1.5° lattice；动作预测 Pose 始终直接按物理 action model 重建，因此 -18° 不再被预测为 -30°或污染后续平移方向。
 
@@ -332,20 +332,20 @@ hard jump 不做“两个远帧一致就接受”，因为它可能把机器人�
 | 参数 | 当前值 | 含义 | 为什么需要 |
 |---|---:|---|---|
 | 网格 / position yaw state | 5 cm / 15°，只扩展 ±90° | A* 状态离散 | 保留方向语义并限制搜索规模 |
-| position heuristic 权重 | 3.0 | 加权 XY 距离 | 优先自然接近目标位置 |
+| position heuristic 权重 | 1.0 | 可采纳 XY 距离 | 保证较短安全平移路线优先展开 |
 | 规划步长 | forward 28、fine 7、strafe 12、reverse 5 cm | 扩展模型 | 对应可批量执行动作 |
 | 位置阶段到达容差 | 4 cm | Motion A* 目标条件 | 先可靠到达 interaction XY |
 | 走廊半宽 / 转动扫掠 | 8 cm / 10 cm | 碰撞检查 | 不只检查质点 |
 | segment 最大代价 / 目标净空 | 55 / 25 cm | 软障碍约束 | 远离墙体与非目标建筑 |
 | 最大扩展 / 同签名失败 | 45000 / 3 | 规划预算与升级门槛 | 避免无限重算同一失败 |
-| 主要代价 | turn 20+0.8/°；large +12；strafe×1.05；reverse×1.08 | 动作偏好 | 优先少转、少反复且可执行的路线 |
+| Position 主要代价 | turn=0；平移距离 + obstacle/clearance/away/switch | 动作偏好 | 大胆转正后走较短长直线；turn 次数只作同代价 tie-break |
 
 ## 4.4 对应动作 / 代码
 
 | Planner 边 | 实际 action key | 规划模型 | 备注 |
 |---|---|---:|---|
 | forward / fine | `forward_fast` | 28 / 7 cm | 最终换算为 3.5 cm/cycle |
-| reverse | `back_fast` | 5 cm | 只在目标位于后方且≤5 cm 时扩展 |
+| reverse | `back_fast` | 5 cm | 只在目标位于后方且最终距离≤15 cm，并通过角度/横差/缩距/corridor gate 时扩展 |
 | strafe left/right | `strafe_*_fast` | ±12 cm | yaw 保持不变 |
 | position quarter turn | `turn_left/right_fast` | 规划 ±90°；物理 ±7.5°/cycle | Executor 限批并重规划 |
 | final yaw large turn | `turn_left/right_large` | 物理 +15° / -18° | 只在近点闭环校正中按真实角执行 |
@@ -403,7 +403,7 @@ A* 动作序列
 
 ## 5.2 流程说明
 
-A* 选择 forward，是因为按当前朝向前进的边在安全走廊内且综合代价更低；选择 strafe，是因为可在不改变最终朝向的情况下消除足够大的横向分量；reverse 仅用于目标在后方、横向误差≤8 cm、后向角≤30°、目标距离≤5 cm且动作确实缩短距离。正式 Motion A* 会同时扩展 small/large turn，再由总代价选择；`MotionController.turn_toward()` 等程序化转向才以 35°作为 large turn 门槛。无论从哪条路径选中 large turn，执行后都强制视觉复核。
+A* 选择 forward/strafe 时按安全平移距离和路径附加代价比较；Position turn 的 primary cost 为 0，因此目标在远后方时可选择两个同向 quarter turn 后以 forward 长直线接近。reverse 仅用于目标在后方、横向误差≤8 cm、后向角≤30°、最终目标距离≤15 cm且动作确实缩短距离、后方 corridor 安全的情况，并禁止刚转完立即 reverse。Position 只扩展 ±90°；`require_goal_yaw=True` 和兼容路径评分仍使用原全局 turn cost，`FINAL_YAW_ALIGNMENT` 与 `MotionController.turn_toward()` 保留原物理转向闭环。无论从哪条路径选中 turn，执行安全检查和视觉复核均保持不变。
 
 不能一次跑完整路径，因为舵机动作和标定角存在误差，dead reckoning 会累计，且到障碍/目标附近容错更小。HIGH 可执行较长 batch；MEDIUM 收缩；LOW 只执行 1 cycle。距离目标 `<15 cm` 时所有 batch 最多 1 cycle。每个 batch 后总会重新 A*；只有达到动作预算、uncertainty 门槛、LOW、large turn、障碍紧或显式强制条件时才立即 AprilTag 定位。
 

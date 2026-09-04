@@ -1074,6 +1074,7 @@ class MapModel:
             "require_goal_yaw": bool(require_goal_yaw),
             "reverse_allowed": 0,
             "reverse_rejected": 0,
+            "reverse_rejection_reasons": {},
         }
         if not self.in_bounds_xy(start_xy) or not self.is_free_xy(start_xy):
             self.last_action_plan_metrics["reason"] = "start_not_physically_free"
@@ -1094,21 +1095,37 @@ class MapModel:
             # turn to expose the otherwise unavailable rearward direction.
             # This avoids exploring hundreds of tiny-yaw variants and avoids
             # turn/translate/turn zigzags that do not improve XY progress.
-            actions = [
-                action for action in all_actions
-                if abs(float(action.get("yaw_deg", 0.0))) <= 1e-9
-            ]
-            turn_fixed = max(0.0, float(
-                navigation_cfg.get("action_planner_turn_fixed_cost_cm", 20.0)
-            ))
-            turn_per_deg = max(0.0, float(
-                navigation_cfg.get("action_planner_turn_cost_cm_per_deg", 0.8)
-            ))
-            for name, yaw_deg in (("turn_left_small", 90.0), ("turn_right_small", -90.0)):
-                source = next(action for action in all_actions if action.get("name") == name)
+            actions = []
+            for action in all_actions:
+                if abs(float(action.get("yaw_deg", 0.0))) > 1e-9:
+                    continue
+                position_action = dict(action)
+                position_action["base_cost"] = math.hypot(
+                    float(action.get("forward_cm", 0.0)),
+                    float(action.get("lateral_cm", 0.0)),
+                )
+                actions.append(position_action)
+            for source_name, name, yaw_deg in (
+                ("turn_left_small", "turn_left_90", 90.0),
+                ("turn_right_small", "turn_right_90", -90.0),
+            ):
+                source = next(
+                    action for action in all_actions
+                    if action.get("name") == source_name
+                )
                 quarter_turn = dict(source)
+                quarter_turn["name"] = name
+                quarter_turn["kind"] = name
                 quarter_turn["yaw_deg"] = yaw_deg
-                quarter_turn["base_cost"] = turn_fixed + abs(yaw_deg) * turn_per_deg
+                # Formal POSITION_NAVIGATION optimizes safe translation length.
+                # Rotation remains a collision-checked state transition, but
+                # none of the global turn discouragement enters its primary
+                # path cost.  Turn count is handled only as a lexicographic
+                # tie-break below.
+                quarter_turn["base_cost"] = 0.0
+                quarter_turn["in_place_turn_penalty"] = 0.0
+                quarter_turn["consecutive_turn_penalty"] = 0.0
+                quarter_turn["reverse_turn_penalty"] = 0.0
                 actions.append(quarter_turn)
         yaw_bin_deg = self.action_planner_yaw_lattice_deg(
             requested_yaw_bin_deg, actions
@@ -1130,8 +1147,16 @@ class MapModel:
             if goal_yaw_tolerance_deg is None else goal_yaw_tolerance_deg
         ))
         reverse_limit = max(0.0, float(
-            navigation_cfg.get("reverse_prefer_max_goal_distance_cm", 5.0)
+            navigation_cfg.get("reverse_prefer_max_goal_distance_cm", 15.0)
         ))
+        self.last_action_plan_metrics.update({
+            "turn_primary_cost_enabled": bool(require_goal_yaw),
+            "reverse_max_goal_distance_cm": reverse_limit,
+            "yaw_search_mode": (
+                "physical_action_lattice"
+                if require_goal_yaw else "quarter_turn_position"
+            ),
+        })
         max_expansions = max(100, int(navigation_cfg.get("action_planner_max_expansions", 45000)))
         segment_max_cost = min(
             float(navigation_cfg.get("action_planner_segment_max_cost", 55.0)),
@@ -1148,7 +1173,7 @@ class MapModel:
             angle_diff_deg(goal_yaw_deg, yaw_origin_deg), yaw_bin_deg, yaw_bins
         )
         position_heuristic_weight = max(1.0, float(
-            navigation_cfg.get("action_planner_position_heuristic_weight", 3.0)
+            navigation_cfg.get("action_planner_position_heuristic_weight", 1.0)
         ))
         turn_cost_per_bin = []
         for candidate_action in actions:
@@ -1174,18 +1199,22 @@ class MapModel:
             return heuristic
 
         start_h = heuristic_for(start_state, self.xy_from_grid(start_grid))
-        open_heap = [(start_h, 0, start_state)]
+        # Heap ordering is lexicographic: primary path cost first, then turn
+        # count.  This keeps position turns free without preferring a redundant
+        # zero-cost turn sequence over an equally short plan.
+        open_heap = [(start_h, 0, 0, start_state)]
         counter = 0
         came = {}
         came_action = {}
         came_cost = {}
         g = {start_state: 0.0}
+        turn_counts = {start_state: 0}
         closed = set()
         expansions = 0
         final_state = None
         safety_cache = {}
         while open_heap and expansions < max_expansions:
-            _, _, current = heapq.heappop(open_heap)
+            _, _, _, current = heapq.heappop(open_heap)
             if current in closed:
                 continue
             closed.add(current)
@@ -1212,14 +1241,38 @@ class MapModel:
                     local_forward = dx * math.cos(yaw_rad) + dy * math.sin(yaw_rad)
                     local_lateral = -dx * math.sin(yaw_rad) + dy * math.cos(yaw_rad)
                     rear_error = math.degrees(math.atan2(abs(local_lateral), max(1e-6, -local_forward))) if local_forward < 0.0 else 180.0
-                    reverse_ok = bool(
-                        distance_to_goal <= reverse_limit + 1e-9
-                        and local_forward < 0.0
-                        and rear_error <= float(navigation_cfg.get("reverse_prefer_rear_angle_tolerance_deg", 30.0))
-                        and abs(local_lateral) <= float(navigation_cfg.get("reverse_prefer_max_lateral_cm", 8.0))
-                    )
-                    if not reverse_ok:
+                    rear_tolerance = float(navigation_cfg.get(
+                        "reverse_prefer_rear_angle_tolerance_deg", 30.0
+                    ))
+                    max_lateral = float(navigation_cfg.get(
+                        "reverse_prefer_max_lateral_cm", 8.0
+                    ))
+                    reverse_reason = None
+                    if distance_to_goal > reverse_limit + 1e-9:
+                        reverse_reason = "goal_too_far_for_reverse"
+                    elif int(current[3]) != 0:
+                        reverse_reason = "reverse_immediately_after_turn"
+                    elif local_forward >= 0.0:
+                        reverse_reason = "goal_not_behind"
+                    elif rear_error > rear_tolerance:
+                        reverse_reason = "rear_angle_exceeds_tolerance"
+                    elif abs(local_lateral) > max_lateral:
+                        reverse_reason = "lateral_error_too_large"
+                    reverse_evaluation = {
+                        "distance_to_final_goal": float(distance_to_goal),
+                        "reverse_limit_cm": float(reverse_limit),
+                        "target_local_forward_cm": float(local_forward),
+                        "target_local_lateral_cm": float(local_lateral),
+                        "rear_angle_error_deg": float(rear_error),
+                        "reason": reverse_reason,
+                        "allowed": reverse_reason is None,
+                    }
+                    if current == start_state:
+                        self.last_action_plan_metrics["reverse_start_evaluation"] = reverse_evaluation
+                    if reverse_reason is not None:
                         self.last_action_plan_metrics["reverse_rejected"] += 1
+                        reasons = self.last_action_plan_metrics["reverse_rejection_reasons"]
+                        reasons[reverse_reason] = int(reasons.get(reverse_reason, 0)) + 1
                         continue
                 transition = self.action_planner_transition(
                     current, action, yaw_bin_deg, yaw_bins,
@@ -1239,25 +1292,58 @@ class MapModel:
                 if transition is None:
                     if action.get("name") == "reverse":
                         self.last_action_plan_metrics["reverse_rejected"] += 1
+                        reasons = self.last_action_plan_metrics["reverse_rejection_reasons"]
+                        reason = "rear_corridor_blocked"
+                        reasons[reason] = int(reasons.get(reason, 0)) + 1
+                        if current == start_state:
+                            evaluation = dict(self.last_action_plan_metrics.get(
+                                "reverse_start_evaluation", {}
+                            ))
+                            evaluation.update({"allowed": False, "reason": reason})
+                            self.last_action_plan_metrics["reverse_start_evaluation"] = evaluation
                     continue
                 nxt, action_cost = transition
                 if action.get("name") == "reverse":
                     next_xy = self.xy_from_grid((nxt[0], nxt[1]))
                     if distance_xy(next_xy, goal_xy) >= distance_xy(current_xy, goal_xy):
                         self.last_action_plan_metrics["reverse_rejected"] += 1
+                        reasons = self.last_action_plan_metrics["reverse_rejection_reasons"]
+                        reason = "would_not_reduce_goal_distance"
+                        reasons[reason] = int(reasons.get(reason, 0)) + 1
+                        if current == start_state:
+                            evaluation = dict(self.last_action_plan_metrics.get(
+                                "reverse_start_evaluation", {}
+                            ))
+                            evaluation.update({"allowed": False, "reason": reason})
+                            self.last_action_plan_metrics["reverse_start_evaluation"] = evaluation
                         continue
                     self.last_action_plan_metrics["reverse_allowed"] += 1
                 tentative = g[current] + action_cost
-                if tentative >= g.get(nxt, float("inf")):
+                candidate_turns = turn_counts[current] + int(
+                    abs(float(action.get("yaw_deg", 0.0))) > 1e-6
+                )
+                previous_cost = g.get(nxt, float("inf"))
+                previous_turns = turn_counts.get(nxt, 1 << 60)
+                if (
+                    tentative > previous_cost + 1e-9
+                    or (
+                        abs(tentative - previous_cost) <= 1e-9
+                        and candidate_turns >= previous_turns
+                    )
+                ):
                     continue
                 came[nxt] = current
                 came_action[nxt] = action
                 came_cost[nxt] = float(action_cost)
                 g[nxt] = tentative
+                turn_counts[nxt] = candidate_turns
                 next_xy = self.xy_from_grid((nxt[0], nxt[1]))
                 counter += 1
                 heuristic = heuristic_for(nxt, next_xy)
-                heapq.heappush(open_heap, (tentative + heuristic, counter, nxt))
+                heapq.heappush(
+                    open_heap,
+                    (tentative + heuristic, candidate_turns, counter, nxt),
+                )
         self.last_action_plan_metrics["expanded_nodes"] = expansions
         if final_state is None:
             self.last_action_plan_metrics["reason"] = (
@@ -1277,6 +1363,7 @@ class MapModel:
             "reverse": "back_fast",
             "strafe_left": "strafe_left_fast", "strafe_right": "strafe_right_fast",
             "turn_left_small": "turn_left_fast", "turn_right_small": "turn_right_fast",
+            "turn_left_90": "turn_left_fast", "turn_right_90": "turn_right_fast",
             "turn_left_large": "turn_left_large", "turn_right_large": "turn_right_large",
         }
         planned_actions = []
@@ -1344,6 +1431,7 @@ class MapModel:
             "reason": "success",
             "total_cost": float(g[final_state]),
             "turn_cost": float(turn_cost),
+            "turn_count": int(turn_counts.get(final_state, 0)),
             "selected_actions": [item.kind for item in planned_actions],
             "goal_position_tolerance_cm": position_tolerance,
             "goal_yaw_tolerance_deg": yaw_tolerance,

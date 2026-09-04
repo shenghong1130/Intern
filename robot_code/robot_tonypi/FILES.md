@@ -249,7 +249,7 @@ Debug 显示由 `_map_pt(xy) -> (y, x)` 转换，因此左上为 `(0,0)`、x 向
 - `test_navigation_path_fallback.py`：clearance、兼容 fallback、规划失败升级；
 - `test_recovery_target_consistency.py`：TargetGoal 原子一致和 interior recovery；
 - `test_target_direct_approach.py`：当前目标软 cost 例外和直接动作；
-- `test_mission_refactor.py`：物理定位 gate、hard jump、两阶段目标评分、Motion-Aware A* goal/action、5 cm reverse 和 Planner→Executor 一致性；
+- `test_mission_refactor.py`：物理定位 gate、hard jump、两阶段目标评分、Motion-Aware A* goal/action、Position 免费安全转向、15 cm reverse 边界和 Planner→Executor 一致性；
 - `test_target_standoff_flow.py`：目标确认、缓存、final forward、NFC 两次尝试和目标重获；
 - `test_vision_tag_binding.py`：Tag↔Screen 绑定和 15 秒缓存。
 

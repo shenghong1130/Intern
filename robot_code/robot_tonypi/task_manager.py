@@ -4774,7 +4774,7 @@ class TaskManager:
 
         if forward < 0.0:
             reverse_max_goal_distance_cm = float(
-                nav.get("reverse_prefer_max_goal_distance_cm", 10.0)
+                nav.get("reverse_prefer_max_goal_distance_cm", 15.0)
             )
             reverse_allowed_by_goal_distance = (
                 final_goal_distance_cm is None
@@ -5487,7 +5487,7 @@ class TaskManager:
 
         reverse_rejected_reason = "disabled"
         reverse_max_goal_distance_cm = float(
-            nav_cfg.get("reverse_prefer_max_goal_distance_cm", 10.0)
+            nav_cfg.get("reverse_prefer_max_goal_distance_cm", 15.0)
         )
         reverse_allowed_by_goal_distance = (
             final_goal_distance_cm is None
@@ -8051,11 +8051,30 @@ class TaskManager:
                 local_forward, local_lateral = self.local_vector_to(
                     pose_before, goal.interaction_target_xy
                 )
+                rear_angle_error = (
+                    math.degrees(math.atan2(
+                        abs(local_lateral), max(1e-6, -local_forward)
+                    ))
+                    if local_forward < 0.0 else 180.0
+                )
+                reverse_limit = float(self.config["navigation"].get(
+                    "reverse_prefer_max_goal_distance_cm", 15.0
+                ))
+                rear_tolerance = float(self.config["navigation"].get(
+                    "reverse_prefer_rear_angle_tolerance_deg", 30.0
+                ))
+                max_lateral = float(self.config["navigation"].get(
+                    "reverse_prefer_max_lateral_cm", 8.0
+                ))
                 reverse_reason = None
-                if goal_distance > float(self.config["navigation"].get("reverse_prefer_max_goal_distance_cm", 5.0)):
-                    reverse_reason = "goal_too_far"
+                if goal_distance > reverse_limit + 1e-9:
+                    reverse_reason = "goal_too_far_for_reverse"
                 elif local_forward >= 0.0:
                     reverse_reason = "goal_not_behind"
+                elif rear_angle_error > rear_tolerance:
+                    reverse_reason = "rear_angle_exceeds_tolerance"
+                elif abs(local_lateral) > max_lateral:
+                    reverse_reason = "lateral_error_too_large"
                 elif distance_xy(end_xy, goal.interaction_target_xy) >= goal_distance:
                     reverse_reason = "would_not_reduce_goal_distance"
                 if reverse_reason is not None:
@@ -8064,14 +8083,20 @@ class TaskManager:
                         "reverse_rejected",
                         reason=reverse_reason,
                         distance_to_final_goal=round(goal_distance, 3),
+                        reverse_limit_cm=reverse_limit,
                         target_local_forward_cm=round(local_forward, 3),
                         target_local_lateral_cm=round(local_lateral, 3),
+                        rear_angle_error_deg=round(rear_angle_error, 3),
                     )
                     return False
                 self.debug.event(
                     "reverse_allowed",
                     reason="near_goal_behind_and_reduces_distance",
                     distance_to_final_goal=round(goal_distance, 3),
+                    reverse_limit_cm=reverse_limit,
+                    target_local_forward_cm=round(local_forward, 3),
+                    target_local_lateral_cm=round(local_lateral, 3),
+                    rear_angle_error_deg=round(rear_angle_error, 3),
                 )
         elif not self.map.target_rotation_sweep_clear(
             pose_before.xy(),
@@ -8315,6 +8340,15 @@ class TaskManager:
                 goal_yaw=goal.desired_yaw_deg,
                 start_pose=pose.as_dict(),
             )
+            self.debug.event(
+                "position_planner_policy",
+                turn_primary_cost_enabled=False,
+                reverse_max_goal_distance_cm=float(nav.get(
+                    "reverse_prefer_max_goal_distance_cm", 15.0
+                )),
+                require_goal_yaw=False,
+                yaw_search_mode="quarter_turn_position",
+            )
             plan = self.map.plan_motion_actions(
                 pose,
                 goal.interaction_target_xy,
@@ -8330,17 +8364,31 @@ class TaskManager:
             selected_reverse = bool(
                 plan is not None and any(item.kind == "reverse" for item in plan.actions)
             )
-            self.debug.event(
-                "reverse_allowed" if selected_reverse else "reverse_rejected",
-                reason=(
+            reverse_evaluation = dict(metrics.get("reverse_start_evaluation", {}))
+            reverse_gate_allowed = bool(reverse_evaluation.get("allowed", False))
+            reverse_reason = reverse_evaluation.get("reason")
+            if reverse_gate_allowed:
+                reverse_reason = (
                     "selected_by_motion_astar"
-                    if selected_reverse
-                    else "not_selected_or_normal_navigation_rule"
-                ),
-                distance_to_final_goal=round(distance, 3),
-                reverse_limit_cm=float(nav.get("reverse_prefer_max_goal_distance_cm", 5.0)),
+                    if selected_reverse else "allowed_but_not_selected"
+                )
+            self.debug.event(
+                "reverse_allowed" if reverse_gate_allowed else "reverse_rejected",
+                reason=reverse_reason or "not_evaluated",
+                selected=selected_reverse,
+                distance_to_final_goal=round(float(
+                    reverse_evaluation.get("distance_to_final_goal", distance)
+                ), 3),
+                reverse_limit_cm=float(reverse_evaluation.get(
+                    "reverse_limit_cm",
+                    nav.get("reverse_prefer_max_goal_distance_cm", 15.0),
+                )),
+                target_local_forward_cm=reverse_evaluation.get("target_local_forward_cm"),
+                target_local_lateral_cm=reverse_evaluation.get("target_local_lateral_cm"),
+                rear_angle_error_deg=reverse_evaluation.get("rear_angle_error_deg"),
                 planner_reverse_allowed_expansions=metrics.get("reverse_allowed", 0),
                 planner_reverse_rejected_expansions=metrics.get("reverse_rejected", 0),
+                planner_reverse_rejection_reasons=metrics.get("reverse_rejection_reasons", {}),
             )
             if plan is None:
                 self.debug.event(
@@ -8388,9 +8436,12 @@ class TaskManager:
                 expanded_nodes=metrics.get("expanded_nodes"),
                 total_cost=round(plan.total_cost, 3),
                 turn_cost=round(float(metrics.get("turn_cost", 0.0)), 3),
+                turn_count=int(metrics.get("turn_count", 0)),
+                turn_primary_cost_enabled=bool(metrics.get("turn_primary_cost_enabled", False)),
                 goal_yaw_deferred=True,
                 physical_yaw_lattice_deg=metrics.get("physical_yaw_lattice_deg"),
                 selected_actions=[item.kind for item in plan.actions],
+                path_xy=[list(point) for point in plan.path_xy],
             )
             self.debug.render_map(
                 self.map,

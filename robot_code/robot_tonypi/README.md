@@ -131,14 +131,14 @@ cp /home/pi/robot_tonypi/action_groups/*.d6a /home/pi/TonyPi/ActionGroups/
 | 每目标最大导航步骤 | `80` |
 | 普通导航最小 clearance | `25 cm` |
 | 相同规划失败升级阈值 | `3` |
-| position heuristic 权重 | `3.0` |
+| position heuristic 权重 | `1.0` |
 | `forward_fast` | `3.5 cm/周期` |
 | `forward_micro` | `2.0 cm/周期` |
 | `back_fast` | `-2.5 cm/周期` |
 | 左/右平移 | `+4.0 / -3.0 cm/周期` |
 | 大左/右转模型 | `+15 / -18°/逻辑动作` |
 
-`navigate_to_screen()` 只建立一次正式 goal：`interaction_target_xy + desired_yaw_deg`，但分两阶段消费它。`POSITION_NAVIGATION` 的 `MapModel.plan_motion_actions()` 保留 yaw state 来正确解释 forward/strafe/reverse 的世界方向，终点条件和 heuristic 只面向 interaction XY；为限制搜索规模并避免细碎 turn/translate 折线，位置阶段只扩展对称的物理 ±90° quarter-turn macro，Executor 仍按 `turn_*_fast` 的真实 7.5°/cycle 分批执行并重规划。`FINAL_YAW_ALIGNMENT` 在 XY 到达且视觉 Pose 新鲜后才校正最终 yaw。Planner 返回带物理预测起止 Pose、动作 key、周期数和代价的 `NavigationPlan`；Executor 不再根据 XY waypoint 猜动作。当前目标建筑的软 inflation 可在这条规划中豁免，但场界、真实建筑 hard occupancy、机器人 footprint、无关建筑、动态障碍和 corridor 检查始终生效。
+`navigate_to_screen()` 只建立一次正式 goal：`interaction_target_xy + desired_yaw_deg`，但分两阶段消费它。`POSITION_NAVIGATION` 的 `MapModel.plan_motion_actions()` 保留 yaw state 来正确解释 forward/strafe/reverse 的世界方向，终点条件和 heuristic 只面向 interaction XY；为限制搜索规模并避免细碎 turn/translate 折线，位置阶段只扩展对称的物理 ±90° quarter-turn macro。Position 的 turn fixed/per-degree/large/in-place/consecutive/reverse-turn 主代价全部为 0，路径首先按安全平移距离、障碍/净空、远离目标和动作切换代价选择，再以更少 turn 次数破同代价平局；rotation sweep safety 始终保留。Executor 仍按 `turn_*_fast` 的真实 7.5°/cycle 分批执行并重规划。`FINAL_YAW_ALIGNMENT` 在 XY 到达且视觉 Pose 新鲜后才通过原有物理转向闭环校正最终 yaw；`require_goal_yaw=True` 和兼容路径评分仍保留全局 turn cost 语义。Planner 返回带物理预测起止 Pose、动作 key、周期数和代价的 `NavigationPlan`；Executor 不再根据 XY waypoint 猜动作。当前目标建筑的软 inflation 可在这条规划中豁免，但场界、真实建筑 hard occupancy、机器人 footprint、无关建筑、动态障碍和 corridor 检查始终生效。
 
 自适应重定位使用动作数、运动不确定度、Pose 置信度和导航阶段：
 
@@ -146,7 +146,7 @@ cp /home/pi/robot_tonypi/action_groups/*.d6a /home/pi/TonyPi/ActionGroups/
 - recovery HIGH：最多 4 个动作，上限 4.5；
 - LOW confidence、大转向、障碍紧张、ARRIVED 前会提前定位。
 
-距离目标大于 `15 cm` 时 HIGH confidence 的 forward/strafe 可使用较大胆 batch；进入 `15 cm` 后限制为单周期。普通导航的 REVERSE 只在最终目标距离不超过 `5 cm`、目标位于后方、确实缩短距离且后方 corridor 安全时进入 A* 扩展；Recovery、NFC retry retreat 和 post-interaction retreat 不受此限制。
+距离目标大于 `15 cm` 时 HIGH confidence 的 forward/strafe 可使用较大胆 batch；进入 `15 cm` 后限制为单周期。普通导航的 REVERSE 只在最终目标距离不超过 `15 cm`、目标位于后方、后向角不超过 30°、横向误差不超过 8 cm、确实缩短距离且后方 corridor 安全时进入 A* 扩展；Planner 不会先转身再立即 reverse。Recovery、NFC retry retreat 和 post-interaction retreat 不受此限制。
 
 动作不确定度：直行 `0.6`、后退 `0.9`、平移 `1.0`、普通转向 `1.8`、大转向 `2.6` 每周期。只有接受新的视觉 Pose 才清零累计值。
 

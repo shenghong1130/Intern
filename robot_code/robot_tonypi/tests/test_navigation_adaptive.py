@@ -938,7 +938,7 @@ class PlannerPreferenceTests(unittest.TestCase):
             if name == "reverse_preference_evaluated"
         )
         self.assertEqual(event["final_goal_distance_cm"], 50.0)
-        self.assertEqual(event["reverse_max_goal_distance_cm"], 5.0)
+        self.assertEqual(event["reverse_max_goal_distance_cm"], 15.0)
         self.assertFalse(event["reverse_allowed_by_goal_distance"])
         self.assertEqual(event["reverse_rejected_reason"], "goal_too_far_for_reverse")
 
@@ -951,30 +951,31 @@ class PlannerPreferenceTests(unittest.TestCase):
         )
         self.assertTrue(action is None or action["kind"] != "reverse")
 
-    def test_rear_goal_10_1cm_away_does_not_reverse(self):
+    def test_rear_goal_10_1cm_away_allows_reverse(self):
         manager = self.translation_manager()
         action = manager.choose_translation_action(
             manager.state.pose,
             (139.9, 150.0),
             final_goal_distance_cm=10.1,
         )
-        self.assertTrue(action is None or action["kind"] != "reverse")
+        self.assertIsNotNone(action)
+        self.assertEqual(action["kind"], "reverse")
 
-    def test_rear_goal_over_5cm_does_not_reverse(self):
+    def test_rear_goal_over_15cm_does_not_reverse(self):
         manager = self.translation_manager()
         action = manager.choose_translation_action(
             manager.state.pose,
-            (140.0, 150.0),
-            final_goal_distance_cm=10.0,
+            (134.0, 150.0),
+            final_goal_distance_cm=16.0,
         )
         self.assertTrue(action is None or action["kind"] != "reverse")
 
-    def test_rear_goal_exactly_5cm_away_allows_reverse(self):
+    def test_rear_goal_exactly_15cm_away_allows_reverse(self):
         manager = self.translation_manager()
         action = manager.choose_translation_action(
             manager.state.pose,
-            (145.0, 150.0),
-            final_goal_distance_cm=5.0,
+            (135.0, 150.0),
+            final_goal_distance_cm=15.0,
         )
         self.assertIsNotNone(action)
         self.assertEqual(action["kind"], "reverse")
