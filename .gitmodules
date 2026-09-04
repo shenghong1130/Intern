@@ -2,3 +2,6 @@
 	path = FPGA_code
 	url = https://github.com/shenghong1130/FPGA_KV260.git
 	branch = master
+[submodule "NFCserver_code"]
+	path = NFCserver_code
+	url = https://github.com/shenghong1130/robot_playground.git
