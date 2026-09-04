@@ -3,240 +3,431 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>TonyPi 机器人决策流程</title>
+  <title>TonyPi 比赛决策树说明</title>
   <style>
-    :root{--ink:#172033;--muted:#596579;--line:#d7deea;--blue:#eef6ff;--green:#effbf3;--amber:#fff8e8;--red:#fff0f0;--purple:#f7f1ff}
-    *{box-sizing:border-box}body{margin:0;background:#f7f9fc;color:var(--ink);font:15px/1.65 system-ui,-apple-system,"Segoe UI","Microsoft YaHei",sans-serif}
-    header,nav,main,footer{width:min(1120px,calc(100% - 28px));margin:auto}header{padding:34px 0 20px}h1{margin:0;font-size:clamp(28px,5vw,43px)}header p{max-width:850px;color:var(--muted)}
-    nav{position:sticky;top:0;z-index:2;display:flex;gap:7px;flex-wrap:wrap;padding:10px;background:#f7f9fcf2;border-block:1px solid var(--line)}nav a{padding:4px 9px;border-radius:999px;background:white;color:#245aa5;text-decoration:none;font-size:13px}
-    main{padding:12px 0 55px}section{margin:18px 0;padding:22px;background:white;border:1px solid var(--line);border-radius:14px}h2{margin:0 0 7px;font-size:23px}h3{margin:22px 0 6px}.lead,.code-ref{color:var(--muted)}.code-ref{font-size:13px}code{font-family:ui-monospace,SFMono-Regular,Consolas,monospace}
-    .flow-ascii{max-width:100%;margin:14px 0;padding:16px;overflow-x:auto;border:1px solid var(--line);border-radius:10px;background:#fbfcfe;font:14px/1.45 ui-monospace,SFMono-Regular,Consolas,"Microsoft YaHei",monospace;white-space:pre}
-    .cards{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.card{padding:14px;border:1px solid var(--line);border-radius:10px;background:var(--blue)}.card h3{margin:0 0 4px}.ok{background:var(--green)}.warn{background:var(--amber)}.stop{background:var(--red)}.recovery{background:var(--purple)}
-    table{display:block;width:100%;overflow-x:auto;border-collapse:collapse;font-size:13px}tbody,thead{display:table;width:100%;table-layout:auto}th,td{padding:8px;border:1px solid var(--line);text-align:left;vertical-align:top}th{background:#f2f5fa}.nowrap{white-space:nowrap}
-    ul{padding-left:21px}.rule{padding:11px 14px;border-left:4px solid #2f72c8;background:var(--blue)}footer{padding:0 0 35px;color:var(--muted);text-align:center}
-    @media(max-width:700px){header,nav,main,footer{width:min(100% - 16px,1120px)}section{padding:15px}.cards{grid-template-columns:1fr}.flow-ascii{font-size:12px;padding:11px}nav{position:static}th,td{min-width:125px}}
+    :root{--ink:#172033;--muted:#596579;--line:#d8e0eb;--blue:#edf5ff;--paper:#fff}
+    *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:#f5f7fb;color:var(--ink);font:15px/1.7 system-ui,-apple-system,"Segoe UI","Microsoft YaHei",sans-serif}
+    header,nav,main,footer{width:min(1120px,calc(100% - 28px));margin:auto}header{padding:34px 0 18px}header h1{border:0;margin:0;font-size:clamp(28px,5vw,42px)}header p{color:var(--muted)}
+    nav{position:sticky;top:0;z-index:3;display:flex;gap:8px;padding:10px 0;background:#f5f7fbef;border-block:1px solid var(--line)}nav a{min-width:34px;padding:4px 10px;border-radius:999px;background:white;color:#245ea8;text-align:center;text-decoration:none}
+    main{padding:16px 0 48px}h1{margin:34px 0 12px;padding-bottom:8px;border-bottom:2px solid #b9cce5}main>h1:first-child{display:none}h2{margin:28px 0 8px;color:#244a78}h3{margin:22px 0 7px;color:#385c86}p{margin:8px 0 12px}
+    pre{max-width:100%;overflow:auto;padding:16px;border:1px solid var(--line);border-radius:10px;background:#fbfcfe;font:14px/1.5 ui-monospace,SFMono-Regular,Consolas,"Microsoft YaHei",monospace;white-space:pre}
+    code{padding:.08em .3em;border-radius:4px;background:#eef2f7;font-family:ui-monospace,SFMono-Regular,Consolas,monospace}pre code{padding:0;background:transparent}
+    .notice{margin:14px 0;padding:12px 15px;border-left:4px solid #cf7b13;border-radius:6px;background:#fff7e7}
+    .table-wrap{max-width:100%;margin:12px 0 18px;overflow:auto}table{width:100%;border-collapse:collapse;background:var(--paper);font-size:13px}th,td{padding:8px 10px;border:1px solid var(--line);text-align:left;vertical-align:top}th{background:#edf3fa}ul{padding-left:22px}hr{margin:34px 0;border:0;border-top:1px solid var(--line)}footer{padding:0 0 32px;color:var(--muted);text-align:center}
+    @media(max-width:700px){header,nav,main,footer{width:min(100% - 16px,1120px)}nav{position:static}pre{font-size:12px;padding:11px}th,td{min-width:120px}}
   </style>
 </head>
 <body>
-<header>
-  <h1>TonyPi 机器人决策流程</h1>
-  <p>主文字说明机器人实际正在做什么；内部函数名只放在小字参考中。本文与 <code>robot_decision_tree.md</code> 同步，无 CDN、无脚本、可离线打开。</p>
-</header>
-<nav>
-  <a href="#main">主流程</a><a href="#localize">定位</a><a href="#notag">无Tag恢复</a><a href="#plan">规划执行</a><a href="#watchdog">转向证据</a><a href="#interaction">识别换花</a><a href="#recoveries">恢复总表</a><a href="#states">状态表</a>
-</nav>
-<main>
-<section id="main">
-  <h2>0–1. 比赛主流程与首次定位</h2>
-  <pre class="flow-ascii">启动、站稳、云台回中
-        │
-        ▼
-完整视角拍摄 AprilTag ──失败──→ 有界身体搜索 → 再次完整拍摄
-        │可信位置
-        ▼
-选择最近的未完成 Screen，并锁定 25 cm 目标位置与朝向
-        │
-        ▼
-Motion A* 规划 → 执行动作 → 视觉定位 → 重规划
-        │到达
-        ▼
-实时确认当前 Tag + Screen → FPGA 识别
-        │
-   ┌────┴────┐
-已是目标      不是目标
-   │          │
-直接完成      前进约 20 cm → NFC（最多两次物理 Attempt）
-   └────┬─────┘
-        ▼
-必要时后退 10 cm → 下一个目标 → 全部完成或超时安全停止</pre>
-  <p class="code-ref">代码参考：<code>initial_localize()</code>、<code>run_mission()</code>、<code>choose_nearest_screen()</code>。</p>
-</section>
+<header><h1>TonyPi 比赛决策树说明</h1><p>依据当前执行代码、合并后的比赛配置与测试重新整理；与 Markdown 版本同源生成。</p></header>
+<nav aria-label="章节导航"><a href="#section-0">0</a><a href="#section-1">1</a><a href="#section-2">2</a><a href="#section-3">3</a><a href="#section-4">4</a><a href="#section-5">5</a><a href="#section-6">6</a><a href="#section-7">7</a><a href="#section-8">8</a></nav>
+<main><h1 id="title">TonyPi 比赛决策树说明（按当前代码与配置核实）</h1>
+<p>本文面向实习报告，说明 TonyPi 在比赛中如何定位、选目标、规划、执行、识别和换花。事实来源为当前 <code>task_manager.py</code>、定位/地图/运动/视觉/交互模块、<code>config.py</code>、<code>config/competition_config.json</code> 与相关测试；规划器中的离散模型与机器人实际 ActionGroup 标定分别说明。</p>
+<div class="notice">当前实现提示：<code>record_localization_failure()</code> 以“本轮是否看到 Tag”更新 <code>consecutive_no_tag_scans</code>。因此全程无法取帧的 <code>capture_failed</code> 目前也会累加该计数；这与变量名以及“只有完整扫描零 Tag 才算 genuine NO-TAG”的设计意图不完全一致。下文如实描述：<code>no_tag</code> 才是可确认的 genuine NO-TAG，但当前计数器也会受 <code>capture_failed</code> 影响。看到 Tag 但无 Pose 会清零该计数。</div>
+<h1 id="section-0">0. 整体比赛主流程</h1>
+<pre class="flow-ascii">启动
+  ↓
+初始化硬件、地图、视觉、FPGA/Worker 客户端与 RobotState
+  ↓
+首次 AprilTag 定位 ──预算耗尽──→ 返回任务外层再次首次定位
+  │ accepted pose                         │
+  ↓                                       └─比赛时间到→安全停止
+选择未完成且当前可选的 Screen
+  ↓
+Motion A* 在 (x_grid, y_grid, yaw_bin) 中规划
+  ↓
+执行同类动作的有限 batch
+  ↓
+按置信度/动作数/uncertainty 决定是否重新定位
+  ↓
+无论是否定位都重新规划，直到到达 25 cm 交互位姿
+  ↓
+实时确认 locked Tag 与对应 Screen，FPGA 分类
+  ↓
+花卉已经正确？
+  ├─是→ ALREADY_TARGET → 当前目标完成 → 选择下一 Screen
+  └─否→ final forward 20 cm → NFC（最多 2 次物理 Attempt）
+                                  ├─成功/视觉证实已换→ CHANGED
+                                  └─两次失败或重获耗尽→ GAVE_UP
+                                                   ↓
+                                  处理当前目标并选择下一 Screen
+                                                   ↓
+                      仍有可选目标？──是→回到“选择 Screen”
+                           │否
+                           ↓
+             全部 Screen 已处理→MISSION_COMPLETE 等待总时限
+                           ↓
+          比赛总时限 570 s 到达（任意阶段均适用）→安全停止</pre>
+<p>机器人采用“计划—执行一小批—必要时视觉定位—重新计划”的闭环，而不是一次执行完整 A* 路径。正常运行唯一自动终止条件是全局比赛时限；全部目标处理完后进入完成状态等待，最终仍由时限触发 <code>hardware.stop()</code>。</p>
+<p>代码参考：<code>TaskManager.run_mission()</code>、<code>navigate_motion_plan_to_target()</code>、<code>process_screen_interaction()</code>。</p>
+<h1 id="section-1">1. 初始化和首次定位</h1>
+<h2>1.1 流程图</h2>
+<pre class="flow-ascii">加载默认配置，再用 competition_config.json 深合并覆盖
+  ↓
+加载 Tag 世界坐标；建立 300×300 cm、5 cm 网格地图
+  ↓
+按 Tag 构造 Building/Screen（排除 2、6、9、20、28）
+  ↓
+建立 Camera、AprilTag detector、Localizer、ScreenDetector
+  ↓
+建立 FPGA ClassifierClient、NFC/Worker Client、Hardware、Motion、RobotState
+  ↓
+云台回中（pan=100）
+  ↓
+完整 pan 扫描 [100,135,65,155,45]
+  ├─accepted pose→RobotState.set_pose()→转 3 目标选择
+  └─无 accepted pose
+       ↓
+    依次循环执行 [左转,左转,左转,左转,后退] 中的一个身体动作
+       ├─动作未执行/失败→消耗该搜索序号→尝试下一个搜索动作
+       └─动作完成→再次完整 pan 扫描
+                       ├─accepted pose→转 3
+                       └─仍失败→下一搜索动作（最多 14 个）
+  ↓
+14 个身体搜索动作预算耗尽
+  ↓
+initial_localize() 返回失败→run_mission 外层等待 0.5 s 后重新开始首次定位
+  ├─后来 accepted pose→转 3
+  └─总时限到→MISSION_TIMEOUT→hardware.stop()→安全停止</pre>
+<h2>1.2 流程说明</h2>
+<p>配置先采用 <code>config.py</code> 的完整默认值，再以 JSON 覆盖现场标定值。地图由 Tag 世界坐标和建筑几何建立，Screen 的 ID、AprilTag ID、Worker ID 必须一致。首次定位不是“扫描 14 次”：先做一次完整五角度扫描；失败后最多执行 14 个身体搜索动作，每个成功动作后再做一次完整扫描。启动阶段尚无可信 Pose，因此搜索动作以 <code>runtime_safety=False</code> 执行，这是专门用于打破初始不可见状态的有限预算。</p>
+<h2>1.3 关键参数</h2>
+<div class="table-wrap"><table><thead><tr><th>参数</th><th>当前值</th><th>含义</th><th>为什么需要</th></tr></thead><tbody><tr><td>场地 / 网格</td><td>300×300 cm / 5 cm</td><td>世界地图与 A* 离散分辨率</td><td>统一定位和规划坐标</td></tr><tr><td>初始 pan 序列</td><td>100, 135, 65, 155, 45</td><td>中、左、右、更左、更右</td><td>扩大首次可见范围</td></tr><tr><td><code>startup_attempts</code></td><td>14</td><td>完整首扫之后允许的身体搜索动作数</td><td>搜索有限，避免无限盲动</td></tr><tr><td>身体搜索序列</td><td>左转×4、后退×1，循环</td><td>每次动作后重新完整扫描</td><td>改变视角和位置</td></tr><tr><td>总比赛时限</td><td>570 s</td><td>所有阶段共享</td><td>最终安全停止边界</td></tr></tbody></table></div>
+<h2>1.4 对应动作 / 代码</h2>
+<div class="table-wrap"><table><thead><tr><th>动作</th><th>实际 action key / ActionGroup</th><th>模型效果</th><th>使用场景</th></tr></thead><tbody><tr><td>云台回中</td><td><code>center_head</code></td><td>pan=100</td><td>首次扫描前</td></tr><tr><td>启动左转</td><td><code>turn_left_fast</code> / <code>turn_left_small_step_s80</code></td><td>+7.5°/cycle</td><td>连续改变观察方向</td></tr><tr><td>启动后退</td><td><code>back_fast</code> / <code>back_start→back→back_end</code></td><td>-2.5 cm/cycle</td><td>改变相机位置</td></tr></tbody></table></div>
+<p>代码参考：<code>TaskManager.__init__()</code>、<code>initial_localize()</code>、<code>run_localization_search_sequence()</code>。</p>
+<h1 id="section-2">2. AprilTag 定位</h1>
+<h3 id="title">流程图</h3>
+<pre class="flow-ascii">按当前 pan 拍摄
+  ├─所有 pan 均无有效帧→capture_failed
+  │                         ↓
+  │       记录普通定位失败；当前实现也把 no-tag 计数 +1
+  │                         ↓
+  │       返回调用者的定位/导航循环；若 Recovery 门槛被满足→转 2.1
+  └─获得帧
+       ↓
+    AprilTag detector→detected_tag_ids
+       ├─完整扫描中始终 []→genuine no_tag→转 2.1
+       └─至少看见一个 Tag
+            ↓
+     ID 1..36、面积≥350 px²、边缘≥35 px、世界坐标存在
+            ↓
+     solvePnP，检查 rvec/tvec 有限，生成候选 RobotPose
+       ├─无可信 Pose→TAG_SEEN_POSE_UNAVAILABLE→转 2.2
+       └─候选 Pose→物理地图与时间一致性检查→转 2.2</pre>
+<h3 id="title">流程说明</h3>
+<p>检测到 Tag 不等于获得位置。Localizer 对每个候选做 ID、面积、边缘和地图坐标检查，再用 PnP 计算机器人位姿；可用候选中以 Tag 图像面积优先。候选随后还要通过场地/建筑物理合法性和与当前 Pose 的一致性门控。任一失败都会回到发起本次定位的明确调用者：导航中回第 5 节重定位/重规划；目标重获中回第 7 节；初始定位中回第 1 节搜索循环。</p>
+<h3 id="title">关键参数</h3>
+<div class="table-wrap"><table><thead><tr><th>参数</th><th>当前值</th><th>含义</th><th>为什么需要</th></tr></thead><tbody><tr><td>合法 Tag ID</td><td>1..36</td><td>可用于比赛定位的标签</td><td>排除非地图标签</td></tr><tr><td>最小面积</td><td>350 px²</td><td>过小 Tag 不参与 PnP</td><td>远小目标角点误差大</td></tr><tr><td>图像边缘留白</td><td>35 px</td><td>过于贴边的 Tag 拒绝</td><td>避免裁切角点</td></tr><tr><td>detector upscale</td><td>1.5</td><td>检测前放大比例</td><td>提高小标签检测能力</td></tr><tr><td>HIGH 门槛</td><td>≥2 个有效 Tag，或最佳面积≥700 px²</td><td>视觉置信度</td><td>控制后续 batch 大小</td></tr></tbody></table></div>
+<h3 id="title">对应动作 / 代码</h3>
+<p>本节没有身体动作；云台通常按 <code>[100,135,65,155,45]</code> 扫描，目标确认使用 <code>[100,130,70]</code>。</p>
+<p>代码参考：<code>localize_scan()</code>、<code>Localizer.estimate_from_frame()</code>、<code>evaluate_and_accept_visual_pose()</code>。</p>
+<h2>2.1 Genuine NO-TAG</h2>
+<pre class="flow-ascii">完整扫描有帧但 detected_tag_ids 始终为空→genuine no_tag
+  ↓
+consecutive_no_tag_scans +1
+  ↓
+计数≥2 且距上次 Recovery≥4 s？
+  ├─否→返回原定位调用者：初始搜索 / 第 5 节导航重定位 / 第 7 节重获
+  └─是→NO-TAG Recovery（最多 3 cycle）
+          ↓
+       当前可信 Pose 靠墙或靠边界？
+       ├─是→选择净空更大的横向→横移 4 cm
+       │      └─无安全横移→本次 Recovery 记为耗尽→global recovery
+       └─否→后退约 5 cm→朝场地中心方向转约 45°
+          ↓
+       上述身体动作成功？
+          ├─否→hardware_failure→返回当前调用者重定位/重规划；无法继续则目标临时轮换
+          └─是
+             ↓
+       云台回中，只在 pan=100 重新扫描
+          ├─accepted pose→清 no-tag 计数→保留 locked target→回原任务/第 5 节重规划
+          ├─看到 Tag 但 Pose 不可用→停止继续盲动→转 2.2→回原任务恢复逻辑
+          ├─capture_failed→停止本轮盲动→回原任务恢复逻辑
+          └─仍 genuine no_tag→下一 cycle
+                                  ├─未到 3→继续 Recovery
+                                  └─3 cycle 耗尽→global recovery
+                                           ├─恢复成功→保留任务上下文→第 5 节重规划
+                                           ├─仍失败但有时间→主循环后续再次恢复/重试
+                                           └─总时限到→安全停止</pre>
+<p>普通区域先后退再转向，是为了同时改变相机位置和朝向；靠墙时优先横移净空侧，避免 10 cm 旋转扫掠半径撞到建筑。Recovery 中一旦看到 Tag 但不能接受 Pose，就不再把它当作“什么都没看到”继续盲动。</p>
+<div class="table-wrap"><table><thead><tr><th>参数</th><th>当前值</th><th>含义</th><th>为什么需要</th></tr></thead><tbody><tr><td>触发计数 / cooldown</td><td>2 / 4 s</td><td>Recovery 门槛</td><td>抑制单帧抖动和频繁恢复</td></tr><tr><td>普通区动作</td><td>后退 5 cm + 向内转 45°</td><td>扩大可见视角</td><td>打破遮挡/背向状态</td></tr><tr><td>墙边动作</td><td>横移 4 cm/cycle</td><td>增大侧向净空</td><td>降低扫墙风险</td></tr><tr><td>最大 cycle</td><td>3</td><td>单次 Recovery 上限</td><td>耗尽后升级全局恢复</td></tr></tbody></table></div>
+<p>动作：后退使用 <code>back_fast</code>（-2.5 cm/cycle，计算为 2 cycle）；转向使用 <code>turn_left_fast</code> 或 <code>turn_right_fast</code>（±7.5°，计算为 6 cycle）；横移使用左右 <code>*_fast</code> 1 cycle。</p>
+<p>代码参考：<code>record_localization_failure()</code>、<code>no_tag_recovery_needed()</code>、<code>recover_from_no_tag_if_needed()</code>。</p>
+<h2>2.2 看见 Tag 但定位失败及其他定位情况</h2>
+<pre class="flow-ascii">至少看见一个 Tag
+  ↓
+经过质量门与 PnP 后有候选 Pose？
+  ├─否→TAG_SEEN_POSE_UNAVAILABLE
+  │       ↓
+  │   清 genuine no-tag 计数，普通 localization failure +1
+  │       ↓
+  │   返回当前调用者：初始定位→1；导航→5；NFC 重获→7
+  └─是→候选 Pose
+          ↓
+       在 300×300 cm 场内且不在建筑实体内？
+       ├─否→physical rejection→保留旧 Pose→返回当前调用者
+       └─是→与旧 Pose 比较
+               ├─距离&gt;40 cm 或 yaw&gt;60°→hard jump 立即拒绝
+               │                            ↓
+               │                  保留旧 Pose→回定位/第 5 节重规划
+               ├─距离≤15 cm 且 yaw≤25°→accepted pose
+               └─普通冲突→再取 1 帧确认
+                            ├─确认帧与 suspect 在 10 cm/15°内且自身合法→接受确认 Pose
+                            ├─确认帧回到旧 Pose 一侧→接受确认 Pose
+                            └─不支持/无 Pose/仍 hard jump→suspect rejected
+                                                          ↓
+                                               保留旧 Pose→回当前定位/重规划循环
 
-<section id="localize">
-  <h2>2. AprilTag 定位：看到与定位成功是两件事</h2>
-  <pre class="flow-ascii">拍摄 capture
-   ├─ 无帧 → capture_failed
-   ▼
-AprilTag detector
-   ├─ detected_tag_ids=[] → no_tag（唯一增加 no-tag counter 的分支）
-   ▼ 至少一个 Tag
-面积 / 边缘 / ID / quality gate
-   ├─ 不合格 ───────────────┐
-   ▼                         │
-solvePnP / 多 Tag 一致性      │
-   ├─ 无 Pose ───────────────┤→ pose_unavailable_with_tags
-   ▼                         │  / TAG_SEEN_POSE_UNAVAILABLE
-候选 RobotPose               │  不增加 genuine no-tag counter
-   ├─ 场外 / 建筑实体内 ─────┤
-   ├─ hard jump >40cm/60° ───┤
-   ├─ suspect 未通过确认 ─────┘
-   ▼
-接受可信视觉 Pose → 清零动作累计、uncertainty 与 no-tag counter</pre>
-  <div class="rule">`too_small`、edge margin、quality gate、ID filter、PnP failure、pose conflict、physical rejection 和 hard jump 都表示“看到了 Tag，但本帧不能提供可信位置”，绝不是 `no_tag`。</div>
-  <p class="code-ref">代码参考：<code>localize_scan()</code>、<code>record_localization_failure()</code>、<code>evaluate_and_accept_visual_pose()</code>。</p>
-</section>
+accepted pose
+  ↓
+RobotState.set_pose()；actions_since_localize=0；motion_uncertainty=0
+  ↓
+consecutive_no_tag_scans=0；更新 last_localize_success_s
+  ↓
+回发起定位的任务；导航时转第 5 节重新规划</pre>
+<p>hard jump 不做“两个远帧一致就接受”，因为它可能把机器人瞬间安装到完全错误的建筑一侧；普通冲突才允许一次二次确认。其他 Tag 可建立机器人 Pose，但在 NFC 重获模式中，只有 locked target 的 <code>Tag ID == Screen ID</code> 且绑定 crop 有效才算目标重获。</p>
+<div class="table-wrap"><table><thead><tr><th>参数</th><th>当前值</th><th>含义</th><th>为什么需要</th></tr></thead><tbody><tr><td>普通冲突</td><td>15 cm / 25°</td><td>与旧 Pose 的可疑差异</td><td>防止单帧跳变</td></tr><tr><td>hard jump</td><td>40 cm / 60°</td><td>无条件拒绝阈值</td><td>防止灾难性位置跳跃</td></tr><tr><td>确认一致</td><td>10 cm / 15°</td><td>二次帧支持范围</td><td>要求独立证据</td></tr><tr><td>确认次数</td><td>1</td><td>suspect 的追加帧数</td><td>有限延迟</td></tr></tbody></table></div>
+<p>代码参考：<code>assess_visual_localization()</code>、<code>confirm_suspect_visual_pose()</code>、<code>accept_visual_localization()</code>。</p>
+<h1 id="section-3">3. 目标 Screen 选择</h1>
+<h2>3.1 流程图</h2>
+<pre class="flow-ascii">全部配置 Screen
+  ↓
+排除 CHANGED / ALREADY_TARGET、临时失败集合、nfc_gave_up 集合
+  ↓
+已有仍合法的 locked target？
+  ├─是→保持同一 Screen 与原子 TargetGoal→转 4
+  └─否→为每个候选计算建筑面外法向 25 cm、左偏 -1 cm 的 interaction target
+          ↓
+       计算机器人到 interaction target 的直线距离
+          ↓
+       保留“最近距离 +25 cm”窗口内候选
+          ↓
+       score = distance + min(25, behind_turn×0.20 + final_yaw_error×0.03)
+          ↓
+       按 score、distance、Screen ID 依次打破平局
+          ↓
+       原子锁定 Screen ID = Tag ID = Worker ID + XY + desired yaw + generation
+          ↓
+       → 4. Motion A*
 
-<section id="notag">
-  <h2>3. 真正的 NO-TAG Recovery</h2>
-  <p class="lead">只在完整扫描连续两次完全没有 AprilTag 时触发。每轮动作后云台回中、等待 settled capture，并首先只拍中央视角；最多 3 轮。</p>
-  <pre class="flow-ascii">genuine no_tag：detected_tag_ids=[]
-                 │
-          连续次数达到 2？
-          /             \
-        否               是
-        │                ▼
-      继续扫描      最近可信 Pose 靠墙/边界？
-                    /                  \
-                  是                    否
-                  │                     │
-       选择增加 clearance 的方向       后退约 5 cm
-       横移左或右约 4 cm                │
-                  │              朝场地内部身体转约 45°
-                  └─────────┬───────────┘
-                            ▼
-                       云台回到 100°
-                            │
-                       中央视角重新拍摄
-             ┌──────────────┼───────────────┐
-          可信 Pose      看到 Tag 无 Pose       仍无 Tag
-             │              │                  │
-       清零并恢复导航    停止继续盲动       cycle + 1
-                                            │
-                                <3 重复 / =3 高级恢复</pre>
-  <div class="cards">
-    <div class="card"><h3>普通位置动作</h3><code>back_fast ×2</code>（模型约 5 cm），再按左右 fast-turn 的配置 yaw 计算约 45° cycle。专用转向不走 LOW confidence batch cap。</div>
-    <div class="card recovery"><h3>墙边动作</h3>用地图 clearance 选安全的左/右横移；不优先做大幅原地转身。</div>
-    <div class="card ok"><h3>成功</h3>中央视角获得可信 Pose；立即清零 no-tag counter，保留当前目标并回到导航。</div>
-    <div class="card stop"><h3>耗尽</h3>3 轮仍完全无 Tag；记录 <code>no_tag_recovery_exhausted</code> 并进入全局恢复。没有无限左右摇头。</div>
-  </div>
-  <p class="code-ref">代码参考：<code>recover_from_no_tag_if_needed()</code>、<code>no_tag_recovery_turn()</code>、<code>choose_near_wall_lateral_direction()</code>。</p>
-</section>
+无候选
+  ├─全部已 CHANGED/ALREADY_TARGET→MISSION_COMPLETE→等待 570 s 时限→安全停止
+  └─仍有未完成目标→global recovery→释放普通临时失败→回本节
+       （NFC GAVE_UP 不释放；若只剩它们则持续恢复/等待到总时限）</pre>
+<h2>3.2 流程说明</h2>
+<p>目标不是建筑墙面中心，而是对应建筑面的交互站位：沿外法向离墙 25 cm，再沿机器人左侧切向偏移 -1 cm，最终朝向为该面的基准朝向再加 5°。先用距离形成 25 cm 近邻窗口，再轻度惩罚位于身后和最终朝向差大的候选，使机器人仍以“近”为主，但减少大转身。<code>TargetGoal</code> 将身份和坐标一起锁定，防止导航的是 A 屏坐标、视觉/NFC 却操作 B 屏。</p>
+<h2>3.3 关键参数</h2>
+<div class="table-wrap"><table><thead><tr><th>参数</th><th>当前值</th><th>含义</th><th>为什么需要</th></tr></thead><tbody><tr><td>standoff / lateral</td><td>25 cm / -1 cm</td><td>正式交互目标</td><td>留出 final forward 与左手 NFC 几何</td></tr><tr><td>desired yaw offset</td><td>+5°</td><td>最终面向修正</td><td>匹配现场标定</td></tr><tr><td>最近距离窗口</td><td>25 cm</td><td>可参与朝向比较的候选</td><td>避免为省转向绕远路</td></tr><tr><td>behind / final-yaw 惩罚</td><td>0.20 / 0.03 cm/°</td><td>朝向代价</td><td>更偏好易接近目标</td></tr><tr><td>惩罚上限</td><td>25 cm</td><td>朝向总代价上限</td><td>保持距离主导</td></tr></tbody></table></div>
+<h2>3.4 对应动作 / 代码</h2>
+<p>本节只计算并锁定目标，不执行实体动作。</p>
+<p>代码参考：<code>configure_cardinal_task_targets()</code>、<code>build_interaction_geometry()</code>、<code>choose_nearest_screen()</code>、<code>lock_target_goal()</code>。</p>
+<h1 id="section-4">4. Motion A* 路径规划</h1>
+<h2>4.1 流程图</h2>
+<pre class="flow-ascii">输入 accepted/dead-reckoning Pose + 原子 TargetGoal
+  ↓
+量化为 (x_grid, y_grid, yaw_bin)：5 cm 网格、15° yaw bin
+  ↓
+以 forward / reverse / strafe / small turn / large turn 扩展 A*
+  ↓
+每条平移边检查机器人走廊、建筑/场界、非目标障碍代价和净空
+每条转向边检查 10 cm rotation sweep
+  ↓
+累计动作代价、软障碍、净空不足、连续/反向转弯、动作反转、远离目标惩罚
+  ↓
+到达 XY≤4 cm 且 yaw≤10°？
+  ├─是→重建可执行 PlannedNavigationAction 列表→转 5
+  └─open set 耗尽或扩展到 45000→A* 无路径
+       ↓
+    同签名失败次数 &lt;3？
+       ├─是→重新 AprilTag 定位→回本节重规划
+       └─否→选择室内安全 waypoint 做 Recovery
+                ├─成功→清失败 watchdog→保留目标→回本节
+                └─失败→navigation_blocked→该目标记为临时失败→回 3 选其他目标
+总时限到或严重硬件故障→安全停止/交回任务主循环处理</pre>
+<h2>4.2 流程说明</h2>
+<p>普通 XY A* 会假设机器人能沿任意方向连续移动，而 TonyPi 只能执行有限 ActionGroup，所以正式规划状态包含朝向。平移边按当前 yaw 解释 forward/reverse/左右横移，转向边只改变 yaw bin。启发式为到目标的欧氏距离加最少 yaw-bin 转向代价。</p>
+<p>规划 yaw 是 15°离散状态，实际硬件仍执行 JSON 中标定值。例如 <code>turn_right_large</code> 的物理模型为 -18°，在 A* 中通过 <code>ceil(18/15)=2</code> 跨两个 bin，即预测 -30°；执行器日志同时记录 configured yaw 与 planner quantized yaw，不能把 -30°理解为机器人真实标定角度。</p>
+<h2>4.3 关键参数</h2>
+<div class="table-wrap"><table><thead><tr><th>参数</th><th>当前值</th><th>含义</th><th>为什么需要</th></tr></thead><tbody><tr><td>网格 / yaw bin</td><td>5 cm / 15°</td><td>A* 状态离散</td><td>同时规划位置和朝向</td></tr><tr><td>规划步长</td><td>forward 28、fine 7、strafe 12、reverse 5 cm</td><td>扩展模型</td><td>对应可批量执行动作</td></tr><tr><td>到达容差</td><td>4 cm / 10°</td><td>正式目标条件</td><td>满足近距离交互</td></tr><tr><td>走廊半宽 / 转动扫掠</td><td>8 cm / 10 cm</td><td>碰撞检查</td><td>不只检查质点</td></tr><tr><td>segment 最大代价 / 目标净空</td><td>55 / 25 cm</td><td>软障碍约束</td><td>远离墙体与非目标建筑</td></tr><tr><td>最大扩展 / 同签名失败</td><td>45000 / 3</td><td>规划预算与升级门槛</td><td>避免无限重算同一失败</td></tr><tr><td>主要代价</td><td>turn 20+0.8/°；large +12；strafe×1.05；reverse×1.08</td><td>动作偏好</td><td>优先少转、少反复且可执行的路线</td></tr></tbody></table></div>
+<h2>4.4 对应动作 / 代码</h2>
+<div class="table-wrap"><table><thead><tr><th>Planner 边</th><th>实际 action key</th><th>规划模型</th><th>备注</th></tr></thead><tbody><tr><td>forward / fine</td><td><code>forward_fast</code></td><td>28 / 7 cm</td><td>最终换算为 3.5 cm/cycle</td></tr><tr><td>reverse</td><td><code>back_fast</code></td><td>5 cm</td><td>只在目标位于后方且≤5 cm 时扩展</td></tr><tr><td>strafe left/right</td><td><code>strafe_*_fast</code></td><td>±12 cm</td><td>yaw 保持不变</td></tr><tr><td>small turn</td><td><code>turn_left/right_fast</code></td><td>按 15° bin 量化</td><td>物理标定 ±7.5°</td></tr><tr><td>large turn</td><td><code>turn_left/right_large</code></td><td>+15° / -30° bin 变化</td><td>物理标定 +15° / -18°</td></tr></tbody></table></div>
+<p>代码参考：<code>MapModel.plan_motion_actions()</code>、<code>action_planner_transition()</code>、<code>navigate_motion_plan_to_target()</code>。</p>
+<h1 id="section-5">5. 动作执行、批次、重新定位与重规划</h1>
+<h2>5.1 流程图</h2>
+<pre class="flow-ascii">A* 动作序列
+  ↓
+只取开头连续同 action_key 的动作，汇总 requested cycles
+  ↓
+按 HIGH/MEDIUM/LOW、动作类型、距目标、模式限制 batch
+  ↓
+执行前再做走廊/转动扫掠检查
+  ├─安全拒绝→近墙 Recovery
+  │              ├─恢复可继续→回 4 重规划
+  │              └─硬件失败/耗尽→当前目标临时失败→回 3
+  └─通过→执行 ActionGroup
+          ├─动作失败→hardware_failure→当前目标临时失败→回 3
+          └─动作完成→dead reckoning 更新 Pose、动作数、uncertainty
+                         ↓
+                  是转向？
+                  ├─是→Turn Progress Watchdog（下图）
+                  └─否→是否强制重新定位？
+                         ├─是→AprilTag 定位
+                         │      ├─accepted→回 4
+                         │      └─失败→按 2/2.1 Recovery→再回 4 或临时放弃目标
+                         └─否→保留 dead reckoning→仍回 4 重规划</pre>
+<pre class="flow-ascii">执行 TURN 成功
+  ↓
+立即 post-turn visual localization
+  ├─无可信 before/after Pose→PROGRESS_UNVERIFIED
+  │                            ↓
+  │             不增加“没转动”计数→回 4 重规划/后续定位
+  └─有可信视觉前后 Pose
+       ↓
+    实际 yaw 有正确、足够的变化？
+       ├─是→VERIFIED_PROGRESS→安装视觉 Pose→清计数→回 4
+       └─否→VERIFIED_NO_PROGRESS，计数 +1
+                    ├─&lt;2→回 4
+                    └─≥2→强制再定位确认
+                           ├─确认有进展→清计数→回 4
+                           ├─仍无可靠 Pose→PROGRESS_UNVERIFIED→回 4/定位
+                           └─确认仍无进展→RECOVERY_NO_PROGRESS
+                                                 ↓
+                              当前导航失败→目标临时失败→回 3；有时间可再选</pre>
+<h2>5.2 流程说明</h2>
+<p>A* 选择 forward，是因为按当前朝向前进的边在安全走廊内且综合代价更低；选择 strafe，是因为可在不改变最终朝向的情况下消除足够大的横向分量；reverse 仅用于目标在后方、横向误差≤8 cm、后向角≤30°、目标距离≤5 cm且动作确实缩短距离。正式 Motion A* 会同时扩展 small/large turn，再由总代价选择；<code>MotionController.turn_toward()</code> 等程序化转向才以 35°作为 large turn 门槛。无论从哪条路径选中 large turn，执行后都强制视觉复核。</p>
+<p>不能一次跑完整路径，因为舵机动作和标定角存在误差，dead reckoning 会累计，且到障碍/目标附近容错更小。HIGH 可执行较长 batch；MEDIUM 收缩；LOW 只执行 1 cycle。距离目标 <code>&lt;15 cm</code> 时所有 batch 最多 1 cycle。每个 batch 后总会重新 A*；只有达到动作预算、uncertainty 门槛、LOW、large turn、障碍紧或显式强制条件时才立即 AprilTag 定位。</p>
+<h2>5.3 真实动作表</h2>
+<div class="table-wrap"><table><thead><tr><th>Planner 动作</th><th>action key</th><th>ActionGroup / sequence</th><th>单 cycle 模型效果</th><th>常规最大 batch H/M/L</th></tr></thead><tbody><tr><td>FORWARD</td><td><code>forward_fast</code></td><td><code>go_forward_fast</code></td><td>+3.5 cm</td><td>8 / 4 / 1</td></tr><tr><td>REVERSE</td><td><code>back_fast</code></td><td><code>back_start→back(repeat)→back_end</code></td><td>-2.5 cm</td><td>6 / 3 / 1</td></tr><tr><td>STRAFE_LEFT</td><td><code>strafe_left_fast</code></td><td><code>left_move_fast</code></td><td>+4 cm</td><td>4 / 2 / 1</td></tr><tr><td>STRAFE_RIGHT</td><td><code>strafe_right_fast</code></td><td><code>right_move_fast</code></td><td>-3 cm</td><td>4 / 2 / 1</td></tr><tr><td>TURN_LEFT small</td><td><code>turn_left_fast</code></td><td><code>turn_left_small_step_s80</code></td><td>+7.5°</td><td>2 / 1 / 1</td></tr><tr><td>TURN_RIGHT small</td><td><code>turn_right_fast</code></td><td><code>turn_right_small_step_s80</code></td><td>-7.5°</td><td>2 / 1 / 1</td></tr><tr><td>TURN_LEFT large</td><td><code>turn_left_large</code></td><td>左小步×4</td><td>+15°</td><td>2 / 1 / 1</td></tr><tr><td>TURN_RIGHT large</td><td><code>turn_right_large</code></td><td>右小步×4</td><td>-18°</td><td>2 / 1 / 1</td></tr></tbody></table></div>
+<h2>5.4 关键参数</h2>
+<div class="table-wrap"><table><thead><tr><th>参数</th><th>当前值</th><th>含义</th><th>为什么需要</th></tr></thead><tbody><tr><td>normal 动作预算 H/M/L</td><td>6 / 4 / 1 cycles</td><td>到此强制定位</td><td>限制里程推算漂移</td></tr><tr><td>target-direct 预算 H/M/L</td><td>3 / 2 / 1</td><td>近目标更严格</td><td>保护交互精度</td></tr><tr><td>normal uncertainty limit</td><td>6.0</td><td>自适应定位门槛</td><td>不同动作误差可加权</td></tr><tr><td>uncertainty/cycle</td><td>forward .6；strafe 1；reverse .9；turn 1.8；large 2.6</td><td>误差累计</td><td>横移/转向更不稳定</td></tr><tr><td>near target</td><td><code>&lt;15 cm</code>，最多 1 cycle</td><td>单步逼近</td><td>防止越过目标</td></tr><tr><td>程序化 large-turn 门槛</td><td>yaw 差≥35°</td><td><code>turn_toward()</code> 改用 large action；A* 本身按代价选择</td><td>减少恢复/校正中的小步次数</td></tr><tr><td>watchdog 无进展</td><td>2 次可靠确认</td><td>导航中止门槛</td><td>不把取帧失败误判成没转</td></tr><tr><td><code>collision_recovery_enabled</code></td><td>false</td><td>通用碰撞停滞恢复当前关闭</td><td>现行主流程依靠规划安全门和 near-wall recovery</td></tr></tbody></table></div>
+<p>代码参考：<code>execute_motion_astar_action()</code>、<code>select_adaptive_action_batch()</code>、<code>adaptive_relocalization_decision()</code>、<code>monitor_turn_result()</code>。</p>
+<h1 id="section-6">6. 到达目标后的 Screen / Tag / 花卉识别与换花决策</h1>
+<h2>6.1 流程图</h2>
+<pre class="flow-ascii">导航接近 interaction target
+  ↓
+XY≤4 cm 且 desired yaw 误差≤10°？
+  ├─否→回 4/5 重新规划与执行
+  └─是→accepted visual Pose 年龄≤3 s？
+          ├─否→重新 AprilTag 定位
+          │      ├─accepted 且仍满足→ARRIVED
+          │      └─失败/位置改变→回 4/5
+          └─是→ARRIVED
+                 ↓
+          实时扫描 [100,130,70]，必须看见 locked target Tag
+                 ├─未见/绑定无效→最多 2 cycle 可见性恢复
+                 │                 ├─恢复后确认→继续
+                 │                 └─耗尽→保留目标并 MISSION_BLOCKED
+                 │                         ↓
+                 │                  主循环等待 1 s 后重试本节
+                 └─Tag ID=locked Screen ID 且几何 crop 有效
+                                      ↓
+                     使用≤15 s 的同屏绑定缓存，或最多 3 帧 fresh 分类
+                                      ├─FPGA/服务不可用→保留目标→等待 1 s→重试本节
+                                      ├─结果无效/置信度&lt;0.20→保留目标→重试/可见性恢复
+                                      └─可信 flower
+                                           ↓
+                                  flower == target？
+                                  ├─是→ALREADY_TARGET
+                                  │      不 final forward、不举手、不 NFC→转 8
+                                  └─否→NEEDS_CHANGE + fresh visual authorization
+                                                  ↓
+                                      `interaction_forward_final`×1
+                                                  ├─失败→目标失败计数；必要时临时轮换→3
+                                                  └─成功（模型 +20 cm）→转 7</pre>
+<h2>6.2 流程说明</h2>
+<p>“到达”同时要求交互目标 XY、最终 yaw 和新鲜视觉 Pose。其他 Tag 可用于定位机器人，却不能授权当前 Screen：业务证据必须满足 <code>Tag ID == Screen ID == locked target ID</code>，并由该 Tag 的几何关系截出正确屏幕 crop。</p>
+<p>15 s cache 只复用最近的“已绑定屏幕分类结果”；它不能单独授权 NFC。每次使用缓存仍必须在当前时刻重新看见 locked Tag，并把当前 Tag 时间与同屏证据配对。分类阈值为 0.20。分类服务失败不会把 Screen 当作花卉错误，也不会换目标，而是保持锁定目标等待服务恢复。</p>
+<p>机器人先停在墙外约 25 cm，是为了以精确姿态确认屏幕；确认确实需要换花后，才用一个专用序列前进模型 20 cm，接近 NFC 工作距离。</p>
+<h2>6.3 关键参数</h2>
+<div class="table-wrap"><table><thead><tr><th>参数</th><th>当前值</th><th>含义</th><th>为什么需要</th></tr></thead><tbody><tr><td>ARRIVED</td><td>4 cm / 10° / Pose≤3 s</td><td>到达三重门</td><td>防止只靠陈旧 XY 判到达</td></tr><tr><td>目标实时 pan</td><td>100, 130, 70</td><td>locked Tag 搜索</td><td>小范围找回目标</td></tr><tr><td>cache TTL / 分类间隔</td><td>15 s / 1 s</td><td>同屏分类缓存</td><td>降低重复 FPGA 请求</td></tr><tr><td>fresh 分类重试</td><td>最多 3 帧，间隔 0.5 s</td><td>无可用缓存时</td><td>有限等待视觉结果</td></tr><tr><td>可见性恢复</td><td>最多 2 cycle</td><td>重新定位/小修正</td><td>保持同一目标</td></tr><tr><td>分类置信度</td><td>≥0.20</td><td>可信花卉门槛</td><td>低置信度不授权 NFC</td></tr><tr><td>final forward</td><td>20 cm，一次</td><td>25 cm 站位后的接近</td><td>到达 NFC 距离</td></tr></tbody></table></div>
+<h2>6.4 对应动作 / 代码</h2>
+<div class="table-wrap"><table><thead><tr><th>动作</th><th>action key / ActionGroup</th><th>模型效果</th><th>使用场景</th></tr></thead><tbody><tr><td>可见性后退</td><td><code>back_fast</code></td><td>-2.5 cm/cycle</td><td>离墙过近且后方安全</td></tr><tr><td>可见性横移</td><td><code>strafe_left/right_fast</code></td><td>+4 / -3 cm</td><td>修正屏幕横向位置</td></tr><tr><td>最终接近</td><td><code>interaction_forward_final</code> / <code>go_forward_one_step</code>×4</td><td>+20 cm</td><td>仅 NEEDS_CHANGE 且已授权</td></tr></tbody></table></div>
+<p>代码参考：<code>navigate_motion_plan_to_target()</code>、<code>confirm_target_with_visibility_recovery()</code>、<code>bounded_fresh_target_observation()</code>、<code>execute_final_forward()</code>。</p>
+<h1 id="section-7">7. NFC 换花通信流程</h1>
+<h2>7.1 流程图</h2>
+<pre class="flow-ascii">final forward 完成
+  ↓
+fresh visual authorization 检查
+  ├─失败→不举手、不发 NFC→登记一次普通目标失败
+  │                              ↓
+  │              完成近位后退/重定位→清当前锁→回 3（未达 2 次时可再选本屏）
+  └─通过→stand→举左手→稳定等待 0.5 s→再次 authorization 检查
+          ├─失败→作为 Attempt 1 失败处理→finally 恢复 stand/左手→进入下方重获
+          └─通过→生成新的 uint8 seq，清旧响应→NFC Attempt 1
+                    ├─25 s 内收到匹配 seq 且 ok→CHANGED→恢复左手→转 8
+                    └─timeout/无效响应/异常→恢复左手
+                              ↓
+                    后退约 10 cm并重新 AprilTag 定位
+                              ├─后退/定位未完成→保持 pending retreat，主循环重试
+                              └─完成→最多 3 cycle 重获同一 locked target
+                                      ↓
+                            其他 Tag→只能定位，不能替代目标授权
+                                      ↓
+                            同 ID Tag+Screen crop+fresh FPGA 分类？
+                              ├─否且未耗尽→下一重获 cycle
+                              ├─3 cycle 耗尽→GAVE_UP→转 8
+                              └─是→fresh flower == target？
+                                      ├─是→第一次很可能已换成功→CHANGED→转 8
+                                      └─否→重新导航至同一 25 cm TargetGoal
+                                               ↓
+                                           再确认 locked Tag
+                                               ↓
+                                           final forward 20 cm
+                                               ├─任一步失败→继续有限重获；耗尽→GAVE_UP→8
+                                               └─成功→Attempt 2（新 seq）
+                                                         ├─success→CHANGED→8
+                                                         └─failure→GAVE_UP→8
 
-<section id="plan">
-  <h2>4–6. 选目标、Motion A* 与动作执行</h2>
-  <pre class="flow-ascii">未完成目标 → 到各 25 cm interaction point 的距离
-                         │
-                 最近距离窗口 + 有界朝向惩罚
-                         │
-                    锁定 TargetGoal
-                         │
-                         ▼
-当前 Pose + 目标 XY/yaw → (x_grid,y_grid,yaw_bin) A*
-                         │
-          展开 forward/reverse/strafe/turn
-                         │
-             corridor / rotation 安全检查
-                         │
-                    NavigationPlan.actions
-                         │
-             置信度与近目标规则决定 batch
-                         │
-             执行 → dead reckoning → 定位 → REPLAN</pre>
-  <div class="cards">
-    <div class="card"><h3>物理 yaw</h3><code>configured_yaw_deg</code> 来自 <code>motion.actions.*.yaw_deg</code>，供硬件、里程计和 watchdog 使用。</div>
-    <div class="card warn"><h3>规划 yaw</h3>15° bin 下，物理 -18° 必须跨 2 bin，所以 <code>planner_yaw_delta_deg=-30°</code>。它只代表离散搜索状态。</div>
-  </div>
-  <p>距目标 ≤15 cm 时只执行单周期。普通 REVERSE 仅允许在最终目标 5 cm 内、目标在后方、确实缩短距离且后方通道安全时使用。</p>
-  <p class="code-ref">代码参考：<code>plan_motion_actions()</code>、<code>execute_motion_astar_action()</code>、<code>post_action_relocalize()</code>。</p>
-</section>
+任意等待中总时限到→MISSION_TIMEOUT→恢复左手/停止→安全停止；绝无 Attempt 3</pre>
+<h2>7.2 流程说明</h2>
+<p>通信链路是 <code>TonyPi ─NFC→ 对应 Worker → 换花执行</code>。每次物理尝试前后各做一次视觉安全门，举手后证据失效就不发送。若第一次门控在举手前已经失败，调用会直接返回，任务管理器登记普通目标失败，完成已安排的近位后退/重定位后回第 3 节；该屏未达两次普通失败门槛时仍可再次选择。若举手后的第二次门控失败，则按 Attempt 失败进入同目标重获流程。</p>
+<p>每次 Attempt 使用递增并按 uint8 回绕的新 <code>seq</code>，发送前清旧邮箱响应，再只接受当前请求对应的回复，避免把旧 ACK 当作成功。无论成功、失败还是异常，<code>finally</code> 都恢复站立/左手状态。</p>
+<p>Attempt 1 失败后不能立即原地重发：机器人先退回、重定位并找回同一 locked target，再取得 fresh FPGA 分类。若花已是目标，按视觉证据记为 CHANGED；仍需更换时才重新接近并允许 Attempt 2。</p>
+<h2>7.3 关键参数</h2>
+<div class="table-wrap"><table><thead><tr><th>参数</th><th>当前值</th><th>含义</th><th>为什么需要</th></tr></thead><tbody><tr><td>最大物理 Attempt</td><td>2</td><td>NFC 实际请求上限</td><td>防止无限重复操作</td></tr><tr><td>Attempt / scan timeout</td><td>25 s / 25 s</td><td>单次交互上限</td><td>受剩余总时间进一步截断</td></tr><tr><td>response timeout</td><td>1 s</td><td>单次邮箱等待粒度</td><td>周期性检查总时限</td></tr><tr><td>左手稳定等待</td><td>0.5 s</td><td>举手后等待</td><td>稳定 NFC 耦合位置</td></tr><tr><td>retry retreat</td><td>10 cm</td><td>Attempt 1 后退出</td><td>重新建立视觉与接近过程</td></tr><tr><td>target reacquire</td><td>最多 3 cycle</td><td>同一目标重获预算</td><td>禁止无限寻找</td></tr></tbody></table></div>
+<h2>7.4 对应动作 / 代码</h2>
+<div class="table-wrap"><table><thead><tr><th>动作</th><th>实际 action / ActionGroup</th><th>模型效果</th><th>使用场景</th></tr></thead><tbody><tr><td>站立</td><td><code>stand</code> / <code>stand</code></td><td>0</td><td>举手前和 finally 恢复</td></tr><tr><td>举左手</td><td>Hardware 左手动作</td><td>姿态动作</td><td>NFC 耦合</td></tr><tr><td>重获后退</td><td><code>back_fast</code></td><td>请求约 -10 cm</td><td>离开近距离位置</td></tr><tr><td>再接近</td><td><code>interaction_forward_final</code></td><td>+20 cm</td><td>fresh 分类仍需换花</td></tr></tbody></table></div>
+<p>代码参考：<code>RobotInteractionClient.change_flower()</code>、<code>process_screen_interaction()</code>、<code>restore_nfc_physical_contact()</code>、<code>recalibrate_target_for_nfc_retry()</code>。</p>
+<h1 id="section-8">8. 当前目标结束与下一个目标选择</h1>
+<h2>8.1 流程图</h2>
+<pre class="flow-ascii">当前目标业务结果
+  ├─ALREADY_TARGET
+  │    ↓
+  │ 标记已处理；没有 final forward，因此无需交互后退
+  │    ↓
+  │ 清 TargetGoal→回 3
+  ├─CHANGED
+  │    ↓
+  │ 若 final forward 后仍在近位→后退约 10 cm（只执行一次）
+  │    ├─动作失败→MISSION_BLOCKED，保留 pending retreat→主循环稍后重试
+  │    └─动作完成→重新 AprilTag 定位
+  │                   ├─失败→MISSION_BLOCKED，保留 pending retreat→重试定位
+  │                   └─成功→清 TargetGoal→回 3
+  └─GAVE_UP
+       ↓
+    Screen.status=FAILED，加入 nfc_gave_up_screen_ids，本次任务不再选择
+       ↓
+    若 final forward 后仍在近位，同样完成后退/重定位
+       ↓
+    清当前目标→回 3 选择其他 Screen
 
-<section id="watchdog">
-  <h2>7. 转向动作证据 Watchdog</h2>
-  <pre class="flow-ascii">转向动作硬件成功
-       │
-       ▼
-有可靠 post-turn RobotPose？
-   /                         \
- 是                           否
- │                            │
-比较 before/after yaw     PROGRESS_UNVERIFIED
- │                       不增加 verified counter
- ▼
-yaw 变化足够？
- /          \
-是            否
-│             │
-VERIFIED_    VERIFIED_NO_PROGRESS
-PROGRESS            │
-清零 counter         ▼
-              可靠无进展累计达到 2
-                     │
-               强制再定位复核
-             ┌───────┼────────┐
-           已转动    无法验证   再次确认没转
-             │        │          │
-           清零   不报“没动”  RECOVERY_NO_PROGRESS</pre>
-  <div class="rule">没有可信 Pose 只能说明“无法验证”，不能说明“硬件没动”。看到 Tag/Screen 但因 too small、quality、conflict、physical gate 等不能定位时同样是 <code>PROGRESS_UNVERIFIED</code>。</div>
-  <p class="code-ref">代码参考：<code>evaluate_turn_progress()</code>、<code>scan_after_turn()</code>、<code>monitor_turn_result()</code>。</p>
-</section>
-
-<section id="interaction">
-  <h2>8–24. 到达确认、FPGA、20 cm final forward 与 NFC</h2>
-  <pre class="flow-ascii">XY ≤4 cm 且 yaw error ≤10° 且视觉 Pose 足够新
-                      │
-                实时确认当前 Tag + Screen
-                      │
-                  FPGA 识别花朵
-              ┌───────┴────────┐
-          flower==target     flower!=target
-              │                │
-        ALREADY_TARGET     go_forward_one_step ×4
-       无 final forward       约 20 cm（只一次）
-       无 NFC                  │
-                         授权复核 → NFC Attempt 1
-                            /             \
-                          成功             失败
-                          │                │
-                       CHANGED      后退10cm→定位→重获当前目标
-                                           │最多3轮
-                                        fresh FPGA
-                                      /             \
-                                  已是目标           仍非目标
-                                     │                │
-                                  CHANGED        NFC Attempt 2
-                                                  │
-                                           CHANGED / GAVE_UP</pre>
-  <ul>
-    <li><code>target_distance_cm=25.0</code> 不变；final forward 的实体序列和模型都改为约 20 cm。</li>
-    <li>其他 Tag 可以更新 Pose，但不能算“当前目标已重获”。</li>
-    <li><code>CHANGED</code> 是终态；Attempt 2 只能在 Attempt 1 失败且 fresh FPGA 明确仍非目标后执行。</li>
-    <li>进入过近距离交互位后，保持既有一次 10 cm retreat 和重新定位。</li>
-  </ul>
-</section>
-
-<section id="recoveries">
-  <h2>25–28. Recovery 唯一入口与去向</h2>
-  <table>
-    <thead><tr><th>恢复</th><th>触发</th><th>机器人实际动作</th><th>成功 / 失败 / 最大次数</th><th>之后去哪</th><th>目标</th></tr></thead>
-    <tbody>
-      <tr><td>无 Tag 恢复</td><td>连续 2 次完整扫描零 Tag</td><td>墙边安全横移；否则后退 5 cm + 向内身体转 45°；中央复拍</td><td>可信 Pose 成功；3 cycle 仍零 Tag 耗尽</td><td>导航 / 全局恢复</td><td>保留</td></tr>
-      <tr><td>靠墙恢复</td><td>靠墙、通道失败或局部恢复入口</td><td>安全后退 → clearance 最优横移 → 最后小转；每步定位</td><td>back 3、lateral 2、总动作 12；离墙或 clearance 改善成功</td><td>重规划 / bounded escape / 导航失败</td><td>保留</td></tr>
-      <tr><td>碰撞/前进停滞恢复</td><td>前方障碍或前进视觉/位姿证据触发，且配置启用</td><td>有界后退并定位</td><td>最多 3 次定位；独立使用 collision 参数</td><td>恢复导航或失败调度</td><td>通常保留</td></tr>
-      <tr><td>全局恢复</td><td>NO-TAG 耗尽或全部目标临时失败</td><td>完整定位；near-wall 或室内安全 waypoint；无 Pose 时有界搜索</td><td>每次一轮，受各子上限与全局 timeout 限制</td><td>释放临时失败并重新选目标</td><td>按调度规则</td></tr>
-      <tr><td>目标临时轮换</td><td>重复同类规划失败达到 3</td><td>不做交互动作，选择其他目标</td><td>全部都临时失败时升级全局恢复</td><td>选目标</td><td>暂时释放</td></tr>
-    </tbody>
-  </table>
-</section>
-
-<section id="states">
-  <h2>错误与证据状态说明</h2>
-  <table>
-    <thead><tr><th>状态</th><th>中文含义 / 触发</th><th>硬件真的没动？</th><th>放弃目标？</th><th>下一步</th></tr></thead>
-    <tbody>
-      <tr><td class="nowrap"><code>no_tag</code></td><td>有帧但检测到零 AprilTag</td><td>否</td><td>否</td><td>连续 2 次进入专用恢复</td></tr>
-      <tr><td><code>pose_unavailable_with_tags</code></td><td>看到 Tag，但无法形成可信 Pose</td><td>否</td><td>否</td><td>停止 no-tag 盲动，继续定位</td></tr>
-      <tr><td><code>TAG_SEEN_POSE_UNAVAILABLE</code></td><td>上一状态的统一 debug 事件</td><td>否</td><td>否</td><td>保留目标与 no-tag=0</td></tr>
-      <tr><td><code>LOCALIZATION_UNCERTAIN</code></td><td>视觉 Pose 暂不可信或待确认</td><td>否</td><td>否</td><td>缩短动作批次并重定位</td></tr>
-      <tr><td><code>PROGRESS_UNVERIFIED</code></td><td>转向后没有可靠 Pose，无法判断</td><td>否</td><td>否</td><td>不增加 verified counter</td></tr>
-      <tr><td><code>VERIFIED_NO_PROGRESS</code></td><td>可靠 before/after Pose 证明 yaw 变化不足</td><td>本次证据为是</td><td>否</td><td>计数并在阈值处复核</td></tr>
-      <tr><td><code>RECOVERY_NO_PROGRESS</code></td><td>连续可靠无进展且可靠复核仍确认</td><td>是</td><td>可能临时轮换</td><td>停止当前导航并恢复/调度</td></tr>
-      <tr><td><code>near_wall_recovery_exhausted</code></td><td>靠墙恢复有界尝试耗尽</td><td>不一定</td><td>默认否</td><td>bounded/global recovery</td></tr>
-      <tr><td><code>navigation_failed</code></td><td>本轮规划、动作、安全或恢复失败</td><td>不一定</td><td>临时</td><td>记录根因并轮换</td></tr>
-      <tr><td><code>target temporarily failed</code></td><td>当前目标达到可恢复失败上限</td><td>不一定</td><td>暂时</td><td>选择其他目标；全体失败后全局恢复</td></tr>
-    </tbody>
-  </table>
-</section>
-</main>
-<footer>单文件离线文档 · 浅层 CSS Grid · ASCII 连线不会因深层 DOM branch nesting 错位</footer>
+第 3 节还有可选目标？
+  ├─是→继续比赛
+  └─否
+      ├─全部为 CHANGED/ALREADY_TARGET→MISSION_COMPLETE→等待总时限→安全停止
+      └─仍有普通临时失败→global recovery→释放并重选
+          （NFC GAVE_UP 不释放；只剩它们时循环恢复，最终 570 s 到→安全停止）</pre>
+<h2>8.2 流程说明</h2>
+<p><code>ALREADY_TARGET</code> 与 <code>CHANGED</code> 都是 <code>Screen.done()</code>，不会再次参加选择；只有 <code>CHANGED</code> 计入“实际换花成功数”。普通导航、可见性或分类流程中的失败由 <code>max_target_attempts=2</code> 控制，达到门槛后只进入临时失败集合；全局恢复后尝试次数清零，可以再次选择。</p>
+<p><code>GAVE_UP</code> 不同：NFC 两次物理 Attempt 失败，或 Attempt 1 后 3 轮同目标重获耗尽，会把 Screen 设为兼容状态 <code>FAILED</code> 并加入 <code>nfc_gave_up_screen_ids</code>。<code>FAILED</code> 本身不是永久 terminal，但该集合使它在本次任务内不再入选。机器人随后处理其他目标；若没有其他可选目标，当前实现并不立即宣布成功，而是继续恢复/等待，直到全局时限安全停止。</p>
+<h2>8.3 关键参数</h2>
+<div class="table-wrap"><table><thead><tr><th>参数</th><th>当前值</th><th>含义</th><th>为什么需要</th></tr></thead><tbody><tr><td>普通目标失败门槛</td><td>2</td><td>达到后临时轮换</td><td>避免单一目标长期占用</td></tr><tr><td>post-interaction retreat</td><td>10 cm</td><td>从 NFC 近位退出</td><td>为下一次定位/导航留空间</td></tr><tr><td>retreat retry interval</td><td>1 s</td><td>blocked 后重试周期</td><td>避免重复快速发动作</td></tr><tr><td><code>continue_after_target_count</code></td><td>true</td><td>不按成功数提前结束</td><td>尽量处理全部 Screen</td></tr><tr><td>总时限</td><td>570 s</td><td>最终终止条件</td><td>无候选/恢复也不会无限运行</td></tr></tbody></table></div>
+<h2>8.4 对应动作 / 代码</h2>
+<div class="table-wrap"><table><thead><tr><th>结果</th><th>Screen 状态 / 集合</th><th>后续动作</th><th>下一步</th></tr></thead><tbody><tr><td>ALREADY_TARGET</td><td><code>ALREADY_TARGET</code></td><td>无近位后退</td><td>回 3</td></tr><tr><td>CHANGED</td><td><code>CHANGED</code></td><td>必要时 <code>back_fast</code> 约 10 cm并定位</td><td>回 3</td></tr><tr><td>普通失败达 2 次</td><td>状态保持可重试 + temporary 集合</td><td>global recovery 后释放</td><td>回 3</td></tr><tr><td>GAVE_UP</td><td><code>FAILED</code> + <code>nfc_gave_up_screen_ids</code></td><td>必要时后退/定位</td><td>跳过本屏，回 3</td></tr><tr><td>TIMEOUT</td><td><code>MISSION_TIMEOUT</code></td><td><code>hardware.stop()</code></td><td>安全停止</td></tr></tbody></table></div>
+<p>代码参考：<code>Screen.done()</code>、<code>register_temporary_target_failure()</code>、<code>give_up_nfc_change()</code>、<code>complete_post_interaction_retreat()</code>、<code>finish_mission_without_available_targets()</code>。</p>
+<hr>
+<h2>闭环检查结论</h2>
+<ul><li><code>capture_failed</code>：记录失败后回当前定位调用者；当前代码还会影响 no-tag 计数，达到门槛可能进入 2.1。</li><li><code>no_tag</code>：未达门槛回扫描；达门槛进入 2.1；耗尽升级 global recovery。</li><li><code>pose_unavailable_with_tags</code>、质量/PnP/physical/hard jump/suspect rejected：保留旧 Pose，回初始搜索、导航重规划或 NFC 同目标重获，不进入下一轮盲动。</li><li>A* <code>no path</code>：先重新定位重算；同签名 3 次后走室内 waypoint；失败则当前目标临时轮换。</li><li>动作/转向无进展：可靠证据不足时继续定位/重规划；可靠无进展 2 次后中止本次导航并轮换目标。</li><li>Screen/FPGA 失败：保持 locked target，按有限帧、可见性恢复和 1 s 服务重试闭环；不会用其他 Tag 授权 NFC。</li><li>NFC 失败：Attempt 1 后退并重获同目标；仅允许 Attempt 2；之后 CHANGED 或 GAVE_UP。</li><li>任意恢复最终都受 570 s 总时限约束，并进入 <code>MISSION_TIMEOUT → hardware.stop()</code>。</li></ul></main>
+<footer>离线文档 · robot_decision_tree.md / robot_decision_tree.html</footer>
 </body>
 </html>
