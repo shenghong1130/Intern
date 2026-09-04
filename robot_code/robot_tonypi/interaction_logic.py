@@ -31,14 +31,14 @@ def cardinal_surface_from_tag(tag_corners_3d, building_center_xy: Tuple[float, f
     fixed_y = spread_y <= float(plane_epsilon_cm)
     if fixed_x and (not fixed_y or spread_x <= spread_y):
         if center[0] < float(building_center_xy[0]):
-            face, normal, yaw = "WEST", (-1.0, 0.0), 0.0
+            face, normal = "WEST", (-1.0, 0.0)
         else:
-            face, normal, yaw = "EAST", (1.0, 0.0), -180.0
+            face, normal = "EAST", (1.0, 0.0)
     elif fixed_y:
         if center[1] < float(building_center_xy[1]):
-            face, normal, yaw = "SOUTH", (0.0, -1.0), 90.0
+            face, normal = "SOUTH", (0.0, -1.0)
         else:
-            face, normal, yaw = "NORTH", (0.0, 1.0), -90.0
+            face, normal = "NORTH", (0.0, 1.0)
     else:
         raise ValueError(
             "Tag plane is not axis-aligned: spread_x={:.3f}, spread_y={:.3f}".format(
@@ -49,7 +49,6 @@ def cardinal_surface_from_tag(tag_corners_3d, building_center_xy: Tuple[float, f
         "face": face,
         "center_xy": center,
         "normal_xy": normal,
-        "target_yaw_deg": yaw,
         "spread_x_cm": spread_x,
         "spread_y_cm": spread_y,
     }
@@ -119,7 +118,11 @@ def build_interaction_geometry(face_center_xy: Tuple[float, float], normal_xy: T
         raise ValueError("screen normal must be non-zero")
     normal = (float(normal_xy[0]) / norm, float(normal_xy[1]) / norm)
     normal_yaw = math.degrees(math.atan2(normal[1], normal[0]))
-    base_interaction_yaw = ((normal_yaw + 360.0) % 360.0) - 180.0
+    # The normal points out of the building toward the robot.  The canonical
+    # interaction yaw points in the opposite direction, from the robot back
+    # toward the Screen.  Keep this as the sole source of Screen-facing yaw.
+    screen_facing_yaw = math.degrees(math.atan2(-normal[1], -normal[0]))
+    base_interaction_yaw = ((screen_facing_yaw + 180.0) % 360.0) - 180.0
     # Match RobotState.apply_action_result(): lateral_cm > 0 moves along the
     # robot's yaw + 90 degree (left) axis.  A configured negative offset
     # therefore moves right after it has turned to face the screen.
@@ -142,6 +145,7 @@ def build_interaction_geometry(face_center_xy: Tuple[float, float], normal_xy: T
     return {
         "normal_xy": normal,
         "normal_yaw_deg": ((normal_yaw + 180.0) % 360.0) - 180.0,
+        "screen_facing_yaw_deg": base_interaction_yaw,
         "screen_left_tangent_xy": screen_left,
         "reader_xy": reader,
         "navigation_staging_xy": interaction,

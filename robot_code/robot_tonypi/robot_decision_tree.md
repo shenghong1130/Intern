@@ -16,13 +16,15 @@
   ↓                                       └─比赛时间到→安全停止
 选择未完成且当前可选的 Screen
   ↓
-Motion A* 在 (x_grid, y_grid, yaw_bin) 中规划
+POSITION_NAVIGATION：Motion A* 保留 yaw state，只规划到 25 cm interaction XY
   ↓
 执行同类动作的有限 batch
   ↓
 按置信度/动作数/uncertainty 决定是否重新定位
   ↓
-无论是否定位都重新规划，直到到达 25 cm 交互位姿
+无论是否定位都重新规划，直到到达 25 cm interaction XY
+  ↓
+FINAL_YAW_ALIGNMENT：fresh visual Pose 后原地校正 Screen-facing yaw
   ↓
 实时确认 locked Tag 与对应 Screen，FPGA 分类
   ↓
@@ -273,7 +275,7 @@ hard jump 不做“两个远帧一致就接受”，因为它可能把机器人�
 
 ## 3.2 流程说明
 
-目标不是建筑墙面中心，而是对应建筑面的交互站位：沿外法向离墙 25 cm，再沿机器人左侧切向偏移 -1 cm，最终朝向为该面的基准朝向再加 5°。先用距离形成 25 cm 近邻窗口，再轻度惩罚位于身后和最终朝向差大的候选，使机器人仍以“近”为主，但减少大转身。`TargetGoal` 将身份和坐标一起锁定，防止导航的是 A 屏坐标、视觉/NFC 却操作 B 屏。
+目标不是建筑墙面中心，而是对应建筑面的交互站位：沿 outward normal 离墙 25 cm，再沿机器人左侧切向偏移 -1 cm。canonical Screen-facing yaw 只在 `build_interaction_geometry()` 中由 `atan2(-normal_y,-normal_x)` 生成，再加 5°。先用距离形成 25 cm 近邻窗口，再轻度惩罚位于身后和最终朝向差大的候选，使机器人仍以“近”为主，但减少大转身。`TargetGoal` 将身份和坐标一起锁定，防止导航的是 A 屏坐标、视觉/NFC 却操作 B 屏。
 
 ## 3.3 关键参数
 
@@ -298,7 +300,7 @@ hard jump 不做“两个远帧一致就接受”，因为它可能把机器人�
 ```text
 输入 accepted/dead-reckoning Pose + 原子 TargetGoal
   ↓
-量化为 (x_grid, y_grid, yaw_bin)：5 cm 网格、15° yaw bin
+量化 XY 为 5 cm 网格；以当前真实 yaw 为原点建立 15° yaw state
   ↓
 以 forward / reverse / strafe / small turn / large turn 扩展 A*
   ↓
@@ -307,7 +309,7 @@ hard jump 不做“两个远帧一致就接受”，因为它可能把机器人�
   ↓
 累计动作代价、软障碍、净空不足、连续/反向转弯、动作反转、远离目标惩罚
   ↓
-到达 XY≤4 cm 且 yaw≤10°？
+到达 XY≤4 cm？（最终 Screen yaw 不参与 goal test / heuristic）
   ├─是→重建可执行 PlannedNavigationAction 列表→转 5
   └─open set 耗尽或扩展到 45000→A* 无路径
        ↓
@@ -321,17 +323,18 @@ hard jump 不做“两个远帧一致就接受”，因为它可能把机器人�
 
 ## 4.2 流程说明
 
-普通 XY A* 会假设机器人能沿任意方向连续移动，而 TonyPi 只能执行有限 ActionGroup，所以正式规划状态包含朝向。平移边按当前 yaw 解释 forward/reverse/左右横移，转向边只改变 yaw bin。启发式为到目标的欧氏距离加最少 yaw-bin 转向代价。
+普通 XY A* 会假设机器人能沿任意方向连续移动，而 TonyPi 只能执行有限 ActionGroup，所以正式规划状态仍包含朝向。平移边按当前 yaw 解释 forward/reverse/左右横移，转向边按配置的物理角改变 yaw state；但终点条件和启发式只看 interaction XY。转向仍可为了让后续平移更自然、更安全而发生，不会从远处为了最终 Screen yaw 提前横移或绕路。
 
-规划 yaw 是 15°离散状态，实际硬件仍执行 JSON 中标定值。例如 `turn_right_large` 的物理模型为 -18°，在 A* 中通过 `ceil(18/15)=2` 跨两个 bin，即预测 -30°；执行器日志同时记录 configured yaw 与 planner quantized yaw，不能把 -30°理解为机器人真实标定角度。
+正式位置搜索只扩展对称的 ±90° quarter-turn macro，因此能被 15° state 精确表示，又不会探索大量细碎 yaw 组合。macro 由 `turn_left/right_fast` 的 7.5°/cycle 执行，Executor 按 batch 上限分批并重规划。action-level 精确 yaw 模式会把 15°请求细化成当前 1.5° lattice；动作预测 Pose 始终直接按物理 action model 重建，因此 -18° 不再被预测为 -30°或污染后续平移方向。
 
 ## 4.3 关键参数
 
 | 参数 | 当前值 | 含义 | 为什么需要 |
 |---|---:|---|---|
-| 网格 / yaw bin | 5 cm / 15° | A* 状态离散 | 同时规划位置和朝向 |
+| 网格 / position yaw state | 5 cm / 15°，只扩展 ±90° | A* 状态离散 | 保留方向语义并限制搜索规模 |
+| position heuristic 权重 | 3.0 | 加权 XY 距离 | 优先自然接近目标位置 |
 | 规划步长 | forward 28、fine 7、strafe 12、reverse 5 cm | 扩展模型 | 对应可批量执行动作 |
-| 到达容差 | 4 cm / 10° | 正式目标条件 | 满足近距离交互 |
+| 位置阶段到达容差 | 4 cm | Motion A* 目标条件 | 先可靠到达 interaction XY |
 | 走廊半宽 / 转动扫掠 | 8 cm / 10 cm | 碰撞检查 | 不只检查质点 |
 | segment 最大代价 / 目标净空 | 55 / 25 cm | 软障碍约束 | 远离墙体与非目标建筑 |
 | 最大扩展 / 同签名失败 | 45000 / 3 | 规划预算与升级门槛 | 避免无限重算同一失败 |
@@ -344,8 +347,8 @@ hard jump 不做“两个远帧一致就接受”，因为它可能把机器人�
 | forward / fine | `forward_fast` | 28 / 7 cm | 最终换算为 3.5 cm/cycle |
 | reverse | `back_fast` | 5 cm | 只在目标位于后方且≤5 cm 时扩展 |
 | strafe left/right | `strafe_*_fast` | ±12 cm | yaw 保持不变 |
-| small turn | `turn_left/right_fast` | 按 15° bin 量化 | 物理标定 ±7.5° |
-| large turn | `turn_left/right_large` | +15° / -30° bin 变化 | 物理标定 +15° / -18° |
+| position quarter turn | `turn_left/right_fast` | 规划 ±90°；物理 ±7.5°/cycle | Executor 限批并重规划 |
+| final yaw large turn | `turn_left/right_large` | 物理 +15° / -18° | 只在近点闭环校正中按真实角执行 |
 
 代码参考：`MapModel.plan_motion_actions()`、`action_planner_transition()`、`navigate_motion_plan_to_target()`。
 
@@ -437,15 +440,17 @@ A* 选择 forward，是因为按当前朝向前进的边在安全走廊内且综
 ## 6.1 流程图
 
 ```text
-导航接近 interaction target
+POSITION_NAVIGATION 接近 interaction target
   ↓
-XY≤4 cm 且 desired yaw 误差≤10°？
-  ├─否→回 4/5 重新规划与执行
-  └─是→accepted visual Pose 年龄≤3 s？
+XY≤4 cm？
+  ├─否→回 4/5 重新规划与执行（不优化最终 yaw）
+  └─是→FINAL_YAW_ALIGNMENT：accepted visual Pose 年龄≤3 s？
           ├─否→重新 AprilTag 定位
-          │      ├─accepted 且仍满足→ARRIVED
+          │      ├─accepted 且仍在 4 cm 内→检查 yaw
           │      └─失败/位置改变→回 4/5
-          └─是→ARRIVED
+          └─是→desired yaw 误差≤10°？
+                 ├─否→安全原地转向→视觉定位→重新检查 XY/yaw
+                 └─是→ARRIVED
                  ↓
           实时扫描 [100,130,70]，必须看见 locked target Tag
                  ├─未见/绑定无效→最多 2 cycle 可见性恢复
@@ -472,7 +477,7 @@ XY≤4 cm 且 desired yaw 误差≤10°？
 
 ## 6.2 流程说明
 
-“到达”同时要求交互目标 XY、最终 yaw 和新鲜视觉 Pose。其他 Tag 可用于定位机器人，却不能授权当前 Screen：业务证据必须满足 `Tag ID == Screen ID == locked target ID`，并由该 Tag 的几何关系截出正确屏幕 crop。
+“到达”最终仍同时要求交互目标 XY、最终 yaw 和新鲜视觉 Pose，但顺序明确分为位置导航和最终朝向校正。其他 Tag 可用于定位机器人，却不能授权当前 Screen：业务证据必须满足 `Tag ID == Screen ID == locked target ID`，并由该 Tag 的几何关系截出正确屏幕 crop。
 
 15 s cache 只复用最近的“已绑定屏幕分类结果”；它不能单独授权 NFC。每次使用缓存仍必须在当前时刻重新看见 locked Tag，并把当前 Tag 时间与同屏证据配对。分类阈值为 0.20。分类服务失败不会把 Screen 当作花卉错误，也不会换目标，而是保持锁定目标等待服务恢复。
 

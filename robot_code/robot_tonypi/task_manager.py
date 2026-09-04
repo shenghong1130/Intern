@@ -7950,8 +7950,8 @@ class TaskManager:
             navigation_mode="normal",
         )
         pose_before = self.copy_pose(self.state.pose)
-        planner_quantized_pose = first.predicted_end_pose
-        predicted_pose = planner_quantized_pose
+        planner_predicted_pose = first.predicted_end_pose
+        predicted_pose = planner_predicted_pose
         if kind == "turn":
             signed_yaw = float(
                 self.config["motion"]["actions"][first.action_key].get("yaw_deg", 0.0)
@@ -7987,10 +7987,13 @@ class TaskManager:
             planned_cycles=requested,
             batch_cycles=cycles,
             predicted_pose=predicted,
-            predicted_distance_cm=round(first.predicted_distance_cm, 3),
+            predicted_distance_cm=round(
+                distance_xy(pose_before.xy(), predicted_pose.xy()), 3
+            ),
+            planner_edge_distance_cm=round(first.predicted_distance_cm, 3),
             configured_yaw_deg=round(signed_yaw if kind == "turn" else 0.0, 3),
             planner_yaw_delta_deg=round(first.predicted_yaw_deg, 3),
-            planner_quantized_pose=planner_quantized_pose.as_dict(),
+            planner_physical_pose=planner_predicted_pose.as_dict(),
             action_cost=round(first.cost, 3),
             goal_xy=goal.interaction_target_xy,
             goal_yaw=goal.desired_yaw_deg,
@@ -8002,7 +8005,7 @@ class TaskManager:
                 configured_yaw_deg=round(signed_yaw, 3),
                 planner_yaw_delta_deg=round(first.predicted_yaw_deg, 3),
                 progress_status=self.turn_progress_status,
-                reason="yaw_bin_quantization",
+                reason="physical_action_yaw_lattice",
             )
         if kind in ("forward", "reverse", "strafe"):
             signed_forward = 0.0
@@ -8121,14 +8124,21 @@ class TaskManager:
         return True
 
     def navigate_motion_plan_to_target(self, screen: Screen, goal: TargetGoal) -> bool:
-        """Closed-loop formal navigation to 25 cm XY plus desired yaw."""
+        """Reach the 25 cm XY first, then align the final Screen-facing yaw."""
         nav = self.config["navigation"]
         radius = float(nav.get("target_arrival_radius_cm", 4.0))
         yaw_tolerance = float(nav.get("target_arrival_yaw_tolerance_deg", 10.0))
         max_steps = int(nav.get("max_steps_per_target", 80))
-        self.active_navigation_phase = "target_navigation"
+        self.active_navigation_phase = "POSITION_NAVIGATION"
+        self.set_mission_state(MissionState.POSITION_NAVIGATION)
         self.last_navigation_failure_reason = ""
         self.clear_plan_failure_watchdog("new_motion_astar_target")
+        self.debug.event(
+            "position_navigation_started",
+            screen_id=screen.screen_id,
+            goal_xy=goal.interaction_target_xy,
+            deferred_goal_yaw=goal.desired_yaw_deg,
+        )
         for step in range(max_steps):
             if self.time_left_s() <= 0:
                 self.last_navigation_failure_reason = "time_limit"
@@ -8162,13 +8172,116 @@ class TaskManager:
                 continue
             distance = distance_xy(pose.xy(), goal.interaction_target_xy)
             yaw_error = abs(angle_diff_deg(goal.desired_yaw_deg, pose.yaw_deg))
-            if distance <= radius and yaw_error <= yaw_tolerance:
-                if not self.visual_pose_is_fresh(float(nav.get("arrival_visual_pose_max_age_s", 3.0))):
+            if distance <= radius:
+                if self.active_navigation_phase != "FINAL_YAW_ALIGNMENT":
+                    self.active_navigation_phase = "FINAL_YAW_ALIGNMENT"
+                    self.set_mission_state(MissionState.FINAL_YAW_ALIGNMENT)
+                    self.debug.event(
+                        "position_navigation_arrived",
+                        screen_id=screen.screen_id,
+                        goal_xy=goal.interaction_target_xy,
+                        distance_cm=round(distance, 3),
+                        current_yaw=round(pose.yaw_deg, 3),
+                        desired_yaw=goal.desired_yaw_deg,
+                        yaw_error_deg=round(yaw_error, 3),
+                        step=step,
+                    )
+                arrival_pose_age = float(nav.get("arrival_visual_pose_max_age_s", 3.0))
+                if not self.visual_pose_is_fresh(arrival_pose_age):
                     if not self.localize_scan(
-                        reason="before_arrived_at_target"
+                        reason="before_final_yaw_alignment"
                     ):
-                        self.last_navigation_failure_reason = "arrival_visual_localization_required"
+                        self.last_navigation_failure_reason = "final_yaw_visual_localization_required"
                     continue
+                pose = self.state.pose
+                if pose is None:
+                    continue
+                distance = distance_xy(pose.xy(), goal.interaction_target_xy)
+                if distance > radius:
+                    self.active_navigation_phase = "POSITION_NAVIGATION"
+                    self.set_mission_state(MissionState.POSITION_NAVIGATION)
+                    self.debug.event(
+                        "position_navigation_resumed",
+                        screen_id=screen.screen_id,
+                        reason="fresh_pose_outside_arrival_radius",
+                        distance_cm=round(distance, 3),
+                    )
+                    continue
+                signed_yaw_error = angle_diff_deg(goal.desired_yaw_deg, pose.yaw_deg)
+                yaw_error = abs(signed_yaw_error)
+                if yaw_error > yaw_tolerance:
+                    self.active_navigation_plan = {
+                        "goal_type": "final_yaw_alignment",
+                        "navigation_phase": "FINAL_YAW_ALIGNMENT",
+                        "goal_xy": list(goal.interaction_target_xy),
+                        "goal_yaw": goal.desired_yaw_deg,
+                        "current_yaw": pose.yaw_deg,
+                        "yaw_error_deg": signed_yaw_error,
+                        "distance_to_goal_cm": distance,
+                        "path_xy": [list(pose.xy())],
+                        "actions": [],
+                    }
+                    self.debug.event(
+                        "final_yaw_alignment_started",
+                        screen_id=screen.screen_id,
+                        goal_xy=goal.interaction_target_xy,
+                        distance_cm=round(distance, 3),
+                        current_yaw=round(pose.yaw_deg, 3),
+                        desired_yaw=goal.desired_yaw_deg,
+                        yaw_error_deg=round(signed_yaw_error, 3),
+                        tolerance_deg=yaw_tolerance,
+                    )
+                    self.debug.render_map(
+                        self.map,
+                        pose=pose,
+                        path=[pose.xy()],
+                        target_screen=screen,
+                        target_goal=goal,
+                        recovery_waypoint=getattr(self, "active_recovery_waypoint", None),
+                        navigation_plan=self.active_navigation_plan,
+                    )
+                    if not self.map.target_rotation_sweep_clear(
+                        pose.xy(),
+                        float(nav.get("turn_sweep_radius_cm", 10.0)),
+                        float(nav.get("normal_navigation_max_cost", 55.0)),
+                        screen.screen_id,
+                    ):
+                        self.last_navigation_failure_reason = "final_yaw_turn_safety_rejected"
+                        return False
+                    before_pose = self.copy_pose(pose)
+                    general_tolerance = float(nav.get("turn_tolerance_deg", 20.0))
+                    if yaw_error <= general_tolerance:
+                        key = "turn_left_micro" if signed_yaw_error > 0.0 else "turn_right_micro"
+                        result = self.motion.run(key, times_override=1)
+                        turn_ok = self.monitor_turn_result(
+                            before_pose,
+                            goal.desired_yaw_deg,
+                            result,
+                            "final_yaw_alignment",
+                        )
+                    else:
+                        turn_ok = self.turn_toward_yaw_boundary_aware(
+                            goal.desired_yaw_deg
+                        )
+                    self.debug.event(
+                        "final_yaw_alignment_action",
+                        screen_id=screen.screen_id,
+                        desired_yaw=goal.desired_yaw_deg,
+                        yaw_error_deg=round(signed_yaw_error, 3),
+                        ok=bool(turn_ok),
+                    )
+                    if not turn_ok:
+                        return False
+                    continue
+                self.debug.event(
+                    "final_yaw_alignment_complete",
+                    screen_id=screen.screen_id,
+                    goal_xy=goal.interaction_target_xy,
+                    desired_yaw=goal.desired_yaw_deg,
+                    current_yaw=round(pose.yaw_deg, 3),
+                    yaw_error_deg=round(yaw_error, 3),
+                    tolerance_deg=yaw_tolerance,
+                )
                 self.debug.event(
                     "navigate_xy_arrived",
                     reason="target_navigation",
@@ -8179,6 +8292,12 @@ class TaskManager:
                     step=step,
                 )
                 return True
+            if (
+                self.active_navigation_phase != "POSITION_NAVIGATION"
+                or self.mission_state != MissionState.POSITION_NAVIGATION
+            ):
+                self.active_navigation_phase = "POSITION_NAVIGATION"
+                self.set_mission_state(MissionState.POSITION_NAVIGATION)
             if self.near_wall_now(pose) and distance > radius:
                 recovery = self.recover_from_near_wall("target_navigation:near_wall")
                 if recovery == NearWallRecoveryResult.HARDWARE_FAILURE:
@@ -8205,6 +8324,7 @@ class TaskManager:
                 target_screen_id=screen.screen_id,
                 goal_position_tolerance_cm=radius,
                 goal_yaw_tolerance_deg=yaw_tolerance,
+                require_goal_yaw=False,
             )
             metrics = dict(getattr(self.map, "last_action_plan_metrics", {}))
             selected_reverse = bool(
@@ -8250,9 +8370,13 @@ class TaskManager:
                 continue
             self.clear_plan_failure_watchdog("motion_astar_success")
             self.active_navigation_plan = {
-                "goal_type": "motion_astar",
+                "goal_type": "position_navigation",
+                "navigation_phase": "POSITION_NAVIGATION",
                 "goal_xy": list(goal.interaction_target_xy),
                 "goal_yaw": goal.desired_yaw_deg,
+                "goal_yaw_deferred": True,
+                "distance_to_goal_cm": distance,
+                "yaw_error_deg": angle_diff_deg(goal.desired_yaw_deg, pose.yaw_deg),
                 "path_xy": [list(point) for point in plan.path_xy],
                 "actions": [item.as_dict() for item in plan.actions],
             }
@@ -8264,6 +8388,8 @@ class TaskManager:
                 expanded_nodes=metrics.get("expanded_nodes"),
                 total_cost=round(plan.total_cost, 3),
                 turn_cost=round(float(metrics.get("turn_cost", 0.0)), 3),
+                goal_yaw_deferred=True,
+                physical_yaw_lattice_deg=metrics.get("physical_yaw_lattice_deg"),
                 selected_actions=[item.kind for item in plan.actions],
             )
             self.debug.render_map(

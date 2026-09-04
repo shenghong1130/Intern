@@ -63,7 +63,7 @@ The following invariants are mandatory:
 
 ## Navigation and recovery contracts
 
-- Formal target navigation uses Motion-Aware A* over `(x_grid, y_grid, yaw_bin)` and requires both interaction XY and desired yaw. `NavigationPlan.actions` is the authoritative executor input; do not re-derive motion from `path_xy`.
+- Formal target navigation is `POSITION_NAVIGATION → FINAL_YAW_ALIGNMENT`. Motion-Aware A* keeps physical yaw state to interpret translations, but its Screen goal test and heuristic are position-only; desired yaw is checked and corrected only at the interaction XY with a fresh visual Pose. `NavigationPlan.actions` is the authoritative executor input; do not re-derive motion from `path_xy`.
 - Each executed batch is followed by adaptive relocalization and replanning. Above 15 cm, high-confidence forward/strafe may batch; at or below 15 cm execution is single-cycle.
 - Formal navigation never uses `bypass_action_safety=True`. Only the locked target building's soft inflation may be excluded; field bounds, hard occupancy, footprint, unrelated buildings, dynamic obstacles and corridor checks stay active.
 - Normal REVERSE is expandable only within 5 cm of the final goal when the goal is behind, the move reduces goal distance and the rear corridor is safe. Recovery and interaction retreats are independent of this limit.

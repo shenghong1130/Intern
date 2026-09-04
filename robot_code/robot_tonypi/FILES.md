@@ -107,7 +107,7 @@ main.py
 
 - `recover_from_no_tag_if_needed()`：仅连续 genuine `no_tag` 触发；墙边横移，否则 5 cm 后退 + 向内 45° 身体转向，中央复拍最多 3 轮；
 - `evaluate_turn_progress()` / `monitor_turn_result()`：只让可靠视觉 Pose 产生 VERIFIED 结论；不可定位统一为 `PROGRESS_UNVERIFIED`；
-- Motion A* 计划同时记录 configured physical yaw 与 planner quantized yaw，watchdog 只使用前者。
+- 正式位置 A* 使用可被 15° state 精确表示的 ±90° physical quarter-turn macro；action-level yaw lattice 也可细化到 1.5°。预测、dead reckoning 和 watchdog 始终使用配置物理动作角。
 
 #### 途中视觉和目标确认
 
@@ -120,9 +120,9 @@ main.py
 #### 导航
 
 - `plan_navigation_path()`：保留给 debug、fallback 和 Recovery 兼容的二维路径接口；
-- `plan_motion_actions()`：正式目标导航的 `(x_grid,y_grid,yaw_bin)` Motion-Aware A*，同时满足 XY 与 yaw，并重建真实动作序列；
+- `plan_motion_actions()`：正式 `POSITION_NAVIGATION` 的 Motion-Aware A*；yaw 保留在 state 中解释动作世界方向，但 Screen 最终 yaw 不参与位置阶段终点或 heuristic；
 - `navigate_to_xy()`：自适应重定位、动作选择、到达前新鲜视觉 Pose、最终 yaw；
-- `navigate_to_screen()`：一次建立 25 cm XY + desired yaw goal，并进入 `navigate_motion_plan_to_target()`；不再有中途停止/强制 staging 定位；
+- `navigate_to_screen()`：一次建立 25 cm XY + desired yaw goal，并进入 `POSITION_NAVIGATION → FINAL_YAW_ALIGNMENT`；不再有中途 staging；
 - `execute_motion_astar_action()`：直接执行 Planner 的 action key，可合并连续同动作，按 confidence/距离限制 batch，随后定位并重规划；
 - `choose_translation_action()`：前进、短距离正后方倒退和平移；
 - `adaptive_relocalization_decision()`：动作预算、置信度、不确定度、阶段和大转向触发；

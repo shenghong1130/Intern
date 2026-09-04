@@ -1,6 +1,6 @@
 # TonyPi 测试使用说明
 
-本目录包含 11 个离线 `unittest` 模块和 2 个需要人工启动的实机脚本。命令应从包含 `robot_tonypi` 包的 `robot_code` 目录执行。
+本目录包含 12 个离线 `unittest` 模块和 2 个需要人工启动的实机脚本。命令应从包含 `robot_tonypi` 包的 `robot_code` 目录执行。
 
 机器人：
 
@@ -68,7 +68,7 @@ python3 -m unittest robot_tonypi.tests.test_mission_scheduler -v
 
 ## 5. `test_mission_refactor.py`（15 项）
 
-集中检查本次主链路重构：严格场界/真实建筑 Pose gate、soft inflation 合法 Pose、moderate suspect 与 hard jump、失败分类计数、25 cm 两阶段目标评分、locked/exclusion 规则、XY+yaw action-space goal、早转/末转两类规划、turn cost 对真实序列的影响、5 cm normal reverse，以及 Planner action key 被 Executor 原样执行。
+集中检查本次主链路重构：严格场界/真实建筑 Pose gate、soft inflation 合法 Pose、moderate suspect 与 hard jump、失败分类计数、25 cm 目标评分、locked/exclusion 规则、position-only Motion A*、到点后 final-yaw alignment、物理 yaw lattice、无意义转向抑制、5 cm normal reverse，以及 Planner action key 被 Executor 原样执行。
 
 ```bash
 python3 -m unittest robot_tonypi.tests.test_mission_refactor -v
@@ -158,7 +158,15 @@ python3 -m unittest robot_tonypi.tests.test_vision_tag_binding -v
 python3 -m unittest robot_tonypi.tests.test_classifier -v
 ```
 
-## 13. `test_capture_fpga_change.py`：人工实机集成测试
+## 13. `test_target_geometry.py`（3 项）
+
+检查 WEST/EAST/SOUTH/NORTH 的 canonical Screen-facing yaw 分别为 `+5/-175/+95/-85°`，并确认 yaw offset 永不改变 25 cm interaction XY。
+
+```bash
+python3 -m unittest robot_tonypi.tests.test_target_geometry -v
+```
+
+## 14. `test_capture_fpga_change.py`：人工实机集成测试
 
 这个脚本不属于正式任务状态机。操作者必须先把机器人放在正确目标点并正对 Screen。它不做定位和导航，只做：
 
@@ -168,14 +176,14 @@ python3 -m unittest robot_tonypi.tests.test_classifier -v
 → 否则按开关模拟或真实执行 NFC
 ```
 
-### 13.1 无硬件
+### 14.1 无硬件
 
 ```bash
 python3 -u -m robot_tonypi.tests.test_capture_fpga_change \
   --screen-id 2 --target-flower hehua --dry-run
 ```
 
-### 13.2 真实相机和 FPGA，模拟 NFC
+### 14.2 真实相机和 FPGA，模拟 NFC
 
 ```bash
 python3 -u -m robot_tonypi.tests.test_capture_fpga_change \
@@ -184,7 +192,7 @@ python3 -u -m robot_tonypi.tests.test_capture_fpga_change \
   --skip-change
 ```
 
-### 13.3 真实 NFC
+### 14.3 真实 NFC
 
 ```bash
 python3 -u -m robot_tonypi.tests.test_capture_fpga_change \
@@ -196,7 +204,7 @@ python3 -u -m robot_tonypi.tests.test_capture_fpga_change \
 
 只有视觉和分类通过后，操作者再次输入 `EXECUTE 2` 才会发起真实事务。
 
-## 14. `test_capture_15_frames.py`：人工相机采集
+## 15. `test_capture_15_frames.py`：人工相机采集
 
 ```bash
 python3 -u -m robot_tonypi.tests.test_capture_15_frames
@@ -204,7 +212,7 @@ python3 -u -m robot_tonypi.tests.test_capture_15_frames
 
 第 1 张立即拍摄；之后每次按 Enter 拍下一张，输入 `q` 提前结束。默认写入 `/home/pi/capture_15_frames_runs/<timestamp>/`。
 
-## 15. 语法检查与注意事项
+## 16. 语法检查与注意事项
 
 ```bash
 python3 -m compileall -q robot_tonypi

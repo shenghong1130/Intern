@@ -202,6 +202,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "navigation_waypoint_forward_buffer_cm": 16.0,
         "action_planner_enabled": True,
         "action_planner_yaw_bin_deg": 15.0,
+        "action_planner_position_heuristic_weight": 3.0,
         "action_planner_forward_step_cm": 28.0,
         "action_planner_strafe_step_cm": 12.0,
         "action_planner_forward_cost": 1.0,

@@ -9,8 +9,9 @@
 → 初始 AprilTag 定位
 → SELECT_NEAREST_TARGET
 → 按“最近距离窗口 + 朝向惩罚”锁定 TargetGoal
-→ Motion-Aware A* 以 (x_grid, y_grid, yaw_bin) 规划到墙面外 25 cm interaction point + desired yaw
+→ POSITION_NAVIGATION：Motion-Aware A* 以 (x_grid, y_grid, physical-yaw state) 只规划到墙面外 25 cm interaction XY
 → Executor 直接执行规划出的 FORWARD / STRAFE / TURN / 受限 REVERSE，动作 batch 后按策略定位并重规划
+→ FINAL_YAW_ALIGNMENT：到点并取得 fresh visual Pose 后，再原地校正 Screen-facing desired yaw
 → 实时确认当前 Tag
 → 使用 15 秒内同 ID 的 Tag↔Screen 分类缓存，或有限拍摄新帧
 → flower == target：ALREADY_TARGET，不执行 final forward / NFC
@@ -130,13 +131,14 @@ cp /home/pi/robot_tonypi/action_groups/*.d6a /home/pi/TonyPi/ActionGroups/
 | 每目标最大导航步骤 | `80` |
 | 普通导航最小 clearance | `25 cm` |
 | 相同规划失败升级阈值 | `3` |
+| position heuristic 权重 | `3.0` |
 | `forward_fast` | `3.5 cm/周期` |
 | `forward_micro` | `2.0 cm/周期` |
 | `back_fast` | `-2.5 cm/周期` |
 | 左/右平移 | `+4.0 / -3.0 cm/周期` |
 | 大左/右转模型 | `+15 / -18°/逻辑动作` |
 
-`navigate_to_screen()` 只建立一次正式 goal：`interaction_target_xy + desired_yaw_deg`。`MapModel.plan_motion_actions()` 返回带预测起止 Pose、动作 key、周期数和代价的 `NavigationPlan`；Executor 不再根据 XY waypoint 猜动作。当前目标建筑的软 inflation 可在这条规划中豁免，但场界、真实建筑 hard occupancy、机器人 footprint、无关建筑、动态障碍和 corridor 检查始终生效。
+`navigate_to_screen()` 只建立一次正式 goal：`interaction_target_xy + desired_yaw_deg`，但分两阶段消费它。`POSITION_NAVIGATION` 的 `MapModel.plan_motion_actions()` 保留 yaw state 来正确解释 forward/strafe/reverse 的世界方向，终点条件和 heuristic 只面向 interaction XY；为限制搜索规模并避免细碎 turn/translate 折线，位置阶段只扩展对称的物理 ±90° quarter-turn macro，Executor 仍按 `turn_*_fast` 的真实 7.5°/cycle 分批执行并重规划。`FINAL_YAW_ALIGNMENT` 在 XY 到达且视觉 Pose 新鲜后才校正最终 yaw。Planner 返回带物理预测起止 Pose、动作 key、周期数和代价的 `NavigationPlan`；Executor 不再根据 XY waypoint 猜动作。当前目标建筑的软 inflation 可在这条规划中豁免，但场界、真实建筑 hard occupancy、机器人 footprint、无关建筑、动态障碍和 corridor 检查始终生效。
 
 自适应重定位使用动作数、运动不确定度、Pose 置信度和导航阶段：
 
@@ -331,7 +333,7 @@ shuixianhua taohua yinghua yuanweihua zijinghua
 - 初始定位失败不会立即退出；主循环反复执行初始搜索，直到得到 Pose 或全局 timeout。
 - `no_tag` 与“看见 Tag 但没有 Pose”分开计数；只有完整扫描连续 2 次零 Tag 才启动专用恢复。墙边优先安全横移，普通位置后退约 5 cm 并向场内身体转约 45°，每轮只先做中央复拍，最多 3 轮后升级全局恢复。
 - Turn watchdog 区分 `VERIFIED_PROGRESS`、`PROGRESS_UNVERIFIED` 和 `VERIFIED_NO_PROGRESS`；无可信 post-turn Pose 不增加 verified-no-progress counter，也不能产生 `RECOVERY_NO_PROGRESS`。
-- Motion A* 的 15° yaw bin 可能把物理 `-18°` 动作量化成 `-30°` transition；硬件、dead reckoning 和 watchdog 始终使用动作配置的物理 yaw，日志分别显示两者。
+- 正式位置搜索的 ±90° quarter-turn 可由 15° state 精确表示；若 action-level planner 使用标定 primitive，则会把请求的 15° 自动细化到可精确表示全部转角的 1.5° lattice。无论哪种模式，`NavigationPlan`、Executor、dead reckoning 和 watchdog 都按配置物理角重建，`-18°` 不再变成虚构的 `-30°` 预测。
 - 正式目标规划使用 Motion-Aware A*；相同输入失败 3 次后仍按既有规则升级到 interior recovery。普通二维 A* 保留给 debug、fallback 和 Recovery 兼容。
 - near-wall 恢复顺序为后退、左右平移、小转向；普通动作全被拒绝时可进入 bounded forced escape。真实动作后会重新定位。
 - 单个导航目标失败进入临时失败集合，不是永久黑名单；所有未完成目标都临时失败时执行全局恢复并释放它们。

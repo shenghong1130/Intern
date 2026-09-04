@@ -1,6 +1,7 @@
 from pathlib import Path
 from types import SimpleNamespace
 import ast
+import math
 import sys
 import unittest
 from unittest import mock
@@ -208,7 +209,10 @@ class TargetStandoffFlowTests(unittest.TestCase):
                 25.0,
             )
             self.assertEqual(item.navigation_staging_xy, item.interaction_target_xy)
-            base_yaw = ((item.normal_yaw_deg + 360.0) % 360.0) - 180.0
+            base_yaw = math.degrees(math.atan2(
+                -item.cardinal_normal_xy[1], -item.cardinal_normal_xy[0]
+            ))
+            base_yaw = ((base_yaw + 180.0) % 360.0) - 180.0
             expected_yaw = ((base_yaw + yaw_offset + 180.0) % 360.0) - 180.0
             self.assertAlmostEqual(item.task_target_yaw_deg, expected_yaw)
         west = model.screens[1]

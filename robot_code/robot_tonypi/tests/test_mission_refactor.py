@@ -22,6 +22,7 @@ from robot_tonypi.models import (
 )
 from robot_tonypi.motion import RobotState
 from robot_tonypi.task_manager import TaskManager
+from robot_tonypi.utils import now_s
 
 
 class DebugStub:
@@ -211,7 +212,7 @@ class MotionAStarTests(unittest.TestCase):
         model.last_action_plan_metrics = {}
         return model, config
 
-    def test_goal_requires_xy_and_yaw_and_returns_actions(self):
+    def test_position_goal_does_not_require_final_screen_yaw(self):
         model, config = self.open_model()
         start = RobotPose(102.5, 102.5, 0.0, Confidence.HIGH, "TEST", 1.0)
         plan = model.plan_motion_actions(
@@ -219,11 +220,8 @@ class MotionAStarTests(unittest.TestCase):
             goal_position_tolerance_cm=1.0, goal_yaw_tolerance_deg=10.0,
         )
         self.assertIsNotNone(plan)
-        self.assertTrue(plan.actions)
-        self.assertTrue(all(item.kind.startswith("turn_") for item in plan.actions))
-        self.assertLessEqual(
-            abs(plan.actions[-1].predicted_end_pose.yaw_deg - 90.0), 10.0
-        )
+        self.assertEqual(plan.actions, [])
+        self.assertFalse(plan.metrics["require_goal_yaw"])
 
     def test_normal_reverse_is_only_expanded_within_five_cm(self):
         model, config = self.open_model()
@@ -241,19 +239,29 @@ class MotionAStarTests(unittest.TestCase):
         self.assertIsNotNone(far)
         self.assertNotEqual(far.actions[0].kind, "reverse")
 
-    def test_planner_can_translate_then_finish_with_turns(self):
+    def test_final_yaw_does_not_change_position_plan(self):
         model, config = self.open_model()
         start = RobotPose(102.5, 102.5, 0.0, Confidence.HIGH, "TEST", 1.0)
-        plan = model.plan_motion_actions(
+        east_facing = model.plan_motion_actions(
             start, (130.0, 102.5), 90.0,
             config["navigation"], config["motion"],
             goal_position_tolerance_cm=4.0, goal_yaw_tolerance_deg=10.0,
         )
-        self.assertIsNotNone(plan)
-        self.assertEqual(plan.actions[0].kind, "forward")
-        self.assertTrue(plan.actions[-1].kind.startswith("turn_"))
+        west_facing = model.plan_motion_actions(
+            start, (130.0, 102.5), -90.0,
+            config["navigation"], config["motion"],
+            goal_position_tolerance_cm=4.0, goal_yaw_tolerance_deg=10.0,
+        )
+        self.assertIsNotNone(east_facing)
+        self.assertIsNotNone(west_facing)
+        self.assertEqual(
+            [item.kind for item in east_facing.actions],
+            [item.kind for item in west_facing.actions],
+        )
+        self.assertEqual(east_facing.path_xy, west_facing.path_xy)
+        self.assertTrue(all(not item.kind.startswith("turn_") for item in east_facing.actions))
 
-    def test_planner_can_turn_early_then_translate(self):
+    def test_position_planner_keeps_yaw_state_for_world_motion(self):
         model, config = self.open_model()
         start = RobotPose(102.5, 102.5, 0.0, Confidence.HIGH, "TEST", 1.0)
         plan = model.plan_motion_actions(
@@ -262,10 +270,76 @@ class MotionAStarTests(unittest.TestCase):
             goal_position_tolerance_cm=4.0, goal_yaw_tolerance_deg=10.0,
         )
         self.assertIsNotNone(plan)
-        self.assertTrue(plan.actions[0].kind.startswith("turn_"))
-        self.assertTrue(any(not item.kind.startswith("turn_") for item in plan.actions[1:]))
+        self.assertTrue(plan.actions)
+        self.assertTrue(all(item.kind.startswith("strafe_") for item in plan.actions))
 
-    def test_turn_cost_changes_the_real_action_sequence(self):
+    def test_physical_turn_angle_is_not_distorted_by_requested_yaw_bin(self):
+        model, config = self.open_model()
+        start = RobotPose(102.5, 102.5, 0.0, Confidence.HIGH, "TEST", 1.0)
+        plan = model.plan_motion_actions(
+            start, start.xy(), -18.0,
+            config["navigation"], config["motion"],
+            goal_position_tolerance_cm=1.0,
+            goal_yaw_tolerance_deg=0.5,
+            require_goal_yaw=True,
+        )
+        self.assertIsNotNone(plan)
+        self.assertEqual([item.kind for item in plan.actions], ["turn_right_large"])
+        action = plan.actions[0]
+        self.assertAlmostEqual(action.predicted_yaw_deg, -18.0)
+        self.assertAlmostEqual(action.configured_yaw_deg, -18.0)
+        self.assertAlmostEqual(action.predicted_end_pose.yaw_deg, -18.0)
+        self.assertEqual(plan.metrics["requested_yaw_bin_deg"], 15.0)
+        self.assertEqual(plan.metrics["physical_yaw_lattice_deg"], 1.5)
+
+    def test_screen_navigation_aligns_yaw_only_after_position_arrival(self):
+        manager = bare_manager()
+        screen = manager.map.screens[3]
+        goal = manager.lock_target_goal(screen)
+        stamp = now_s()
+        manager.state.set_pose(RobotPose(
+            goal.interaction_target_xy[0],
+            goal.interaction_target_xy[1],
+            0.0,
+            Confidence.HIGH,
+            "VISION",
+            stamp,
+        ))
+        manager.last_localize_success_s = stamp
+        manager.time_left_s = lambda: 100.0
+        manager.localize_scan = lambda *args, **kwargs: self.fail(
+            "fresh arrival pose should be used"
+        )
+        manager.map.plan_motion_actions = lambda *args, **kwargs: self.fail(
+            "position A* must not run after XY arrival"
+        )
+        manager.map.target_rotation_sweep_clear = lambda *args, **kwargs: True
+        turns = []
+
+        def align(target_yaw):
+            turns.append(target_yaw)
+            manager.state.set_pose(RobotPose(
+                goal.interaction_target_xy[0],
+                goal.interaction_target_xy[1],
+                target_yaw,
+                Confidence.HIGH,
+                "VISION",
+                now_s(),
+            ))
+            manager.last_localize_success_s = now_s()
+            return True
+
+        manager.turn_toward_yaw_boundary_aware = align
+        self.assertTrue(manager.navigate_motion_plan_to_target(screen, goal))
+        self.assertEqual(turns, [goal.desired_yaw_deg])
+        names = [name for name, _ in manager.debug.events]
+        self.assertLess(
+            names.index("position_navigation_arrived"),
+            names.index("final_yaw_alignment_started"),
+        )
+        self.assertIn("final_yaw_alignment_complete", names)
+
+    def test_position_planner_avoids_gratuitous_turns_for_lateral_goal(self):
         model, config = self.open_model()
         start = RobotPose(102.5, 102.5, 0.0, Confidence.HIGH, "TEST", 1.0)
         low = copy.deepcopy(config["navigation"])
@@ -287,7 +361,7 @@ class MotionAStarTests(unittest.TestCase):
         )
         self.assertIsNotNone(low_plan)
         self.assertIsNotNone(high_plan)
-        self.assertTrue(any(item.kind.startswith("turn_") for item in low_plan.actions))
+        self.assertTrue(all(item.kind.startswith("strafe_") for item in low_plan.actions))
         self.assertTrue(all(item.kind.startswith("strafe_") for item in high_plan.actions))
 
     def test_executor_runs_planned_action_key(self):

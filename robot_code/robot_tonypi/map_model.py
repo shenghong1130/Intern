@@ -731,12 +731,41 @@ class MapModel:
         yaw = normalize_angle_deg(yaw_deg)
         return int(round((yaw % 360.0) / yaw_bin_deg)) % yaw_bins
 
-    def yaw_from_action_bin(self, yaw_idx: int, yaw_bin_deg: float) -> float:
-        return normalize_angle_deg(float(yaw_idx) * yaw_bin_deg)
+    def yaw_from_action_bin(
+        self,
+        yaw_idx: int,
+        yaw_bin_deg: float,
+        yaw_origin_deg: float = 0.0,
+    ) -> float:
+        return normalize_angle_deg(float(yaw_origin_deg) + float(yaw_idx) * yaw_bin_deg)
 
     def yaw_delta_to_bins(self, yaw_delta_deg: float, yaw_bin_deg: float) -> int:
         sign = 1 if yaw_delta_deg >= 0.0 else -1
-        return sign * max(1, int(math.ceil(abs(float(yaw_delta_deg)) / max(1.0, yaw_bin_deg))))
+        return sign * max(1, int(round(abs(float(yaw_delta_deg)) / max(1e-6, yaw_bin_deg))))
+
+    def action_planner_yaw_lattice_deg(
+        self,
+        requested_bin_deg: float,
+        actions: List[dict],
+    ) -> float:
+        """Return a yaw lattice that represents every physical turn exactly.
+
+        ``action_planner_yaw_bin_deg`` remains an upper bound on coarseness.
+        Refining it by the GCD of the configured action angles prevents a
+        physical 7.5/-18 degree turn from becoming a fictitious 15/-30 degree
+        turn inside the planner.
+        """
+        scale = 1000
+        units = [360 * scale, max(1, int(round(abs(float(requested_bin_deg)) * scale)))]
+        units.extend(
+            max(1, int(round(abs(float(action.get("yaw_deg", 0.0))) * scale)))
+            for action in actions
+            if abs(float(action.get("yaw_deg", 0.0))) > 1e-9
+        )
+        lattice_units = units[0]
+        for value in units[1:]:
+            lattice_units = math.gcd(lattice_units, value)
+        return lattice_units / float(scale)
 
     def action_planner_actions(self, navigation_cfg: dict, motion_cfg: dict) -> List[dict]:
         motion_actions = motion_cfg.get("actions", {})
@@ -764,6 +793,9 @@ class MapModel:
         path_reversal_penalty = max(
             0.0, float(navigation_cfg.get("action_planner_path_reversal_penalty_cm", 35.0))
         )
+        action_switch_penalty = max(
+            0.0, float(navigation_cfg.get("normal_path_action_switch_penalty_cm", 10.0))
+        )
         away_from_goal_scale = max(
             0.0, float(navigation_cfg.get("action_planner_away_from_goal_penalty_scale", 2.0))
         )
@@ -777,6 +809,7 @@ class MapModel:
                 "yaw_deg": 0.0,
                 "base_cost": forward_step * forward_cost,
                 "motion_code": 1,
+                "action_switch_penalty": action_switch_penalty,
                 "path_reversal_penalty": path_reversal_penalty,
                 "away_from_goal_penalty_scale": away_from_goal_scale,
             },
@@ -794,6 +827,7 @@ class MapModel:
                     abs(float(motion_actions.get("forward_fast", {}).get("forward_cm", 3.5))) * 2.0,
                 ) * forward_cost,
                 "motion_code": 1,
+                "action_switch_penalty": action_switch_penalty,
                 "path_reversal_penalty": path_reversal_penalty,
                 "away_from_goal_penalty_scale": away_from_goal_scale,
             },
@@ -805,6 +839,7 @@ class MapModel:
                 "yaw_deg": 0.0,
                 "base_cost": strafe_step * strafe_cost,
                 "motion_code": 2,
+                "action_switch_penalty": action_switch_penalty,
                 "path_reversal_penalty": path_reversal_penalty,
                 "away_from_goal_penalty_scale": away_from_goal_scale,
             },
@@ -816,6 +851,7 @@ class MapModel:
                 "yaw_deg": 0.0,
                 "base_cost": strafe_step * strafe_cost,
                 "motion_code": -2,
+                "action_switch_penalty": action_switch_penalty,
                 "path_reversal_penalty": path_reversal_penalty,
                 "away_from_goal_penalty_scale": away_from_goal_scale,
             },
@@ -831,6 +867,7 @@ class MapModel:
                     "yaw_deg": 0.0,
                     "base_cost": reverse_step * reverse_cost,
                     "motion_code": -1,
+                    "action_switch_penalty": action_switch_penalty,
                     "path_reversal_penalty": path_reversal_penalty,
                     "away_from_goal_penalty_scale": away_from_goal_scale,
                 },
@@ -893,6 +930,8 @@ class MapModel:
         target_screen_id: Optional[int] = None,
         safety_cache: Optional[dict] = None,
         allow_start_escape: bool = False,
+        yaw_origin_deg: float = 0.0,
+        penalize_consecutive_turns: bool = True,
     ):
         gx, gy, yaw_idx = state[:3]
         previous_turn_sign = int(state[3]) if len(state) >= 4 else 0
@@ -926,13 +965,15 @@ class MapModel:
             turn_cost = float(action["base_cost"])
             if not at_goal_xy:
                 turn_cost += float(action.get("in_place_turn_penalty", 0.0))
-            if previous_turn_sign == turn_sign:
+            if penalize_consecutive_turns and previous_turn_sign == turn_sign:
                 turn_cost += float(action.get("consecutive_turn_penalty", 0.0))
             elif previous_turn_sign == -turn_sign:
                 turn_cost += float(action.get("reverse_turn_penalty", 0.0))
             return (gx, gy, (yaw_idx + bin_delta) % yaw_bins, turn_sign, previous_motion_code), turn_cost
 
-        yaw = math.radians(self.yaw_from_action_bin(yaw_idx, yaw_bin_deg))
+        yaw = math.radians(self.yaw_from_action_bin(
+            yaw_idx, yaw_bin_deg, yaw_origin_deg
+        ))
         left_yaw = yaw + math.pi / 2.0
         next_xy = (
             current_xy[0]
@@ -994,8 +1035,10 @@ class MapModel:
         )
         move_cost += clearance_deficit * float(wall_clearance_penalty_scale)
         motion_code = int(action.get("motion_code", 0))
-        if previous_motion_code and motion_code == -previous_motion_code:
-            move_cost += float(action.get("path_reversal_penalty", 0.0))
+        if previous_motion_code and motion_code != previous_motion_code:
+            move_cost += float(action.get("action_switch_penalty", 0.0))
+            if motion_code == -previous_motion_code:
+                move_cost += float(action.get("path_reversal_penalty", 0.0))
         if goal_node is not None:
             goal_xy = self.xy_from_grid(tuple(goal_node))
             away_cm = max(0.0, distance_xy(next_xy, goal_xy) - distance_xy(current_xy, goal_xy))
@@ -1013,14 +1056,22 @@ class MapModel:
         target_screen_id: Optional[int] = None,
         goal_position_tolerance_cm: Optional[float] = None,
         goal_yaw_tolerance_deg: Optional[float] = None,
+        require_goal_yaw: bool = False,
     ) -> Optional[NavigationPlan]:
-        """Plan executable TonyPi actions in ``(x_grid, y_grid, yaw_bin)`` space."""
+        """Plan executable TonyPi actions to a goal XY.
+
+        Yaw remains part of the search state because it determines the world
+        direction of forward/strafe/reverse.  Formal Screen navigation leaves
+        ``require_goal_yaw`` false and aligns the final Screen-facing yaw only
+        after reaching the interaction XY.
+        """
         start_xy = start_pose.xy()
         self.last_action_plan_metrics = {
             "reason": "started",
             "expanded_nodes": 0,
             "goal_xy": list(goal_xy),
             "goal_yaw_deg": float(goal_yaw_deg),
+            "require_goal_yaw": bool(require_goal_yaw),
             "reverse_allowed": 0,
             "reverse_rejected": 0,
         }
@@ -1031,14 +1082,43 @@ class MapModel:
             self.last_action_plan_metrics["reason"] = "goal_not_physically_free"
             return None
 
-        yaw_bin_deg = max(5.0, float(navigation_cfg.get("action_planner_yaw_bin_deg", 15.0)))
+        requested_yaw_bin_deg = max(
+            1.0, float(navigation_cfg.get("action_planner_yaw_bin_deg", 15.0))
+        )
+        all_actions = self.action_planner_actions(navigation_cfg, motion_cfg)
+        if require_goal_yaw:
+            actions = all_actions
+        else:
+            # Forward plus left/right strafe already spans the robot's local
+            # plane.  Position search therefore needs only a physical quarter
+            # turn to expose the otherwise unavailable rearward direction.
+            # This avoids exploring hundreds of tiny-yaw variants and avoids
+            # turn/translate/turn zigzags that do not improve XY progress.
+            actions = [
+                action for action in all_actions
+                if abs(float(action.get("yaw_deg", 0.0))) <= 1e-9
+            ]
+            turn_fixed = max(0.0, float(
+                navigation_cfg.get("action_planner_turn_fixed_cost_cm", 20.0)
+            ))
+            turn_per_deg = max(0.0, float(
+                navigation_cfg.get("action_planner_turn_cost_cm_per_deg", 0.8)
+            ))
+            for name, yaw_deg in (("turn_left_small", 90.0), ("turn_right_small", -90.0)):
+                source = next(action for action in all_actions if action.get("name") == name)
+                quarter_turn = dict(source)
+                quarter_turn["yaw_deg"] = yaw_deg
+                quarter_turn["base_cost"] = turn_fixed + abs(yaw_deg) * turn_per_deg
+                actions.append(quarter_turn)
+        yaw_bin_deg = self.action_planner_yaw_lattice_deg(
+            requested_yaw_bin_deg, actions
+        )
         yaw_bins = max(8, int(round(360.0 / yaw_bin_deg)))
         yaw_bin_deg = 360.0 / float(yaw_bins)
+        yaw_origin_deg = normalize_angle_deg(start_pose.yaw_deg)
         start_grid = self.grid_pos(start_xy)
         start_state = (
-            start_grid[0], start_grid[1],
-            self.yaw_to_action_bin(start_pose.yaw_deg, yaw_bin_deg, yaw_bins),
-            0, 0,
+            start_grid[0], start_grid[1], 0, 0, 0,
         )
         goal_node = self.grid_pos(goal_xy)
         position_tolerance = max(0.1, float(
@@ -1058,14 +1138,18 @@ class MapModel:
             float(navigation_cfg.get("normal_navigation_max_cost", 55.0)),
             float(self.cfg["map"].get("obstacle_cost_max", 80.0)),
         )
-        actions = self.action_planner_actions(navigation_cfg, motion_cfg)
         obstacle_scale = max(0.0, float(navigation_cfg.get("action_planner_obstacle_cost_scale", 1.0)))
         half_width = max(0.0, float(navigation_cfg.get("translation_corridor_half_width_cm", 0.0)))
         clearance_target = max(0.0, float(navigation_cfg.get("action_planner_wall_clearance_target_cm", 0.0)))
         clearance_scale = max(0.0, float(navigation_cfg.get("action_planner_wall_clearance_penalty_scale", 0.0)))
         turn_radius = max(0.0, float(navigation_cfg.get("turn_sweep_radius_cm", 0.0)))
 
-        target_yaw_idx = self.yaw_to_action_bin(goal_yaw_deg, yaw_bin_deg, yaw_bins)
+        target_yaw_idx = self.yaw_to_action_bin(
+            angle_diff_deg(goal_yaw_deg, yaw_origin_deg), yaw_bin_deg, yaw_bins
+        )
+        position_heuristic_weight = max(1.0, float(
+            navigation_cfg.get("action_planner_position_heuristic_weight", 3.0)
+        ))
         turn_cost_per_bin = []
         for candidate_action in actions:
             yaw_delta = float(candidate_action.get("yaw_deg", 0.0))
@@ -1080,12 +1164,14 @@ class MapModel:
         minimum_turn_cost_per_bin = min(turn_cost_per_bin or [0.0])
 
         def heuristic_for(state, xy):
-            raw_bins = abs(int(state[2]) - target_yaw_idx)
-            yaw_bins_away = min(raw_bins, yaw_bins - raw_bins)
-            return (
-                distance_xy(xy, goal_xy)
-                + yaw_bins_away * minimum_turn_cost_per_bin
+            heuristic = distance_xy(xy, goal_xy) * (
+                1.0 if require_goal_yaw else position_heuristic_weight
             )
+            if require_goal_yaw:
+                raw_bins = abs(int(state[2]) - target_yaw_idx)
+                yaw_bins_away = min(raw_bins, yaw_bins - raw_bins)
+                heuristic += yaw_bins_away * minimum_turn_cost_per_bin
+            return heuristic
 
         start_h = heuristic_for(start_state, self.xy_from_grid(start_grid))
         open_heap = [(start_h, 0, start_state)]
@@ -1105,10 +1191,15 @@ class MapModel:
             closed.add(current)
             expansions += 1
             current_xy = self.xy_from_grid((current[0], current[1]))
-            current_yaw = self.yaw_from_action_bin(current[2], yaw_bin_deg)
+            current_yaw = self.yaw_from_action_bin(
+                current[2], yaw_bin_deg, yaw_origin_deg
+            )
             if (
                 distance_xy(current_xy, goal_xy) <= position_tolerance
-                and abs(angle_diff_deg(goal_yaw_deg, current_yaw)) <= yaw_tolerance
+                and (
+                    not require_goal_yaw
+                    or abs(angle_diff_deg(goal_yaw_deg, current_yaw)) <= yaw_tolerance
+                )
             ):
                 final_state = current
                 break
@@ -1142,6 +1233,8 @@ class MapModel:
                     target_screen_id=target_screen_id,
                     safety_cache=safety_cache,
                     allow_start_escape=True,
+                    yaw_origin_deg=yaw_origin_deg,
+                    penalize_consecutive_turns=bool(require_goal_yaw),
                 )
                 if transition is None:
                     if action.get("name") == "reverse":
@@ -1189,14 +1282,16 @@ class MapModel:
         planned_actions = []
         path_xy = [start_xy]
         turn_cost = 0.0
+        physical_pose = RobotPose(
+            float(start_pose.x_cm),
+            float(start_pose.y_cm),
+            normalize_angle_deg(start_pose.yaw_deg),
+            source="MOTION_ASTAR_PHYSICAL_MODEL",
+        )
         for before, after, action, action_cost in chain:
             action_name = str(action["name"])
             kind = str(action.get("kind", action_name))
             key = key_for_name.get(action_name, key_for_name.get(kind))
-            before_xy = self.xy_from_grid((before[0], before[1]))
-            after_xy = self.xy_from_grid((after[0], after[1]))
-            before_yaw = self.yaw_from_action_bin(before[2], yaw_bin_deg)
-            after_yaw = self.yaw_from_action_bin(after[2], yaw_bin_deg)
             if kind == "forward" or kind == "reverse":
                 unit = abs(float(motion_actions[key].get("forward_cm", 1.0)))
                 amount = abs(float(action.get("forward_cm", 0.0)))
@@ -1208,24 +1303,42 @@ class MapModel:
                 amount = abs(float(action.get("yaw_deg", 0.0)))
                 turn_cost += action_cost
             cycles = max(1, int(round(amount / max(0.1, unit))))
-            start_pred = RobotPose(before_xy[0], before_xy[1], before_yaw, source="MOTION_ASTAR")
-            end_pred = RobotPose(after_xy[0], after_xy[1], after_yaw, source="MOTION_ASTAR")
+            spec = motion_actions[key]
+            start_pred = RobotPose(
+                physical_pose.x_cm,
+                physical_pose.y_cm,
+                physical_pose.yaw_deg,
+                source="MOTION_ASTAR_PHYSICAL_MODEL",
+            )
+            forward_cm = float(spec.get("forward_cm", 0.0)) * cycles
+            lateral_cm = float(spec.get("lateral_cm", 0.0)) * cycles
+            yaw_deg = float(spec.get("yaw_deg", 0.0)) * cycles
+            yaw_rad = math.radians(start_pred.yaw_deg)
+            left_rad = yaw_rad + math.pi / 2.0
+            end_pred = RobotPose(
+                start_pred.x_cm
+                + forward_cm * math.cos(yaw_rad)
+                + lateral_cm * math.cos(left_rad),
+                start_pred.y_cm
+                + forward_cm * math.sin(yaw_rad)
+                + lateral_cm * math.sin(left_rad),
+                normalize_angle_deg(start_pred.yaw_deg + yaw_deg),
+                source="MOTION_ASTAR_PHYSICAL_MODEL",
+            )
             planned_actions.append(PlannedNavigationAction(
                 kind=kind,
                 action_key=key,
                 cycles=cycles,
                 predicted_start_pose=start_pred,
                 predicted_end_pose=end_pred,
-                predicted_distance_cm=distance_xy(before_xy, after_xy),
-                configured_yaw_deg=(
-                    float(motion_actions[key].get("yaw_deg", 0.0)) * cycles
-                    if kind.startswith("turn_") else 0.0
-                ),
-                predicted_yaw_deg=angle_diff_deg(after_yaw, before_yaw),
+                predicted_distance_cm=distance_xy(start_pred.xy(), end_pred.xy()),
+                configured_yaw_deg=yaw_deg,
+                predicted_yaw_deg=angle_diff_deg(end_pred.yaw_deg, start_pred.yaw_deg),
                 cost=action_cost,
             ))
-            if distance_xy(path_xy[-1], after_xy) > 0.1:
-                path_xy.append(after_xy)
+            physical_pose = end_pred
+            if distance_xy(path_xy[-1], end_pred.xy()) > 0.1:
+                path_xy.append(end_pred.xy())
         metrics = dict(self.last_action_plan_metrics)
         metrics.update({
             "reason": "success",
@@ -1234,6 +1347,10 @@ class MapModel:
             "selected_actions": [item.kind for item in planned_actions],
             "goal_position_tolerance_cm": position_tolerance,
             "goal_yaw_tolerance_deg": yaw_tolerance,
+            "require_goal_yaw": bool(require_goal_yaw),
+            "requested_yaw_bin_deg": requested_yaw_bin_deg,
+            "physical_yaw_lattice_deg": yaw_bin_deg,
+            "position_heuristic_weight": position_heuristic_weight,
         })
         self.last_action_plan_metrics = metrics
         return NavigationPlan(

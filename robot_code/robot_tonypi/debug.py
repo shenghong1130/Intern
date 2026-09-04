@@ -59,12 +59,13 @@ const statusZh={UNKNOWN:'未知',NEEDS_CHANGE:'需要换花',INTERACTING:'交互
 const modeZh={mission:'完整任务',localize:'仅定位',harvest:'仅扫描识别'};
 const phaseZh={idle:'空闲',transaction_start:'交互开始',stand:'站立',left_hand_lifted:'左手已举起',worker_request_sent:'已发送 Worker 请求',worker_response:'收到 Worker 响应',transaction_end:'交互结束'};
 const reasonZh={target_confirmation_missing:'缺少任务点目标确认',confirmation_screen_mismatch:'确认屏幕不匹配',confirmation_tag_mismatch:'确认Tag不匹配',confirmation_binding_missing:'确认时Tag与屏幕未绑定',visual_authorization_missing:'缺少目标视觉授权',authorization_screen_mismatch:'授权屏幕不匹配',authorization_tag_mismatch:'授权 Tag 不匹配',authorization_binding_missing:'Tag 与屏幕未绑定',authorization_flower_mismatch:'授权花朵结果不匹配',flower_unknown:'花朵未知',already_target:'已是目标花',flower_changed_since_capture:'拍摄后花朵状态改变',target_lock_mismatch:'当前目标锁不匹配',target_not_arrived:'当前目标未到达'};
-const eventZh={mission_state:'任务状态',navigation_mode:'导航模式',target_geometry_created:'25cm目标位姿已生成',target_navigation_started:'开始导航至25cm目标位姿',interaction_target_arrived:'已到达25cm目标位姿',localization_pose_physical_rejected:'物理位姿拒绝',pose_outside_field:'位姿超出场地',pose_inside_building:'位姿落入真实建筑',pose_jump_rejected:'极端位姿跳变拒绝',tag_seen_pose_unavailable:'看到Tag但无法获得可信位姿',target_selection_candidate:'目标候选评分',motion_astar_started:'Motion A*开始',motion_astar_success:'Motion A*成功',motion_astar_failed:'Motion A*失败',planned_action:'规划动作',planner_action_yaw_model:'规划与物理转角模型',executed_action:'执行规划动作',reverse_allowed:'允许短后退',reverse_rejected:'拒绝普通后退',transit_bindings_updated:'途中几何绑定更新',arrived_at_target:'已到达当前目标',target_tag_and_screen_confirmed:'目标Tag与屏幕确认',target_visual_authorized:'FPGA视觉授权成功',target_visual_confirmation_failed:'目标视觉确认失败',target_classification_failed:'当前目标分类失败',classifier_gate_blocked:'分类入口阻止',target_final_forward_started:'开始最终前进',target_final_forward_done:'已完成最终前进',target_final_forward_failed:'最终前进动作失败',screen_needs_change:'屏幕需要换花',already_target:'已是目标花',target_selected:'已选择目标',interaction_safety_gate_blocked:'交互授权阻止',interaction_changed:'换花成功',interaction_not_changed:'换花未成功',interaction_exception:'交互异常',left_hand_lifted:'左手已举起',worker_request_sent:'已发送 Worker 请求',worker_response:'收到 Worker 响应',navigate_failed:'导航失败',localize_failed:'定位失败',pose_update:'定位已更新',action:'执行动作',recovery_start:'开始恢复',recovery_done:'恢复完成',turn_no_progress:'转向无进展',turn_progress_verified:'转向进展已验证',turn_progress_unverified:'转向进展无法验证',turn_progress_no_progress:'转向确认无进展',suspect_stale_pose_after_turn:'转向后疑似旧位姿',turn_direction_conflict:'转向方向冲突',scan_after_turn_pose_rejected:'拒绝转向后视觉位姿',turn_progress_relocalize:'转向进展强制重定位',turn_progress_failed:'转向进展失败',turn_progress_restored:'转向进展恢复',no_tag_recovery_triggered:'启动无Tag恢复',no_tag_recovery_context:'无Tag恢复上下文',no_tag_recovery_backoff:'无Tag恢复后退',no_tag_recovery_strafe:'无Tag恢复横移',no_tag_recovery_turn:'无Tag恢复身体转向',no_tag_recovery_scan:'无Tag恢复中央复拍',no_tag_recovery_success:'无Tag恢复成功',no_tag_recovery_exhausted:'无Tag恢复次数耗尽'};
+const eventZh={mission_state:'任务状态',navigation_mode:'导航模式',target_geometry_created:'25cm目标位姿已生成',target_navigation_started:'开始导航至25cm目标位姿',position_navigation_started:'位置导航开始',position_navigation_arrived:'位置导航到点',position_navigation_resumed:'位置导航恢复',final_yaw_alignment_started:'最终朝向校正开始',final_yaw_alignment_action:'执行最终朝向动作',final_yaw_alignment_complete:'最终朝向校正完成',interaction_target_arrived:'已到达25cm目标位姿',localization_pose_physical_rejected:'物理位姿拒绝',pose_outside_field:'位姿超出场地',pose_inside_building:'位姿落入真实建筑',pose_jump_rejected:'极端位姿跳变拒绝',tag_seen_pose_unavailable:'看到Tag但无法获得可信位姿',target_selection_candidate:'目标候选评分',motion_astar_started:'Motion A*开始',motion_astar_success:'Motion A*成功',motion_astar_failed:'Motion A*失败',planned_action:'规划动作',planner_action_yaw_model:'规划与物理转角模型',executed_action:'执行规划动作',reverse_allowed:'允许短后退',reverse_rejected:'拒绝普通后退',transit_bindings_updated:'途中几何绑定更新',arrived_at_target:'已到达当前目标',target_tag_and_screen_confirmed:'目标Tag与屏幕确认',target_visual_authorized:'FPGA视觉授权成功',target_visual_confirmation_failed:'目标视觉确认失败',target_classification_failed:'当前目标分类失败',classifier_gate_blocked:'分类入口阻止',target_final_forward_started:'开始最终前进',target_final_forward_done:'已完成最终前进',target_final_forward_failed:'最终前进动作失败',screen_needs_change:'屏幕需要换花',already_target:'已是目标花',target_selected:'已选择目标',interaction_safety_gate_blocked:'交互授权阻止',interaction_changed:'换花成功',interaction_not_changed:'换花未成功',interaction_exception:'交互异常',left_hand_lifted:'左手已举起',worker_request_sent:'已发送 Worker 请求',worker_response:'收到 Worker 响应',navigate_failed:'导航失败',localize_failed:'定位失败',pose_update:'定位已更新',action:'执行动作',recovery_start:'开始恢复',recovery_done:'恢复完成',turn_no_progress:'转向无进展',turn_progress_verified:'转向进展已验证',turn_progress_unverified:'转向进展无法验证',turn_progress_no_progress:'转向确认无进展',suspect_stale_pose_after_turn:'转向后疑似旧位姿',turn_direction_conflict:'转向方向冲突',scan_after_turn_pose_rejected:'拒绝转向后视觉位姿',turn_progress_relocalize:'转向进展强制重定位',turn_progress_failed:'转向进展失败',turn_progress_restored:'转向进展恢复',no_tag_recovery_triggered:'启动无Tag恢复',no_tag_recovery_context:'无Tag恢复上下文',no_tag_recovery_backoff:'无Tag恢复后退',no_tag_recovery_strafe:'无Tag恢复横移',no_tag_recovery_turn:'无Tag恢复身体转向',no_tag_recovery_scan:'无Tag恢复中央复拍',no_tag_recovery_success:'无Tag恢复成功',no_tag_recovery_exhausted:'无Tag恢复次数耗尽'};
 function bi(value,dict){const raw=String(value===null||value===undefined?'':value); return dict[raw]?`${dict[raw]} / ${raw}`:raw;}
 function reasonsBi(values){return (values||[]).map(x=>bi(x,reasonZh)).join(',')||'-';}
 function renderSummary(data){
   const pose=data.robot&&data.robot.pose?data.robot.pose:{};
   const plan=data.last_target_plan||{};
+  const navPlan=data.current_navigation_plan||{};
   const health=data.localization_health||{};
   const recovery=data.recovery||{};
   const lastRecovery=recovery.last||{};
@@ -82,6 +83,8 @@ function renderSummary(data){
     ', yaw='+esc(fmt(pose.yaw_deg))+
     ', 置信度/conf='+esc(pose.confidence||'')+'<br>'+
     '<b>任务状态 / Mission state</b>: '+esc(data.mission_state||'-')+'<br>'+
+    '<b>导航阶段 / Navigation phase</b>: '+esc(data.current_navigation_phase||'-')+'<br>'+
+    '<b>导航目标 / Navigation goal</b>: XY='+esc((navPlan.goal_xy||[]).join(',')||'-')+', distance='+esc(fmt(navPlan.distance_to_goal_cm,1))+'cm, finalYaw='+esc(fmt(navPlan.goal_yaw,1))+'°, yawError='+(navPlan.goal_yaw_deferred?'deferred / 近点处理':esc(fmt(navPlan.yaw_error_deg,1))+'°')+'<br>'+
     '<b>当前目标 / Current target</b>: Tag '+esc(data.current_target_tag_id||'-')+', Screen '+esc(targetScreen.screen_id||'-')+
     ' '+(targetScreen.status?`<span class="${clsForStatus(targetScreen.status)}">${esc(bi(targetScreen.status,statusZh))}</span>`:'')+'<br>'+
     '<b>目标选择 / Target selection</b>: 距离/distance='+esc(fmt(data.current_target_distance_cm,1))+'cm, GOAL='+esc((plan.interaction_target_xy||targetScreen.interaction_target_xy||[]).join(','))+', score='+esc(fmt(plan.score,1))+', orientationPenalty='+esc(fmt(plan.orientation_penalty,1))+'cm, yaw='+esc(fmt(plan.task_target_yaw_deg,1))+'°, face='+esc(plan.surface_face||'-')+', normal='+esc((plan.cardinal_normal_xy||[]).join(','))+', 剩余/remaining='+esc((data.remaining_target_ids||[]).join(','))+'<br>'+
@@ -153,7 +156,7 @@ function renderScreens(data){
 function renderEvents(events){
   events=events||[];
   if(!events.length){document.getElementById('events').innerHTML='暂无事件 / No events yet.';return;}
-  const important=new Set(['mission_state','navigation_mode','target_geometry_created','target_navigation_started','interaction_target_arrived','localization_pose_physical_rejected','pose_outside_field','pose_inside_building','pose_jump_rejected','tag_seen_pose_unavailable','target_selection_candidate','motion_astar_started','motion_astar_success','motion_astar_failed','planned_action','planner_action_yaw_model','executed_action','reverse_allowed','reverse_rejected','transit_bindings_updated','arrived_at_target','target_tag_and_screen_confirmed','target_visual_authorized','target_visual_confirmation_failed','target_classification_failed','classifier_gate_blocked','interaction_safety_gate_blocked','target_final_forward_started','target_final_forward_done','target_final_forward_failed','interaction_changed','interaction_not_changed','interaction_exception','left_hand_lifted','worker_request_sent','worker_response','already_target','classification_failed','classification_low_confidence','target_selected','target_goal_resolved','target_goal_validated','target_pose_mismatch','navigate_xy_arrival_check','target_tag_confirmed','target_classifier_unavailable','target_classifier_retry','target_classifier_recovered','recovery_waypoint_selected','recovery_action','recovery_localization_success','resume_original_target','target_not_completed_after_arrival','navigate_failed','target_failed','mission_complete','near_wall_recover','front_obstacle_recover','forward_blocked_by_map','forward_no_progress','visual_forward_no_progress','visual_progress_check_inconclusive','visual_forward_progress_restored','no_tag_recovery_triggered','no_tag_recovery_context','no_tag_recovery_backoff','no_tag_recovery_strafe','no_tag_recovery_turn','no_tag_recovery_scan','no_tag_recovery_success','no_tag_recovery_exhausted','recovery_start','recovery_backoff_localize_attempt','recovery_done','translation_step','turn_last_resort','turn_last_resort_noop','scan_after_turn_done','scan_after_turn_failed','turn_no_progress','turn_progress_verified','turn_progress_unverified','turn_progress_no_progress','suspect_stale_pose_after_turn','turn_direction_conflict','scan_after_turn_pose_rejected','turn_progress_relocalize','turn_progress_failed','turn_progress_restored','boundary_pan_filtered','boundary_safe_turn','boundary_recovery_target_selected','boundary_blind_nav_start','boundary_blind_nav_step','boundary_blind_nav_arrived','boundary_blind_nav_failed','localize_skipped_boundary_outward','head_recenter_after_scan','head_recenter_failed','action','pose_update']);
+  const important=new Set(['mission_state','navigation_mode','target_geometry_created','target_navigation_started','position_navigation_started','position_navigation_arrived','position_navigation_resumed','final_yaw_alignment_started','final_yaw_alignment_action','final_yaw_alignment_complete','interaction_target_arrived','localization_pose_physical_rejected','pose_outside_field','pose_inside_building','pose_jump_rejected','tag_seen_pose_unavailable','target_selection_candidate','motion_astar_started','motion_astar_success','motion_astar_failed','planned_action','planner_action_yaw_model','executed_action','reverse_allowed','reverse_rejected','transit_bindings_updated','arrived_at_target','target_tag_and_screen_confirmed','target_visual_authorized','target_visual_confirmation_failed','target_classification_failed','classifier_gate_blocked','interaction_safety_gate_blocked','target_final_forward_started','target_final_forward_done','target_final_forward_failed','interaction_changed','interaction_not_changed','interaction_exception','left_hand_lifted','worker_request_sent','worker_response','already_target','classification_failed','classification_low_confidence','target_selected','target_goal_resolved','target_goal_validated','target_pose_mismatch','navigate_xy_arrival_check','target_tag_confirmed','target_classifier_unavailable','target_classifier_retry','target_classifier_recovered','recovery_waypoint_selected','recovery_action','recovery_localization_success','resume_original_target','target_not_completed_after_arrival','navigate_failed','target_failed','mission_complete','near_wall_recover','front_obstacle_recover','forward_blocked_by_map','forward_no_progress','visual_forward_no_progress','visual_progress_check_inconclusive','visual_forward_progress_restored','no_tag_recovery_triggered','no_tag_recovery_context','no_tag_recovery_backoff','no_tag_recovery_strafe','no_tag_recovery_turn','no_tag_recovery_scan','no_tag_recovery_success','no_tag_recovery_exhausted','recovery_start','recovery_backoff_localize_attempt','recovery_done','translation_step','turn_last_resort','turn_last_resort_noop','scan_after_turn_done','scan_after_turn_failed','turn_no_progress','turn_progress_verified','turn_progress_unverified','turn_progress_no_progress','suspect_stale_pose_after_turn','turn_direction_conflict','scan_after_turn_pose_rejected','turn_progress_relocalize','turn_progress_failed','turn_progress_restored','boundary_pan_filtered','boundary_safe_turn','boundary_recovery_target_selected','boundary_blind_nav_start','boundary_blind_nav_step','boundary_blind_nav_arrived','boundary_blind_nav_failed','localize_skipped_boundary_outward','head_recenter_after_scan','head_recenter_failed','action','pose_update']);
   let rows='';
   events.slice().reverse().forEach(e=>{
     const detail=Object.assign({}, e); delete detail.t; delete detail.event;
@@ -278,43 +281,41 @@ setInterval(refresh,800);
                 color = (40, 80, 240)
             c = self._map_pt(screen.center_xy, scale, img.shape[0])
             interaction_xy = screen.interaction_target_xy or screen.target_xy
-            staging_xy = screen.navigation_staging_xy or interaction_xy
             target = self._map_pt(interaction_xy, scale, img.shape[0])
-            staging = self._map_pt(staging_xy, scale, img.shape[0])
             reader = self._map_pt(screen.reader_xy, scale, img.shape[0])
             cv2.circle(img, c, 4, color, -1)
-            cv2.drawMarker(img, staging, (0, 150, 255), cv2.MARKER_DIAMOND, 10, 1)
             cv2.circle(img, target, 4, (220, 80, 40), -1)
             cv2.circle(img, reader, 2, (180, 0, 180), -1)
             cv2.putText(img, str(screen.screen_id), (c[0] + 4, c[1] - 4), cv2.FONT_HERSHEY_SIMPLEX, 0.35, color, 1)
         if target_goal is not None:
             anchor_xy = target_goal.anchor_xy if hasattr(target_goal, "anchor_xy") else target_goal.get("anchor_xy")
-            staging_xy = (
-                target_goal.navigation_staging_xy
-                if hasattr(target_goal, "navigation_staging_xy")
-                else target_goal.get("navigation_staging_xy")
-            )
             interaction_xy = (
                 target_goal.interaction_target_xy
                 if hasattr(target_goal, "interaction_target_xy")
                 else target_goal.get("interaction_target_xy")
             )
-            if staging_xy is None:
-                staging_xy = target_goal.goal_xy if hasattr(target_goal, "goal_xy") else target_goal.get("goal_xy")
             if interaction_xy is None:
                 interaction_xy = target_goal.goal_xy if hasattr(target_goal, "goal_xy") else target_goal.get("goal_xy")
             screen_id = target_goal.screen_id if hasattr(target_goal, "screen_id") else target_goal.get("screen_id")
+            desired_yaw = (
+                target_goal.desired_yaw_deg
+                if hasattr(target_goal, "desired_yaw_deg")
+                else target_goal.get("desired_yaw_deg")
+            )
             anchor = self._map_pt(anchor_xy, scale, img.shape[0])
-            staging = self._map_pt(staging_xy, scale, img.shape[0])
             interaction = self._map_pt(interaction_xy, scale, img.shape[0])
             cv2.circle(img, anchor, 8, (0, 180, 0), 2)
-            cv2.drawMarker(img, staging, (0, 150, 255), cv2.MARKER_DIAMOND, 18, 2)
             cv2.drawMarker(img, interaction, (0, 0, 255), cv2.MARKER_CROSS, 16, 2)
-            cv2.line(img, anchor, staging, (0, 150, 255), 1)
             cv2.line(img, anchor, interaction, (0, 0, 255), 1)
+            yaw_rad = np.radians(float(desired_yaw))
+            yaw_tip = (
+                int(interaction[0] + 22 * np.sin(yaw_rad)),
+                int(interaction[1] + 22 * np.cos(yaw_rad)),
+            )
+            cv2.arrowedLine(img, interaction, yaw_tip, (30, 30, 210), 2, tipLength=0.3)
             cv2.putText(img, "TARGET {} anchor".format(screen_id), (anchor[0] + 7, anchor[1] + 14), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 120, 0), 1)
-            cv2.putText(img, "STAGING 40cm", (staging[0] + 7, staging[1] + 14), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 110, 220), 1)
-            cv2.putText(img, "INTERACTION 25cm", (interaction[0] + 7, interaction[1] - 7), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 220), 1)
+            cv2.putText(img, "GOAL XY 25cm", (interaction[0] + 7, interaction[1] - 7), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 220), 1)
+            cv2.putText(img, "FINAL YAW {:+.1f}deg".format(float(desired_yaw)), (interaction[0] + 7, interaction[1] + 14), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (30, 30, 210), 1)
         if recovery_waypoint is not None:
             xy = recovery_waypoint.get("xy") or recovery_waypoint.get("recovery_xy")
             if xy:
@@ -329,7 +330,13 @@ setInterval(refresh,800);
                 cv2.drawMarker(img, point, (0, 140, 255), cv2.MARKER_TILTED_CROSS, 18, 2)
                 cv2.putText(
                     img,
-                    "NAV {}".format(goal_type.upper()),
+                    "NAV {} d={} yawerr={}".format(
+                        goal_type.upper(),
+                        "-" if navigation_plan.get("distance_to_goal_cm") is None else "{:.1f}".format(float(navigation_plan["distance_to_goal_cm"])),
+                        "deferred" if navigation_plan.get("goal_yaw_deferred") else (
+                            "-" if navigation_plan.get("yaw_error_deg") is None else "{:+.1f}".format(float(navigation_plan["yaw_error_deg"]))
+                        ),
+                    ),
                     (point[0] + 7, point[1] + 14),
                     cv2.FONT_HERSHEY_SIMPLEX,
                     0.4,
