@@ -1049,7 +1049,9 @@ class TargetStandoffFlowTests(unittest.TestCase):
         self.assertEqual(config["vision"]["bound_classification_cache_ttl_s"], 15.0)
         self.assertEqual(config["vision"]["bound_classification_min_interval_s"], 1.0)
         self.assertEqual(config["interaction"]["target_final_forward_cm"], 20.0)
-        self.assertEqual(config["navigation"]["target_arrival_radius_cm"], 4.0)
+        self.assertEqual(config["navigation"]["target_arrival_radius_cm"], 5.0)
+        self.assertEqual(config["navigation"]["near_target_adjustment_distance_cm"], 10.0)
+        self.assertEqual(config["navigation"]["near_target_adjustment_max_attempts"], 4)
         self.assertNotIn("target_arrival_distance_cm", config["map"])
         self.assertNotIn("interaction_forward_10cm", config["motion"]["actions"])
         self.assertNotIn(

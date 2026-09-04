@@ -91,7 +91,9 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "navigation": {
         "arrival_radius_cm": 23.0,
         "arrival_yaw_tolerance_deg": 30.0,
-        "target_arrival_radius_cm": 4.0,
+        "target_arrival_radius_cm": 5.0,
+        "near_target_adjustment_distance_cm": 10.0,
+        "near_target_adjustment_max_attempts": 4,
         "target_arrival_yaw_tolerance_deg": 10.0,
         "target_direct_approach_distance_cm": 40.0,
         "target_direct_corridor_half_width_cm": 6.0,

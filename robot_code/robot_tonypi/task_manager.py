@@ -2624,7 +2624,7 @@ class TaskManager:
             (pose.x_cm - screen.face_center_xy[0]) * normal[0]
             + (pose.y_cm - screen.face_center_xy[1]) * normal[1]
         ) if screen.face_center_xy is not None else desired
-        tolerance = float(self.config["navigation"].get("target_arrival_radius_cm", 4.0))
+        tolerance = float(self.config["navigation"].get("target_arrival_radius_cm", 5.0))
         action = "relocalize_only"
         result = None
         if current_offset < desired - tolerance and self.recovery_translation_clear(pose, forward_cm=-5.0):
@@ -4760,7 +4760,7 @@ class TaskManager:
         nav = self.config["navigation"]
         forward, lateral = self.local_vector_to(pose, waypoint)
         minimum = float(nav.get("target_direct_min_component_cm", 2.0))
-        radius = float(nav.get("target_arrival_radius_cm", 4.0))
+        radius = float(nav.get("target_arrival_radius_cm", 5.0))
         half_width = float(nav.get("target_direct_corridor_half_width_cm", 6.0))
         max_cost = float(nav.get("target_direct_non_target_max_cost", 60.0))
 
@@ -5515,7 +5515,7 @@ class TaskManager:
                     ):
                         reverse_rejected_reason = "localization_confidence_low"
                         if self.effective_localization_confidence(pose) != Confidence.LOW:
-                            arrival_tolerance = float(nav_cfg.get("target_arrival_radius_cm", 4.0))
+                            arrival_tolerance = float(nav_cfg.get("target_arrival_radius_cm", 5.0))
                             back_step = abs(float(
                                 self.config["motion"]["actions"]["back_fast"].get("forward_cm", -2.5)
                             ))
@@ -5629,7 +5629,7 @@ class TaskManager:
             lateral_reaches_goal = (
                 allow_goal_high_cost
                 and distance_xy(lateral_target, waypoint)
-                <= float(self.config["navigation"].get("target_arrival_radius_cm", 4.0))
+                <= float(self.config["navigation"].get("target_arrival_radius_cm", 5.0))
             )
             lateral_metrics = corridor_metrics_to(lateral_target)
             lateral_clear = bypass_action_safety or (
@@ -8148,12 +8148,237 @@ class TaskManager:
         self.pending_post_action_replan = True
         return True
 
+    def perform_near_target_adjustment(
+        self,
+        screen: Screen,
+        goal: TargetGoal,
+        attempt: int,
+    ) -> str:
+        """Execute at most one safe physical translation cycle near the goal."""
+        pose = self.state.pose
+        if pose is None:
+            return "localization_failed"
+        nav = self.config["navigation"]
+        goal_xy = goal.interaction_target_xy
+        current_distance = distance_xy(pose.xy(), goal_xy)
+        threshold = float(nav.get("near_target_adjustment_distance_cm", 10.0))
+        radius = float(nav.get("target_arrival_radius_cm", 5.0))
+        local_forward, local_lateral = self.local_vector_to(pose, goal_xy)
+        rear_angle_error = (
+            math.degrees(math.atan2(
+                abs(local_lateral), max(1e-6, -local_forward)
+            ))
+            if local_forward < 0.0 else 180.0
+        )
+        reverse_limit = float(nav.get("reverse_prefer_max_goal_distance_cm", 15.0))
+        reverse_enabled = bool(nav.get("reverse_prefer_enabled", True))
+        rear_tolerance = float(nav.get(
+            "reverse_prefer_rear_angle_tolerance_deg", 30.0
+        ))
+        max_lateral = float(nav.get("reverse_prefer_max_lateral_cm", 8.0))
+        half_width = float(nav.get("translation_corridor_half_width_cm", 8.0))
+        max_cost = min(
+            float(nav.get("action_planner_segment_max_cost", 55.0)),
+            float(nav.get("normal_navigation_max_cost", 55.0)),
+        )
+        self.debug.event(
+            "near_target_adjustment_started",
+            screen_id=screen.screen_id,
+            current_pose=pose.as_dict(),
+            goal_xy=goal_xy,
+            current_distance_cm=round(current_distance, 3),
+            threshold_cm=threshold,
+            attempt=int(attempt),
+        )
+
+        action_specs = self.config["motion"].get("actions", {})
+        candidate_keys = (
+            "forward_fast",
+            "back_fast",
+            "strafe_left_fast",
+            "strafe_right_fast",
+        )
+        valid = []
+        candidate_reasons = {}
+        for order, key in enumerate(candidate_keys):
+            spec = action_specs.get(key)
+            if spec is None:
+                candidate_reasons[key] = "motion_action_missing"
+                continue
+            forward_cm = float(spec.get("forward_cm", 0.0))
+            lateral_cm = float(spec.get("lateral_cm", 0.0))
+            predicted_xy = self.translated_pose_xy(
+                pose, forward_cm=forward_cm, lateral_cm=lateral_cm
+            )
+            predicted_distance = distance_xy(predicted_xy, goal_xy)
+            improvement = current_distance - predicted_distance
+            corridor = self.map.target_direct_corridor_metrics(
+                pose.xy(),
+                predicted_xy,
+                screen.screen_id,
+                half_width,
+                max_cost,
+                minimum_non_target_clearance_cm=0.0,
+            )
+            safety_ok = bool(corridor.get("clear"))
+            rejection_reason = None
+            if not self.map.in_bounds_xy(predicted_xy):
+                rejection_reason = "predicted_xy_out_of_bounds"
+            elif not safety_ok:
+                if corridor.get("physical_collision"):
+                    rejection_reason = "physical_collision"
+                elif corridor.get("soft_cost_rejected"):
+                    rejection_reason = "unrelated_obstacle_cost"
+                elif corridor.get("clearance_rejected"):
+                    rejection_reason = "insufficient_clearance"
+                else:
+                    rejection_reason = "translation_corridor_blocked"
+            elif key == "back_fast" and not reverse_enabled:
+                rejection_reason = "reverse_disabled"
+            elif key == "back_fast" and current_distance > reverse_limit + 1e-9:
+                rejection_reason = "goal_too_far_for_reverse"
+            elif key == "back_fast" and local_forward >= 0.0:
+                rejection_reason = "goal_not_behind"
+            elif key == "back_fast" and rear_angle_error > rear_tolerance:
+                rejection_reason = "rear_angle_exceeds_tolerance"
+            elif key == "back_fast" and abs(local_lateral) > max_lateral:
+                rejection_reason = "lateral_error_too_large"
+            elif (
+                key == "back_fast"
+                and self.effective_localization_confidence(pose) == Confidence.LOW
+            ):
+                rejection_reason = "localization_confidence_low"
+            elif improvement <= 1e-9:
+                rejection_reason = "does_not_reduce_goal_distance"
+            candidate_reasons[key] = rejection_reason or "eligible"
+            self.debug.event(
+                "near_target_candidate_evaluated",
+                action=key,
+                predicted_xy=predicted_xy,
+                predicted_distance_cm=round(predicted_distance, 3),
+                distance_improvement_cm=round(improvement, 3),
+                safety_ok=safety_ok,
+                rejection_reason=rejection_reason,
+                corridor=corridor,
+            )
+            if rejection_reason is None:
+                valid.append((predicted_distance, order, key, spec, predicted_xy))
+
+        if not valid:
+            self.debug.event(
+                "near_target_adjustment_stalled",
+                attempt=int(attempt),
+                candidate_reasons=candidate_reasons,
+                distance_cm=round(current_distance, 3),
+            )
+            old_pose = self.copy_pose(pose)
+            localized = bool(self.localize_scan(
+                reason="near_target_adjustment_stalled"
+            ))
+            new_pose = self.state.pose
+            real_distance = (
+                None if new_pose is None else distance_xy(new_pose.xy(), goal_xy)
+            )
+            self.debug.event(
+                "near_target_relocalized",
+                old_pose=old_pose.as_dict(),
+                new_pose=None if new_pose is None else new_pose.as_dict(),
+                real_distance_cm=(
+                    None if real_distance is None else round(real_distance, 3)
+                ),
+                localization_success=localized,
+            )
+            return "stalled" if localized else "localization_failed"
+
+        predicted_distance, _, key, spec, predicted_xy = min(valid)
+        expected_improvement = current_distance - predicted_distance
+        self.active_navigation_plan = {
+            "goal_type": "near target",
+            "navigation_phase": "NEAR_TARGET_ADJUSTMENT",
+            "goal_xy": list(goal_xy),
+            "goal_yaw": goal.desired_yaw_deg,
+            "goal_yaw_deferred": True,
+            "distance_to_goal_cm": current_distance,
+            "path_xy": [list(pose.xy()), list(predicted_xy)],
+            "actions": [{"action_key": key, "cycles": 1}],
+        }
+        self.debug.event(
+            "near_target_action_selected",
+            action=key,
+            current_distance_cm=round(current_distance, 3),
+            predicted_distance_cm=round(predicted_distance, 3),
+            expected_improvement_cm=round(expected_improvement, 3),
+        )
+        self.debug.render_map(
+            self.map,
+            pose=pose,
+            path=[pose.xy(), predicted_xy],
+            target_screen=screen,
+            target_goal=goal,
+            recovery_waypoint=getattr(self, "active_recovery_waypoint", None),
+            navigation_plan=self.active_navigation_plan,
+        )
+        self.publish_state(path=[pose.xy(), predicted_xy])
+        old_pose = self.copy_pose(pose)
+        result = self.motion.run(key, times_override=1)
+        actual_cycles = getattr(result, "executed_times", None)
+        if actual_cycles is None:
+            actual_cycles = int(getattr(result, "times", 0)) if result.ok else 0
+        self.debug.event(
+            "near_target_action_executed",
+            action=key,
+            actual_cycles=int(actual_cycles),
+            motion_model_forward_cm=float(getattr(
+                result, "model_forward_cm", spec.get("forward_cm", 0.0)
+            )),
+            motion_model_lateral_cm=float(getattr(
+                result, "model_lateral_cm", spec.get("lateral_cm", 0.0)
+            )),
+            ok=bool(result.ok),
+        )
+        if not result.ok:
+            self.last_navigation_failure_reason = "near_target_motion_hardware_failure"
+            return "hardware_failure"
+
+        localized = bool(self.localize_scan(reason="near_target_adjustment"))
+        new_pose = self.state.pose
+        real_distance = (
+            None if new_pose is None else distance_xy(new_pose.xy(), goal_xy)
+        )
+        self.debug.event(
+            "near_target_relocalized",
+            old_pose=old_pose.as_dict(),
+            new_pose=None if new_pose is None else new_pose.as_dict(),
+            real_distance_cm=(
+                None if real_distance is None else round(real_distance, 3)
+            ),
+            localization_success=localized,
+        )
+        if localized and real_distance is not None and real_distance <= radius:
+            self.debug.event(
+                "near_target_position_arrived",
+                distance_cm=round(real_distance, 3),
+                arrival_radius_cm=radius,
+            )
+        if not localized:
+            self.last_navigation_failure_reason = "near_target_visual_localization_required"
+            return "localization_failed"
+        return "moved"
+
     def navigate_motion_plan_to_target(self, screen: Screen, goal: TargetGoal) -> bool:
         """Reach the 25 cm XY first, then align the final Screen-facing yaw."""
         nav = self.config["navigation"]
-        radius = float(nav.get("target_arrival_radius_cm", 4.0))
+        radius = float(nav.get("target_arrival_radius_cm", 5.0))
         yaw_tolerance = float(nav.get("target_arrival_yaw_tolerance_deg", 10.0))
+        near_target_threshold = max(
+            radius,
+            float(nav.get("near_target_adjustment_distance_cm", 10.0)),
+        )
+        near_target_max_attempts = max(
+            1, int(nav.get("near_target_adjustment_max_attempts", 4))
+        )
         max_steps = int(nav.get("max_steps_per_target", 80))
+        near_target_attempts = 0
         self.active_navigation_phase = "POSITION_NAVIGATION"
         self.set_mission_state(MissionState.POSITION_NAVIGATION)
         self.last_navigation_failure_reason = ""
@@ -8316,7 +8541,36 @@ class TaskManager:
                     yaw_error_deg=round(yaw_error, 3),
                     step=step,
                 )
+                self.active_navigation_phase = "ARRIVED"
                 return True
+            if distance <= near_target_threshold:
+                self.active_navigation_phase = "NEAR_TARGET_ADJUSTMENT"
+                self.set_mission_state(MissionState.NEAR_TARGET_ADJUSTMENT)
+                if near_target_attempts >= near_target_max_attempts:
+                    self.debug.event(
+                        "near_target_adjustment_exhausted",
+                        attempts=near_target_attempts,
+                        distance_cm=round(distance, 3),
+                        next_action="existing_navigation_recovery",
+                    )
+                    self.last_navigation_failure_reason = (
+                        "near_target_adjustment_exhausted"
+                    )
+                    self.set_mission_state(MissionState.NAVIGATION_RECOVERY)
+                    if not self.recover_via_indoor_waypoint(
+                        "near_target_adjustment_exhausted"
+                    ):
+                        return False
+                    near_target_attempts = 0
+                    continue
+                near_target_attempts += 1
+                status = self.perform_near_target_adjustment(
+                    screen, goal, near_target_attempts
+                )
+                if status in ("hardware_failure", "localization_failed"):
+                    return False
+                continue
+            near_target_attempts = 0
             if (
                 self.active_navigation_phase != "POSITION_NAVIGATION"
                 or self.mission_state != MissionState.POSITION_NAVIGATION

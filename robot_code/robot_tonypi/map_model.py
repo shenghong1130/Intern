@@ -1139,7 +1139,7 @@ class MapModel:
         )
         goal_node = self.grid_pos(goal_xy)
         position_tolerance = max(0.1, float(
-            navigation_cfg.get("target_arrival_radius_cm", 4.0)
+            navigation_cfg.get("target_arrival_radius_cm", 5.0)
             if goal_position_tolerance_cm is None else goal_position_tolerance_cm
         ))
         yaw_tolerance = max(0.1, float(

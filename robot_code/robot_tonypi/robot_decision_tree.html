@@ -13,6 +13,7 @@
     pre{max-width:100%;overflow:auto;padding:16px;border:1px solid var(--line);border-radius:10px;background:#fbfcfe;font:14px/1.5 ui-monospace,SFMono-Regular,Consolas,"Microsoft YaHei",monospace;white-space:pre}
     code{padding:.08em .3em;border-radius:4px;background:#eef2f7;font-family:ui-monospace,SFMono-Regular,Consolas,monospace}pre code{padding:0;background:transparent}
     .notice{margin:14px 0;padding:12px 15px;border-left:4px solid #cf7b13;border-radius:6px;background:#fff7e7}
+    .near-target-card{margin:24px 0;padding:18px;border:2px solid #86add8;border-radius:14px;background:#f3f8ff;box-shadow:0 6px 20px #527aa51a}.near-target-card h2{margin-top:0}.near-target-card .subtitle{color:var(--muted);font-size:13px}
     .table-wrap{max-width:100%;margin:12px 0 18px;overflow:auto}table{width:100%;border-collapse:collapse;background:var(--paper);font-size:13px}th,td{padding:8px 10px;border:1px solid var(--line);text-align:left;vertical-align:top}th{background:#edf3fa}ul{padding-left:22px}hr{margin:34px 0;border:0;border-top:1px solid var(--line)}footer{padding:0 0 32px;color:var(--muted);text-align:center}
     @media(max-width:700px){header,nav,main,footer{width:min(100% - 16px,1120px)}nav{position:static}pre{font-size:12px;padding:11px}th,td{min-width:120px}}
   </style>
@@ -33,13 +34,11 @@
   ↓                                       └─比赛时间到→安全停止
 选择未完成且当前可选的 Screen
   ↓
-POSITION_NAVIGATION：Motion A* 保留 yaw state，只规划到 25 cm interaction XY
+真实距离 &gt;10 cm：POSITION_NAVIGATION 使用 5 cm grid Motion A*
   ↓
-执行同类动作的有限 batch
+真实距离 5~10 cm：NEAR_TARGET_ADJUSTMENT 单周期平移并强制视觉定位
   ↓
-按置信度/动作数/uncertainty 决定是否重新定位
-  ↓
-无论是否定位都重新规划，直到到达 25 cm interaction XY
+真实距离 ≤5 cm：POSITION 完成
   ↓
 FINAL_YAW_ALIGNMENT：fresh visual Pose 后原地校正 Screen-facing yaw
   ↓
@@ -234,11 +233,13 @@ consecutive_no_tag_scans=0；更新 last_localize_success_s
 每条平移边检查机器人走廊、建筑/场界、非目标障碍代价和净空
 每条转向边检查 10 cm rotation sweep
   ↓
-累计动作代价、软障碍、净空不足、连续/反向转弯、动作反转、远离目标惩罚
+累计平移距离、软障碍、净空不足、动作切换/反转和远离目标惩罚；Position turn 主代价为 0
   ↓
-到达 XY≤4 cm？（最终 Screen yaw 不参与 goal test / heuristic）
+真实 Pose 到目标仍 &gt;10 cm？（最终 Screen yaw 不参与 goal test / heuristic）
   ├─是→重建可执行 PlannedNavigationAction 列表→转 5
-  └─open set 耗尽或扩展到 45000→A* 无路径
+  ├─5~10 cm→进入连续坐标单周期精调
+  └─≤5 cm→Position 完成→Final Yaw
+open set 耗尽或扩展到 45000→A* 无路径
        ↓
     同签名失败次数 &lt;3？
        ├─是→重新 AprilTag 定位→回本节重规划
@@ -250,10 +251,37 @@ consecutive_no_tag_scans=0；更新 last_localize_success_s
 <p>普通 XY A* 会假设机器人能沿任意方向连续移动，而 TonyPi 只能执行有限 ActionGroup，所以正式规划状态仍包含朝向。平移边按当前 yaw 解释 forward/reverse/左右横移，转向边改变 yaw state；但终点条件和启发式只看 interaction XY。正式 Position 模式只扩展 ±90° quarter turn，转动本身不进入 primary cost，完全同代价时才用较少 turn 次数破平局。每个 turn 仍必须通过 rotation sweep safety。最终 Screen yaw 继续只在到达 XY 后处理。</p>
 <p>正式位置搜索只扩展对称的 ±90° quarter-turn macro，因此能被 15° state 精确表示，又不会探索大量细碎 yaw 组合。macro 由 <code>turn_left/right_fast</code> 的 7.5°/cycle 执行，Executor 按 batch 上限分批并重规划。action-level 精确 yaw 模式会把 15°请求细化成当前 1.5° lattice；动作预测 Pose 始终直接按物理 action model 重建，因此 -18° 不再被预测为 -30°或污染后续平移方向。</p>
 <h2>4.3 关键参数</h2>
-<div class="table-wrap"><table><thead><tr><th>参数</th><th>当前值</th><th>含义</th><th>为什么需要</th></tr></thead><tbody><tr><td>网格 / position yaw state</td><td>5 cm / 15°，只扩展 ±90°</td><td>A* 状态离散</td><td>保留方向语义并限制搜索规模</td></tr><tr><td>position heuristic 权重</td><td>1.0</td><td>可采纳 XY 距离</td><td>保证较短安全平移路线优先展开</td></tr><tr><td>规划步长</td><td>forward 28、fine 7、strafe 12、reverse 5 cm</td><td>扩展模型</td><td>对应可批量执行动作</td></tr><tr><td>位置阶段到达容差</td><td>4 cm</td><td>Motion A* 目标条件</td><td>先可靠到达 interaction XY</td></tr><tr><td>走廊半宽 / 转动扫掠</td><td>8 cm / 10 cm</td><td>碰撞检查</td><td>不只检查质点</td></tr><tr><td>segment 最大代价 / 目标净空</td><td>55 / 25 cm</td><td>软障碍约束</td><td>远离墙体与非目标建筑</td></tr><tr><td>最大扩展 / 同签名失败</td><td>45000 / 3</td><td>规划预算与升级门槛</td><td>避免无限重算同一失败</td></tr><tr><td>Position 主要代价</td><td>turn=0；平移距离 + obstacle/clearance/away/switch</td><td>动作偏好</td><td>大胆转正后走较短长直线；turn 次数只作同代价 tie-break</td></tr></tbody></table></div>
+<div class="table-wrap"><table><thead><tr><th>参数</th><th>当前值</th><th>含义</th><th>为什么需要</th></tr></thead><tbody><tr><td>网格 / position yaw state</td><td>5 cm / 15°，只扩展 ±90°</td><td>A* 状态离散</td><td>保留方向语义并限制搜索规模</td></tr><tr><td>position heuristic 权重</td><td>1.0</td><td>可采纳 XY 距离</td><td>保证较短安全平移路线优先展开</td></tr><tr><td>规划步长</td><td>forward 28、fine 7、strafe 12、reverse 5 cm</td><td>扩展模型</td><td>对应可批量执行动作</td></tr><tr><td>位置阶段到达容差</td><td>5 cm</td><td>真实 Pose 连续距离</td><td>避免 grid center 误差阻止到达</td></tr><tr><td>走廊半宽 / 转动扫掠</td><td>8 cm / 10 cm</td><td>碰撞检查</td><td>不只检查质点</td></tr><tr><td>segment 最大代价 / 目标净空</td><td>55 / 25 cm</td><td>软障碍约束</td><td>远离墙体与非目标建筑</td></tr><tr><td>最大扩展 / 同签名失败</td><td>45000 / 3</td><td>规划预算与升级门槛</td><td>避免无限重算同一失败</td></tr><tr><td>Position 主要代价</td><td>turn=0；平移距离 + obstacle/clearance/away/switch</td><td>动作偏好</td><td>大胆转正后走较短长直线；turn 次数只作同代价 tie-break</td></tr></tbody></table></div>
 <h2>4.4 对应动作 / 代码</h2>
 <div class="table-wrap"><table><thead><tr><th>Planner 边</th><th>实际 action key</th><th>规划模型</th><th>备注</th></tr></thead><tbody><tr><td>forward / fine</td><td><code>forward_fast</code></td><td>28 / 7 cm</td><td>最终换算为 3.5 cm/cycle</td></tr><tr><td>reverse</td><td><code>back_fast</code></td><td>5 cm</td><td>只在目标位于后方且最终距离≤15 cm，并通过角度/横差/缩距/corridor gate 时扩展</td></tr><tr><td>strafe left/right</td><td><code>strafe_*_fast</code></td><td>±12 cm</td><td>yaw 保持不变</td></tr><tr><td>position quarter turn</td><td><code>turn_left/right_fast</code></td><td>规划 ±90°；物理 ±7.5°/cycle</td><td>primary cost=0；Executor 限批并重规划</td></tr><tr><td>final yaw large turn</td><td><code>turn_left/right_large</code></td><td>物理 +15° / -18°</td><td>只在近点闭环校正中按真实角执行</td></tr></tbody></table></div>
 <p>代码参考：<code>MapModel.plan_motion_actions()</code>、<code>action_planner_transition()</code>、<code>navigate_motion_plan_to_target()</code>。</p>
+<section class="near-target-card">
+<h2>接近目标后，用真实单周期动作精确靠近目标</h2>
+<p class="subtitle">Near Target Adjustment</p>
+<pre class="flow-ascii">当前真实 RobotPose 到 interaction XY 的距离
+        ┌────────────┼────────────┐
+      &gt;10 cm       5~10 cm       ≤5 cm
+        │             │             │
+   5 cm grid A*   预测四个单周期    Position 完成
+                      │             │
+        forward 3.5 / back 2.5 / left 4 / right 3 cm
+                      │
+              安全且严格缩短距离？
+                 ├─否→尝试其他候选
+                 └─是→选预测距离最小者
+                              │
+                         执行 1 cycle
+                              │
+                       重新 AprilTag 定位
+                              │
+                 真实距离≤5 cm？
+                    ├─是→Final Yaw→ARRIVED
+                    └─否→重新判断距离区间（最多4次）</pre>
+<p><strong>触发条件：</strong><code>5 &lt; distance ≤ 10 cm</code>。候选仅为 <code>forward_fast</code>、<code>back_fast</code>、<code>strafe_left_fast</code>、<code>strafe_right_fast ×1</code>。使用 motion config 的带符号 forward/lateral 数值在真实连续坐标中预测，选择通过安全检查且预测后距离最小的缩距动作。</p>
+<p><strong>安全：</strong>继续检查 field bounds、hard building occupancy、robot footprint、无关建筑、动态障碍和 translation corridor；仅当前目标建筑 soft inflation 沿用正式导航豁免。动作后必须重新视觉定位。成功条件是<strong>真实 Pose</strong> 距离 ≤5 cm；最多尝试 4 次，耗尽后进入已有 navigation recovery。</p>
+<p>5 cm grid 继续负责大范围规划。真实单周期动作约为 2.5~4 cm，执行后可能仍落在同一 grid cell；把网格改为 2.5 cm 会令 XY state 约增至四倍，再乘 yaw state，把这些微动作加入全局 A* 也会扩大分支。因此最后 5~10 cm 使用有限连续坐标闭环。</p>
+<div class="table-wrap"><table><thead><tr><th>状态 / 事件</th><th>中文</th><th>硬件故障</th><th>立即放弃目标</th><th>下一步</th></tr></thead><tbody><tr><td><code>NEAR_TARGET_ADJUSTMENT</code></td><td>接近目标后的单周期位置精调</td><td>否</td><td>否</td><td>执行一个安全缩距动作后定位</td></tr><tr><td><code>near_target_adjustment_stalled</code></td><td>当前四个单周期动作都无法安全地继续靠近</td><td>否</td><td>否</td><td>重新定位并有限重试</td></tr><tr><td><code>near_target_adjustment_exhausted</code></td><td>连续精调达到上限后仍未进入5cm范围</td><td>否</td><td>否</td><td>已有导航恢复</td></tr></tbody></table></div>
+</section>
 <h1 id="section-5">5. 动作执行、批次、重新定位与重规划</h1>
 <h2>5.1 流程图</h2>
 <pre class="flow-ascii">A* 动作序列
@@ -301,17 +329,17 @@ consecutive_no_tag_scans=0；更新 last_localize_success_s
 <h2>5.3 真实动作表</h2>
 <div class="table-wrap"><table><thead><tr><th>Planner 动作</th><th>action key</th><th>ActionGroup / sequence</th><th>单 cycle 模型效果</th><th>常规最大 batch H/M/L</th></tr></thead><tbody><tr><td>FORWARD</td><td><code>forward_fast</code></td><td><code>go_forward_fast</code></td><td>+3.5 cm</td><td>8 / 4 / 1</td></tr><tr><td>REVERSE</td><td><code>back_fast</code></td><td><code>back_start→back(repeat)→back_end</code></td><td>-2.5 cm</td><td>6 / 3 / 1</td></tr><tr><td>STRAFE_LEFT</td><td><code>strafe_left_fast</code></td><td><code>left_move_fast</code></td><td>+4 cm</td><td>4 / 2 / 1</td></tr><tr><td>STRAFE_RIGHT</td><td><code>strafe_right_fast</code></td><td><code>right_move_fast</code></td><td>-3 cm</td><td>4 / 2 / 1</td></tr><tr><td>TURN_LEFT small</td><td><code>turn_left_fast</code></td><td><code>turn_left_small_step_s80</code></td><td>+7.5°</td><td>2 / 1 / 1</td></tr><tr><td>TURN_RIGHT small</td><td><code>turn_right_fast</code></td><td><code>turn_right_small_step_s80</code></td><td>-7.5°</td><td>2 / 1 / 1</td></tr><tr><td>TURN_LEFT large</td><td><code>turn_left_large</code></td><td>左小步×4</td><td>+15°</td><td>2 / 1 / 1</td></tr><tr><td>TURN_RIGHT large</td><td><code>turn_right_large</code></td><td>右小步×4</td><td>-18°</td><td>2 / 1 / 1</td></tr></tbody></table></div>
 <h2>5.4 关键参数</h2>
-<div class="table-wrap"><table><thead><tr><th>参数</th><th>当前值</th><th>含义</th><th>为什么需要</th></tr></thead><tbody><tr><td>normal 动作预算 H/M/L</td><td>6 / 4 / 1 cycles</td><td>到此强制定位</td><td>限制里程推算漂移</td></tr><tr><td>target-direct 预算 H/M/L</td><td>3 / 2 / 1</td><td>近目标更严格</td><td>保护交互精度</td></tr><tr><td>normal uncertainty limit</td><td>6.0</td><td>自适应定位门槛</td><td>不同动作误差可加权</td></tr><tr><td>uncertainty/cycle</td><td>forward .6；strafe 1；reverse .9；turn 1.8；large 2.6</td><td>误差累计</td><td>横移/转向更不稳定</td></tr><tr><td>near target</td><td><code>&lt;15 cm</code>，最多 1 cycle</td><td>单步逼近</td><td>防止越过目标</td></tr><tr><td>程序化 large-turn 门槛</td><td>yaw 差≥35°</td><td><code>turn_toward()</code> 改用 large action；A* 本身按代价选择</td><td>减少恢复/校正中的小步次数</td></tr><tr><td>watchdog 无进展</td><td>2 次可靠确认</td><td>导航中止门槛</td><td>不把取帧失败误判成没转</td></tr><tr><td><code>collision_recovery_enabled</code></td><td>false</td><td>通用碰撞停滞恢复当前关闭</td><td>现行主流程依靠规划安全门和 near-wall recovery</td></tr></tbody></table></div>
+<div class="table-wrap"><table><thead><tr><th>参数</th><th>当前值</th><th>含义</th><th>为什么需要</th></tr></thead><tbody><tr><td>normal 动作预算 H/M/L</td><td>6 / 4 / 1 cycles</td><td>到此强制定位</td><td>限制里程推算漂移</td></tr><tr><td>target-direct 预算 H/M/L</td><td>3 / 2 / 1</td><td>近目标更严格</td><td>保护交互精度</td></tr><tr><td>normal uncertainty limit</td><td>6.0</td><td>自适应定位门槛</td><td>不同动作误差可加权</td></tr><tr><td>uncertainty/cycle</td><td>forward .6；strafe 1；reverse .9；turn 1.8；large 2.6</td><td>误差累计</td><td>横移/转向更不稳定</td></tr><tr><td>Near Target Adjustment</td><td><code>5 &lt; distance ≤10 cm</code>，固定 1 cycle</td><td>连续坐标闭环精调</td><td>避免最后几厘米进入 grid A*</td></tr><tr><td>程序化 large-turn 门槛</td><td>yaw 差≥35°</td><td><code>turn_toward()</code> 改用 large action；A* 本身按代价选择</td><td>减少恢复/校正中的小步次数</td></tr><tr><td>watchdog 无进展</td><td>2 次可靠确认</td><td>导航中止门槛</td><td>不把取帧失败误判成没转</td></tr><tr><td><code>collision_recovery_enabled</code></td><td>false</td><td>通用碰撞停滞恢复当前关闭</td><td>现行主流程依靠规划安全门和 near-wall recovery</td></tr></tbody></table></div>
 <p>代码参考：<code>execute_motion_astar_action()</code>、<code>select_adaptive_action_batch()</code>、<code>adaptive_relocalization_decision()</code>、<code>monitor_turn_result()</code>。</p>
 <h1 id="section-6">6. 到达目标后的 Screen / Tag / 花卉识别与换花决策</h1>
 <h2>6.1 流程图</h2>
-<pre class="flow-ascii">POSITION_NAVIGATION 接近 interaction target
+<pre class="flow-ascii">POSITION_NAVIGATION / NEAR_TARGET_ADJUSTMENT 接近 interaction target
   ↓
-XY≤4 cm？
-  ├─否→回 4/5 重新规划与执行（不优化最终 yaw）
+真实 XY 距离≤5 cm？
+  ├─否→&gt;10 cm 回 Motion A*；5~10 cm 做单周期精调（不优化最终 yaw）
   └─是→FINAL_YAW_ALIGNMENT：accepted visual Pose 年龄≤3 s？
           ├─否→重新 AprilTag 定位
-          │      ├─accepted 且仍在 4 cm 内→检查 yaw
+          │      ├─accepted 且仍在 5 cm 内→检查 yaw
           │      └─失败/位置改变→回 4/5
           └─是→desired yaw 误差≤10°？
                  ├─否→安全原地转向→视觉定位→重新检查 XY/yaw
@@ -343,7 +371,7 @@ XY≤4 cm？
 <p>15 s cache 只复用最近的“已绑定屏幕分类结果”；它不能单独授权 NFC。每次使用缓存仍必须在当前时刻重新看见 locked Tag，并把当前 Tag 时间与同屏证据配对。分类阈值为 0.20。分类服务失败不会把 Screen 当作花卉错误，也不会换目标，而是保持锁定目标等待服务恢复。</p>
 <p>机器人先停在墙外约 25 cm，是为了以精确姿态确认屏幕；确认确实需要换花后，才用一个专用序列前进模型 20 cm，接近 NFC 工作距离。</p>
 <h2>6.3 关键参数</h2>
-<div class="table-wrap"><table><thead><tr><th>参数</th><th>当前值</th><th>含义</th><th>为什么需要</th></tr></thead><tbody><tr><td>ARRIVED</td><td>4 cm / 10° / Pose≤3 s</td><td>到达三重门</td><td>防止只靠陈旧 XY 判到达</td></tr><tr><td>目标实时 pan</td><td>100, 130, 70</td><td>locked Tag 搜索</td><td>小范围找回目标</td></tr><tr><td>cache TTL / 分类间隔</td><td>15 s / 1 s</td><td>同屏分类缓存</td><td>降低重复 FPGA 请求</td></tr><tr><td>fresh 分类重试</td><td>最多 3 帧，间隔 0.5 s</td><td>无可用缓存时</td><td>有限等待视觉结果</td></tr><tr><td>可见性恢复</td><td>最多 2 cycle</td><td>重新定位/小修正</td><td>保持同一目标</td></tr><tr><td>分类置信度</td><td>≥0.20</td><td>可信花卉门槛</td><td>低置信度不授权 NFC</td></tr><tr><td>final forward</td><td>20 cm，一次</td><td>25 cm 站位后的接近</td><td>到达 NFC 距离</td></tr></tbody></table></div>
+<div class="table-wrap"><table><thead><tr><th>参数</th><th>当前值</th><th>含义</th><th>为什么需要</th></tr></thead><tbody><tr><td>ARRIVED</td><td>5 cm / 10° / Pose≤3 s</td><td>真实 Pose 到达三重门</td><td>防止 grid center 或陈旧 XY 误判到达</td></tr><tr><td>目标实时 pan</td><td>100, 130, 70</td><td>locked Tag 搜索</td><td>小范围找回目标</td></tr><tr><td>cache TTL / 分类间隔</td><td>15 s / 1 s</td><td>同屏分类缓存</td><td>降低重复 FPGA 请求</td></tr><tr><td>fresh 分类重试</td><td>最多 3 帧，间隔 0.5 s</td><td>无可用缓存时</td><td>有限等待视觉结果</td></tr><tr><td>可见性恢复</td><td>最多 2 cycle</td><td>重新定位/小修正</td><td>保持同一目标</td></tr><tr><td>分类置信度</td><td>≥0.20</td><td>可信花卉门槛</td><td>低置信度不授权 NFC</td></tr><tr><td>final forward</td><td>20 cm，一次</td><td>25 cm 站位后的接近</td><td>到达 NFC 距离</td></tr></tbody></table></div>
 <h2>6.4 对应动作 / 代码</h2>
 <div class="table-wrap"><table><thead><tr><th>动作</th><th>action key / ActionGroup</th><th>模型效果</th><th>使用场景</th></tr></thead><tbody><tr><td>可见性后退</td><td><code>back_fast</code></td><td>-2.5 cm/cycle</td><td>离墙过近且后方安全</td></tr><tr><td>可见性横移</td><td><code>strafe_left/right_fast</code></td><td>+4 / -3 cm</td><td>修正屏幕横向位置</td></tr><tr><td>最终接近</td><td><code>interaction_forward_final</code> / <code>go_forward_one_step</code>×4</td><td>+20 cm</td><td>仅 NEEDS_CHANGE 且已授权</td></tr></tbody></table></div>
 <p>代码参考：<code>navigate_motion_plan_to_target()</code>、<code>confirm_target_with_visibility_recovery()</code>、<code>bounded_fresh_target_observation()</code>、<code>execute_final_forward()</code>。</p>

@@ -16,13 +16,11 @@
   ↓                                       └─比赛时间到→安全停止
 选择未完成且当前可选的 Screen
   ↓
-POSITION_NAVIGATION：Motion A* 保留 yaw state，只规划到 25 cm interaction XY
+真实距离 >10 cm：POSITION_NAVIGATION 使用 5 cm grid Motion A*
   ↓
-执行同类动作的有限 batch
+真实距离 5~10 cm：NEAR_TARGET_ADJUSTMENT 单周期平移并强制视觉定位
   ↓
-按置信度/动作数/uncertainty 决定是否重新定位
-  ↓
-无论是否定位都重新规划，直到到达 25 cm interaction XY
+真实距离 ≤5 cm：POSITION 完成
   ↓
 FINAL_YAW_ALIGNMENT：fresh visual Pose 后原地校正 Screen-facing yaw
   ↓
@@ -307,11 +305,13 @@ hard jump 不做“两个远帧一致就接受”，因为它可能把机器人�
 每条平移边检查机器人走廊、建筑/场界、非目标障碍代价和净空
 每条转向边检查 10 cm rotation sweep
   ↓
-累计动作代价、软障碍、净空不足、连续/反向转弯、动作反转、远离目标惩罚
+累计平移距离、软障碍、净空不足、动作切换/反转和远离目标惩罚；Position turn 主代价为 0
   ↓
-到达 XY≤4 cm？（最终 Screen yaw 不参与 goal test / heuristic）
+真实 Pose 到目标仍 >10 cm？（最终 Screen yaw 不参与 goal test / heuristic）
   ├─是→重建可执行 PlannedNavigationAction 列表→转 5
-  └─open set 耗尽或扩展到 45000→A* 无路径
+  ├─5~10 cm→转 4.5 做连续坐标单周期精调
+  └─≤5 cm→Position 完成→Final Yaw
+open set 耗尽或扩展到 45000→A* 无路径
        ↓
     同签名失败次数 <3？
        ├─是→重新 AprilTag 定位→回本节重规划
@@ -334,7 +334,7 @@ hard jump 不做“两个远帧一致就接受”，因为它可能把机器人�
 | 网格 / position yaw state | 5 cm / 15°，只扩展 ±90° | A* 状态离散 | 保留方向语义并限制搜索规模 |
 | position heuristic 权重 | 1.0 | 可采纳 XY 距离 | 保证较短安全平移路线优先展开 |
 | 规划步长 | forward 28、fine 7、strafe 12、reverse 5 cm | 扩展模型 | 对应可批量执行动作 |
-| 位置阶段到达容差 | 4 cm | Motion A* 目标条件 | 先可靠到达 interaction XY |
+| 位置阶段到达容差 | 5 cm | 真实 Pose 到 interaction XY 的连续距离 | 避免 grid center 误差阻止到达 |
 | 走廊半宽 / 转动扫掠 | 8 cm / 10 cm | 碰撞检查 | 不只检查质点 |
 | segment 最大代价 / 目标净空 | 55 / 25 cm | 软障碍约束 | 远离墙体与非目标建筑 |
 | 最大扩展 / 同签名失败 | 45000 / 3 | 规划预算与升级门槛 | 避免无限重算同一失败 |
@@ -351,6 +351,82 @@ hard jump 不做“两个远帧一致就接受”，因为它可能把机器人�
 | final yaw large turn | `turn_left/right_large` | 物理 +15° / -18° | 只在近点闭环校正中按真实角执行 |
 
 代码参考：`MapModel.plan_motion_actions()`、`action_planner_transition()`、`navigate_motion_plan_to_target()`。
+
+## 4.5 接近目标后，用真实单周期动作精确靠近目标
+
+小字：Near Target Adjustment
+
+```text
+                 目标 Screen
+                     │
+                     ▼
+            interaction XY
+                 约25cm
+                     │
+                     ▼
+             当前真实 RobotPose
+                     │
+                     ▼
+              计算真实距离
+                     │
+        ┌────────────┼─────────────┐
+        │            │             │
+     >10cm        5~10cm          <=5cm
+        │            │             │
+        ▼            ▼             ▼
+    Motion A*    Near Target    POSITION完成
+        │        Adjustment          │
+        │            │               ▼
+   5cm网格规划        │           Final Yaw
+        │            │               │
+        │      预测单周期动作         ▼
+        │            │             ARRIVED
+        │    ┌───────┼────────┐
+        │    │       │        │
+        │ forward   back    strafe
+        │  3.5cm    2.5cm   3~4cm
+        │    │       │        │
+        │    └───────┼────────┘
+        │            │
+        │       安全且距离下降？
+        │         /        \
+        │       YES         NO
+        │        │           │
+        │    选最优动作      尝试其它
+        │        │
+        │    执行1 cycle
+        │        │
+        │    重新视觉定位
+        │        │
+        └────────┼───────────
+                 ▼
+            重新计算距离
+                 │
+            distance<=5？
+             /          \
+           YES           NO
+            │             │
+            ▼             └──再次判断距离区间
+     POSITION完成
+            │
+            ▼
+        Final Yaw
+            │
+            ▼
+         ARRIVED
+```
+
+全局 Motion A* 的 5 cm grid 继续负责大范围路径、障碍绕行和方向规划。真实动作 `forward_fast≈3.5 cm`、`back_fast≈2.5 cm`、`strafe_left_fast≈4 cm`、`strafe_right_fast≈3 cm` 小于或接近一个 grid；执行后可能仍映射到同一 cell。若把网格改为 2.5 cm，XY state 数约增至原来的四倍，再乘 yaw state；若把所有小动作塞进全局 A*，分支数和近点重复状态也会增加。因此 `5 < real distance ≤10 cm` 不进入 A*，只在真实连续坐标中试算四个单周期动作。
+
+每个候选使用带符号的 motion config：`predicted_xy = pose_xy + forward_cm·heading + lateral_cm·left_heading`，并以 `predicted_distance` 为唯一 score。候选必须严格缩短距离，并通过 field bounds、hard occupancy、robot footprint、无关建筑、动态障碍和 translation corridor 检查；仅当前目标建筑的 soft inflation 沿用既有豁免。选中后只执行 1 cycle，并立即重新 AprilTag 定位。最多尝试 4 次，耗尽后进入已有 navigation recovery。
+
+| 状态 / 事件 | 中文说明 | 硬件故障 | 是否立即放弃目标 | 下一步 |
+|---|---|---|---|---|
+| `NEAR_TARGET_ADJUSTMENT` | 接近目标后的单周期位置精调 | 否 | 否 | 预测并执行一个安全缩距动作，然后重新定位 |
+| `near_target_adjustment_stalled` | 当前四个单周期动作都无法安全地继续靠近 | 否 | 否 | 重新定位后在有限次数内重试 |
+| `near_target_adjustment_exhausted` | 连续精调达到上限后仍未进入 5 cm 范围 | 否 | 否 | 进入现有导航恢复 |
+
+代码参考：`perform_near_target_adjustment()`、`navigate_motion_plan_to_target()`。
 
 # 5. 动作执行、批次、重新定位与重规划
 
@@ -428,7 +504,7 @@ A* 选择 forward/strafe 时按安全平移距离和路径附加代价比较；P
 | target-direct 预算 H/M/L | 3 / 2 / 1 | 近目标更严格 | 保护交互精度 |
 | normal uncertainty limit | 6.0 | 自适应定位门槛 | 不同动作误差可加权 |
 | uncertainty/cycle | forward .6；strafe 1；reverse .9；turn 1.8；large 2.6 | 误差累计 | 横移/转向更不稳定 |
-| near target | `<15 cm`，最多 1 cycle | 单步逼近 | 防止越过目标 |
+| Near Target Adjustment | `5 < distance ≤10 cm`，固定 1 cycle | 连续坐标闭环精调 | 避免最后几厘米进入 grid A* |
 | 程序化 large-turn 门槛 | yaw 差≥35° | `turn_toward()` 改用 large action；A* 本身按代价选择 | 减少恢复/校正中的小步次数 |
 | watchdog 无进展 | 2 次可靠确认 | 导航中止门槛 | 不把取帧失败误判成没转 |
 | `collision_recovery_enabled` | false | 通用碰撞停滞恢复当前关闭 | 现行主流程依靠规划安全门和 near-wall recovery |
@@ -440,13 +516,13 @@ A* 选择 forward/strafe 时按安全平移距离和路径附加代价比较；P
 ## 6.1 流程图
 
 ```text
-POSITION_NAVIGATION 接近 interaction target
+POSITION_NAVIGATION / NEAR_TARGET_ADJUSTMENT 接近 interaction target
   ↓
-XY≤4 cm？
-  ├─否→回 4/5 重新规划与执行（不优化最终 yaw）
+真实 XY 距离≤5 cm？
+  ├─否→>10 cm 回 Motion A*；5~10 cm 做单周期精调（不优化最终 yaw）
   └─是→FINAL_YAW_ALIGNMENT：accepted visual Pose 年龄≤3 s？
           ├─否→重新 AprilTag 定位
-          │      ├─accepted 且仍在 4 cm 内→检查 yaw
+          │      ├─accepted 且仍在 5 cm 内→检查 yaw
           │      └─失败/位置改变→回 4/5
           └─是→desired yaw 误差≤10°？
                  ├─否→安全原地转向→视觉定位→重新检查 XY/yaw
@@ -487,7 +563,7 @@ XY≤4 cm？
 
 | 参数 | 当前值 | 含义 | 为什么需要 |
 |---|---:|---|---|
-| ARRIVED | 4 cm / 10° / Pose≤3 s | 到达三重门 | 防止只靠陈旧 XY 判到达 |
+| ARRIVED | 5 cm / 10° / Pose≤3 s | 真实 Pose 的到达三重门 | 防止 grid center 或陈旧 XY 误判到达 |
 | 目标实时 pan | 100, 130, 70 | locked Tag 搜索 | 小范围找回目标 |
 | cache TTL / 分类间隔 | 15 s / 1 s | 同屏分类缓存 | 降低重复 FPGA 请求 |
 | fresh 分类重试 | 最多 3 帧，间隔 0.5 s | 无可用缓存时 | 有限等待视觉结果 |

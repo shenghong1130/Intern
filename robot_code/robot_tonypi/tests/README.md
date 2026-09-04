@@ -70,6 +70,10 @@ python3 -m unittest robot_tonypi.tests.test_mission_scheduler -v
 
 集中检查本次主链路重构：严格场界/真实建筑 Pose gate、soft inflation 合法 Pose、moderate suspect 与 hard jump、失败分类计数、25 cm 目标评分、locked/exclusion 规则、position-only Motion A*、到点后 final-yaw alignment、物理 yaw lattice、Position 免费安全转向与 turn-count tie-break、15 cm normal reverse 边界/角度/横差/corridor gate，以及 Planner action key 被 Executor 原样执行。
 
+### `test_near_target_adjustment.py`
+
+检查真实距离 `4.3/5.0/5.1/10/>10 cm` 的三级分流、四个物理单周期候选的连续坐标预测、必须缩距、reverse 角度 gate、hard collision 拒绝、每步强制定位、四次耗尽进入既有 recovery，以及到点后只进入 final yaw、不再调用 Position A*。
+
 ```bash
 python3 -m unittest robot_tonypi.tests.test_mission_refactor -v
 ```

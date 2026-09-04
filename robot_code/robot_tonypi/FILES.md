@@ -122,7 +122,8 @@ main.py
 - `plan_navigation_path()`：保留给 debug、fallback 和 Recovery 兼容的二维路径接口；
 - `plan_motion_actions()`：正式 `POSITION_NAVIGATION` 的 Motion-Aware A*；yaw 保留在 state 中解释动作世界方向，但 Screen 最终 yaw 不参与位置阶段终点或 heuristic；
 - `navigate_to_xy()`：自适应重定位、动作选择、到达前新鲜视觉 Pose、最终 yaw；
-- `navigate_to_screen()`：一次建立 25 cm XY + desired yaw goal，并进入 `POSITION_NAVIGATION → FINAL_YAW_ALIGNMENT`；不再有中途 staging；
+- `navigate_to_screen()`：一次建立 25 cm XY + desired yaw goal，并按真实距离进入 `POSITION A* (>10 cm) → NEAR_TARGET_ADJUSTMENT (5–10 cm) → FINAL_YAW_ALIGNMENT (≤5 cm)`；不再有中途 staging；
+- `perform_near_target_adjustment()`：使用四个真实单周期 translation action 的连续坐标预测和既有 target-owned corridor safety 做有限次数精调；每次动作后强制视觉定位；
 - `execute_motion_astar_action()`：直接执行 Planner 的 action key，可合并连续同动作，按 confidence/距离限制 batch，随后定位并重规划；
 - `choose_translation_action()`：前进、短距离正后方倒退和平移；
 - `adaptive_relocalization_decision()`：动作预算、置信度、不确定度、阶段和大转向触发；

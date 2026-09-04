@@ -126,7 +126,8 @@ cp /home/pi/robot_tonypi/action_groups/*.d6a /home/pi/TonyPi/ActionGroups/
 
 | 配置 | 当前值 |
 |---|---:|
-| task target 到达半径 | `4 cm` |
+| task target 到达半径 | `5 cm`（使用真实 Pose 连续坐标判断） |
+| Near Target Adjustment | `5 < distance ≤ 10 cm`，最多 `4` 次 |
 | task target yaw 容差 | `10°` |
 | 每目标最大导航步骤 | `80` |
 | 普通导航最小 clearance | `25 cm` |
@@ -138,7 +139,9 @@ cp /home/pi/robot_tonypi/action_groups/*.d6a /home/pi/TonyPi/ActionGroups/
 | 左/右平移 | `+4.0 / -3.0 cm/周期` |
 | 大左/右转模型 | `+15 / -18°/逻辑动作` |
 
-`navigate_to_screen()` 只建立一次正式 goal：`interaction_target_xy + desired_yaw_deg`，但分两阶段消费它。`POSITION_NAVIGATION` 的 `MapModel.plan_motion_actions()` 保留 yaw state 来正确解释 forward/strafe/reverse 的世界方向，终点条件和 heuristic 只面向 interaction XY；为限制搜索规模并避免细碎 turn/translate 折线，位置阶段只扩展对称的物理 ±90° quarter-turn macro。Position 的 turn fixed/per-degree/large/in-place/consecutive/reverse-turn 主代价全部为 0，路径首先按安全平移距离、障碍/净空、远离目标和动作切换代价选择，再以更少 turn 次数破同代价平局；rotation sweep safety 始终保留。Executor 仍按 `turn_*_fast` 的真实 7.5°/cycle 分批执行并重规划。`FINAL_YAW_ALIGNMENT` 在 XY 到达且视觉 Pose 新鲜后才通过原有物理转向闭环校正最终 yaw；`require_goal_yaw=True` 和兼容路径评分仍保留全局 turn cost 语义。Planner 返回带物理预测起止 Pose、动作 key、周期数和代价的 `NavigationPlan`；Executor 不再根据 XY waypoint 猜动作。当前目标建筑的软 inflation 可在这条规划中豁免，但场界、真实建筑 hard occupancy、机器人 footprint、无关建筑、动态障碍和 corridor 检查始终生效。
+`navigate_to_screen()` 只建立一次正式 goal：`interaction_target_xy + desired_yaw_deg`。真实 Pose 距离大于 10 cm 时，`POSITION_NAVIGATION` 使用现有 5 cm grid Motion A*；`5 < distance ≤ 10 cm` 时进入 `NEAR_TARGET_ADJUSTMENT`，不再调用 A*，而是用 motion config 的连续坐标模型试算 `forward_fast/back_fast/strafe_left_fast/strafe_right_fast ×1`，选择安全且预测距离最小的缩距动作，执行一次后强制 AprilTag 定位；真实距离 `≤5 cm` 才进入 `FINAL_YAW_ALIGNMENT`。精调最多 4 次，耗尽后交给既有 navigation recovery，不能无限循环。Position A* 原有 yaw state、±90° quarter-turn、turn primary cost=0、reverse≤15 cm、障碍/净空安全和最终 yaw deferred 规则均保持不变。
+
+全局网格继续保持 5 cm：它负责长距离路径、障碍绕行和方向规划。真实单周期动作只有 forward 3.5 cm、back 2.5 cm、left 4 cm、right 3 cm，很多有效小动作在离散化后仍落在同一个 grid cell；把这些动作全部加入全局 A* 或把网格改为 2.5 cm 会显著扩大 XY×yaw 状态空间。因此最后 5–10 cm 单独使用有限次数的连续坐标闭环，而不是扩大全局搜索。
 
 自适应重定位使用动作数、运动不确定度、Pose 置信度和导航阶段：
 
