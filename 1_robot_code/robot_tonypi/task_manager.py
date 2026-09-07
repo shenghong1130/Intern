@@ -5077,6 +5077,9 @@ class TaskManager:
         navigation_mode: str = "normal",
         near_wall: bool = False,
         recovery: bool = False,
+        turn_objective_deg: float = 0.0,
+        rotation_sweep_safe: bool = False,
+        obstacle_tight: bool = False,
     ) -> Tuple[int, str]:
         nav = self.config["navigation"]
         pose = self.state.pose
@@ -5084,6 +5087,44 @@ class TaskManager:
         if pose is None or not bool(nav.get("adaptive_action_batch_enabled", True)):
             return 1 if pose is None else requested, "adaptive_disabled_or_pose_missing"
         confidence = self.effective_localization_confidence(pose)
+        turn_objective = bool(
+            action_kind == "turn"
+            and abs(float(turn_objective_deg)) >= float(
+                nav.get("turn_objective_min_deg", 45.0)
+            )
+        )
+        objective_batch_allowed = bool(
+            turn_objective
+            and confidence in (Confidence.HIGH, Confidence.MEDIUM)
+            and rotation_sweep_safe
+            and not obstacle_tight
+            and not near_wall
+            and not recovery
+            and str(getattr(
+                self, "turn_progress_status", TurnProgressStatus.VERIFIED_PROGRESS.value
+            )) != TurnProgressStatus.VERIFIED_NO_PROGRESS.value
+        )
+        if objective_batch_allowed:
+            cap = max(1, int(nav.get(
+                "turn_objective_max_cycles_{}".format(confidence.value.lower()),
+                requested,
+            )))
+            selected = max(1, min(requested, cap))
+            reason = "turn_objective,confidence_{},rotation_sweep_safe".format(
+                confidence.value.lower()
+            )
+            self.debug.event(
+                "turn_objective_batch_selected",
+                localization_confidence=confidence.value,
+                turn_objective_deg=round(float(turn_objective_deg), 3),
+                requested_action_cycles=requested,
+                selected_action_cycles=selected,
+                rotation_sweep_safe=True,
+                obstacle_tight=False,
+                adaptive_batch_reason=reason,
+                navigation_mode=navigation_mode,
+            )
+            return selected, reason
         if action_kind in ("forward", "reverse", "strafe", "turn"):
             prefix = action_kind
         else:
@@ -6316,8 +6357,44 @@ class TaskManager:
             return True
         if bool(self.config["navigation"].get("boundary_safe_turn_enabled", True)) and self.is_near_boundary(pose):
             return self.turn_toward_yaw_for_recovery(target_yaw)
+        nav = self.config["navigation"]
+        target_screen_id = getattr(self, "current_target_screen_id", None)
+        if target_screen_id is not None:
+            rotation_safe = self.map.target_rotation_sweep_clear(
+                pose.xy(),
+                float(nav.get("turn_sweep_radius_cm", 10.0)),
+                float(nav.get("normal_navigation_max_cost", 55.0)),
+                int(target_screen_id),
+            )
+            clearance = self.map.non_target_clearance_cm(
+                pose.xy(), int(target_screen_id)
+            )
+        else:
+            rotation_safe = self.map.rotation_sweep_clear(
+                pose.xy(),
+                float(nav.get("turn_sweep_radius_cm", 10.0)),
+                float(nav.get("normal_navigation_max_cost", 55.0)),
+            )
+            clearance = self.map.robot_clearance_cm(pose.xy())
+        obstacle_tight = float(clearance) <= float(nav.get(
+            "relocalize_obstacle_tight_clearance_cm", 20.0
+        ))
+        objective_batch_allowed = bool(
+            abs(diff) >= float(nav.get("turn_objective_min_deg", 45.0))
+            and self.effective_localization_confidence(pose) in (
+                Confidence.HIGH, Confidence.MEDIUM
+            )
+            and rotation_safe
+            and not obstacle_tight
+            and str(getattr(
+                self, "turn_progress_status", TurnProgressStatus.VERIFIED_PROGRESS.value
+            )) != TurnProgressStatus.VERIFIED_NO_PROGRESS.value
+        )
         before_pose = self.copy_pose(pose)
-        result = self.motion.turn_toward(diff)
+        result = self.motion.turn_toward(
+            diff,
+            objective_batch_allowed=objective_batch_allowed,
+        )
         if result is not None:
             return self.monitor_turn_result(before_pose, target_yaw, result, "turn_toward")
         return True
@@ -7966,6 +8043,27 @@ class TaskManager:
             requested * unit,
             goal_distance,
             navigation_mode="normal",
+            turn_objective_deg=(
+                sum(float(item.configured_yaw_deg) for item in same)
+                if kind == "turn" else 0.0
+            ),
+            rotation_sweep_safe=(
+                self.map.target_rotation_sweep_clear(
+                    self.state.pose.xy(),
+                    float(self.config["navigation"].get("turn_sweep_radius_cm", 10.0)),
+                    float(self.config["navigation"].get("normal_navigation_max_cost", 55.0)),
+                    target.screen_id,
+                )
+                if kind == "turn" else False
+            ),
+            obstacle_tight=(
+                float(self.map.non_target_clearance_cm(
+                    self.state.pose.xy(), target.screen_id
+                )) <= float(self.config["navigation"].get(
+                    "relocalize_obstacle_tight_clearance_cm", 20.0
+                ))
+                if kind == "turn" else False
+            ),
         )
         pose_before = self.copy_pose(self.state.pose)
         planner_predicted_pose = first.predicted_end_pose
@@ -8143,6 +8241,15 @@ class TaskManager:
             adaptive_batch_reason=batch_reason,
         )
         if not result.ok:
+            if kind == "turn" and int(actual_cycles) > 0:
+                self.post_action_relocalize(
+                    "motion_astar_turn_incomplete",
+                    pose_before,
+                    result,
+                    goal.interaction_target_xy,
+                    navigation_mode="normal",
+                    force_reason="turn_execution_incomplete",
+                )
             self.last_navigation_failure_reason = "hardware_failure"
             return False
         if kind == "turn":

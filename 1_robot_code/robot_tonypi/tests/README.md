@@ -68,7 +68,7 @@ python3 -m unittest robot_tonypi.tests.test_mission_scheduler -v
 
 ## 5. `test_mission_refactor.py`（15 项）
 
-集中检查本次主链路重构：严格场界/真实建筑 Pose gate、soft inflation 合法 Pose、moderate suspect 与 hard jump、失败分类计数、25 cm 目标评分、locked/exclusion 规则、position-only Motion A*、到点后 final-yaw alignment、物理 yaw lattice、Position 免费安全转向与 turn-count tie-break、15 cm normal reverse 边界/角度/横差/corridor gate，以及 Planner action key 被 Executor 原样执行。
+集中检查本次主链路重构：严格场界/真实建筑 Pose gate、soft inflation 合法 Pose、moderate suspect 与 hard jump、失败分类计数、25 cm 目标评分、locked/exclusion 规则、position-only Motion A*、到点后 final-yaw alignment、物理 yaw lattice、Position 轻量转向代价、横移转换 penalty、少转弯偏好与必要转向、15 cm normal reverse gate，以及 Planner turn objective 被 Executor 一次批量执行。
 
 ### `test_near_target_adjustment.py`
 
@@ -84,6 +84,7 @@ python3 -m unittest robot_tonypi.tests.test_mission_refactor -v
 
 - 实际/请求动作周期、partial failure 和 dead reckoning；
 - 不同动作的不确定度、自适应批次和 phase-specific relocalization budget；
+- HIGH/MEDIUM 安全大转角 objective 连续执行，以及 LOW/障碍紧/扫掠不安全/进展异常的短批次退化；
 - 大转向只触发一次定位，新的大转向可再次触发；
 - 普通 pan 在首个 Pose 成功时停止；required-target 模式忽略错误 Tag 并继续；
 - no-tag 和 `pose_unavailable_with_tags` 严格分离、第二次 genuine no-tag 触发、墙边横移、5 cm 后退 + 向内 45° 身体转向、中央复拍和 3 cycle 升级；

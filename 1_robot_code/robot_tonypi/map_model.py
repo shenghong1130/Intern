@@ -790,6 +790,12 @@ class MapModel:
         in_place_turn_penalty = max(
             0.0, float(navigation_cfg.get("action_planner_in_place_turn_penalty_cm", 18.0))
         )
+        lateral_conversion_penalty = max(
+            0.0,
+            float(navigation_cfg.get(
+                "action_planner_lateral_conversion_penalty_cm", 18.0
+            )),
+        )
         path_reversal_penalty = max(
             0.0, float(navigation_cfg.get("action_planner_path_reversal_penalty_cm", 35.0))
         )
@@ -893,6 +899,7 @@ class MapModel:
                     "consecutive_turn_penalty": consecutive_turn_penalty,
                     "reverse_turn_penalty": reverse_turn_penalty,
                     "in_place_turn_penalty": in_place_turn_penalty,
+                    "lateral_conversion_penalty": lateral_conversion_penalty,
                 }
             )
         return actions
@@ -936,6 +943,7 @@ class MapModel:
         gx, gy, yaw_idx = state[:3]
         previous_turn_sign = int(state[3]) if len(state) >= 4 else 0
         previous_motion_code = int(state[4]) if len(state) >= 5 else 0
+        turn_before_translation = int(state[5]) if len(state) >= 6 else 0
         current_xy = self.xy_from_grid((gx, gy))
         yaw_delta = float(action.get("yaw_deg", 0.0))
         if abs(yaw_delta) > 1e-6:
@@ -969,7 +977,14 @@ class MapModel:
                 turn_cost += float(action.get("consecutive_turn_penalty", 0.0))
             elif previous_turn_sign == -turn_sign:
                 turn_cost += float(action.get("reverse_turn_penalty", 0.0))
-            return (gx, gy, (yaw_idx + bin_delta) % yaw_bins, turn_sign, previous_motion_code), turn_cost
+            if previous_motion_code == 1 and turn_before_translation == -turn_sign:
+                turn_cost += float(action.get(
+                    "lateral_conversion_penalty", 0.0
+                ))
+            return (
+                gx, gy, (yaw_idx + bin_delta) % yaw_bins,
+                turn_sign, previous_motion_code, 0,
+            ), turn_cost
 
         yaw = math.radians(self.yaw_from_action_bin(
             yaw_idx, yaw_bin_deg, yaw_origin_deg
@@ -1043,7 +1058,12 @@ class MapModel:
             goal_xy = self.xy_from_grid(tuple(goal_node))
             away_cm = max(0.0, distance_xy(next_xy, goal_xy) - distance_xy(current_xy, goal_xy))
             move_cost += away_cm * float(action.get("away_from_goal_penalty_scale", 0.0))
-        return (nx, ny, yaw_idx, 0, motion_code), move_cost
+        preceding_turn_sign = (
+            previous_turn_sign if previous_turn_sign else turn_before_translation
+        )
+        return (
+            nx, ny, yaw_idx, 0, motion_code, preceding_turn_sign,
+        ), move_cost
 
     def plan_motion_actions(
         self,
@@ -1090,11 +1110,10 @@ class MapModel:
         if require_goal_yaw:
             actions = all_actions
         else:
-            # Forward plus left/right strafe already spans the robot's local
-            # plane.  Position search therefore needs only a physical quarter
-            # turn to expose the otherwise unavailable rearward direction.
-            # This avoids exploring hundreds of tiny-yaw variants and avoids
-            # turn/translate/turn zigzags that do not improve XY progress.
+            # Forward plus left/right strafe spans the local plane.  Physical
+            # quarter turns remain available for materially shorter or safer
+            # routes, but carry a light real cost so a close translation-only
+            # route wins instead of a gratuitous turn/forward sequence.
             actions = []
             for action in all_actions:
                 if abs(float(action.get("yaw_deg", 0.0))) > 1e-9:
@@ -1117,12 +1136,14 @@ class MapModel:
                 quarter_turn["name"] = name
                 quarter_turn["kind"] = name
                 quarter_turn["yaw_deg"] = yaw_deg
-                # Formal POSITION_NAVIGATION optimizes safe translation length.
-                # Rotation remains a collision-checked state transition, but
-                # none of the global turn discouragement enters its primary
-                # path cost.  Turn count is handled only as a lexicographic
-                # tie-break below.
-                quarter_turn["base_cost"] = 0.0
+                quarter_turn["base_cost"] = (
+                    max(0.0, float(navigation_cfg.get(
+                        "action_planner_position_turn_fixed_cost_cm", 4.0
+                    )))
+                    + abs(yaw_deg) * max(0.0, float(navigation_cfg.get(
+                        "action_planner_position_turn_cost_cm_per_deg", 0.08
+                    )))
+                )
                 quarter_turn["in_place_turn_penalty"] = 0.0
                 quarter_turn["consecutive_turn_penalty"] = 0.0
                 quarter_turn["reverse_turn_penalty"] = 0.0
@@ -1135,7 +1156,7 @@ class MapModel:
         yaw_origin_deg = normalize_angle_deg(start_pose.yaw_deg)
         start_grid = self.grid_pos(start_xy)
         start_state = (
-            start_grid[0], start_grid[1], 0, 0, 0,
+            start_grid[0], start_grid[1], 0, 0, 0, 0,
         )
         goal_node = self.grid_pos(goal_xy)
         position_tolerance = max(0.1, float(
@@ -1150,7 +1171,8 @@ class MapModel:
             navigation_cfg.get("reverse_prefer_max_goal_distance_cm", 15.0)
         ))
         self.last_action_plan_metrics.update({
-            "turn_primary_cost_enabled": bool(require_goal_yaw),
+            "turn_primary_cost_enabled": True,
+            "position_turn_cost_enabled": not bool(require_goal_yaw),
             "reverse_max_goal_distance_cm": reverse_limit,
             "yaw_search_mode": (
                 "physical_action_lattice"
@@ -1200,8 +1222,8 @@ class MapModel:
 
         start_h = heuristic_for(start_state, self.xy_from_grid(start_grid))
         # Heap ordering is lexicographic: primary path cost first, then turn
-        # count.  This keeps position turns free without preferring a redundant
-        # zero-cost turn sequence over an equally short plan.
+        # count.  The positive position-turn cost supplies the light preference
+        # while this tie-break keeps exactly equal routes deterministic.
         open_heap = [(start_h, 0, 0, start_state)]
         counter = 0
         came = {}
@@ -1252,6 +1274,8 @@ class MapModel:
                         reverse_reason = "goal_too_far_for_reverse"
                     elif int(current[3]) != 0:
                         reverse_reason = "reverse_immediately_after_turn"
+                    elif current != start_state and int(current[4]) not in (0, -1):
+                        reverse_reason = "reverse_after_translation"
                     elif local_forward >= 0.0:
                         reverse_reason = "goal_not_behind"
                     elif rear_error > rear_tolerance:

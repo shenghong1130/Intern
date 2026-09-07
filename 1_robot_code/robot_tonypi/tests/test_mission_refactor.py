@@ -273,11 +273,12 @@ class MotionAStarTests(unittest.TestCase):
             [item.kind for item in near_rear.actions],
             ["reverse", "reverse"],
         )
-        self.assertEqual(far_rear.metrics["turn_cost"], 0.0)
-        self.assertFalse(far_rear.metrics["turn_primary_cost_enabled"])
+        self.assertGreater(far_rear.metrics["turn_cost"], 0.0)
+        self.assertTrue(far_rear.metrics["turn_primary_cost_enabled"])
+        self.assertTrue(far_rear.metrics["position_turn_cost_enabled"])
         self.assertEqual(far_rear.metrics["yaw_search_mode"], "quarter_turn_position")
 
-    def test_position_free_turn_prefers_shorter_translation(self):
+    def test_position_turn_remains_available_for_rear_goal(self):
         model, config = self.open_model()
         start = RobotPose(102.5, 102.5, 0.0, Confidence.HIGH, "TEST", 1.0)
         plan = model.plan_motion_actions(
@@ -288,7 +289,14 @@ class MotionAStarTests(unittest.TestCase):
         kinds = [item.kind for item in plan.actions]
         self.assertEqual(kinds[:2], ["turn_left_90", "turn_left_90"])
         self.assertEqual(kinds[2:], ["forward", "forward"])
-        self.assertAlmostEqual(plan.total_cost, 56.0)
+        self.assertGreater(plan.total_cost, 56.0)
+        self.assertAlmostEqual(
+            plan.metrics["turn_cost"],
+            2.0 * (
+                config["navigation"]["action_planner_position_turn_fixed_cost_cm"]
+                + 90.0 * config["navigation"]["action_planner_position_turn_cost_cm_per_deg"]
+            ),
+        )
 
     def test_position_quarter_turn_can_enable_long_forward_segment(self):
         model, config = self.open_model()
@@ -301,6 +309,42 @@ class MotionAStarTests(unittest.TestCase):
         self.assertEqual(
             [item.kind for item in plan.actions],
             ["turn_left_90", "forward", "forward"],
+        )
+
+    def test_close_lateral_route_prefers_strafe_but_long_route_may_turn(self):
+        model, config = self.open_model()
+        start = RobotPose(102.5, 102.5, 0.0, Confidence.HIGH, "TEST", 1.0)
+        close = model.plan_motion_actions(
+            start, (102.5, 152.5), 0.0,
+            config["navigation"], config["motion"],
+            goal_position_tolerance_cm=4.0,
+        )
+        long = model.plan_motion_actions(
+            start, (102.5, 162.5), 0.0,
+            config["navigation"], config["motion"],
+            goal_position_tolerance_cm=4.0,
+        )
+        self.assertTrue(all(item.kind.startswith("strafe_") for item in close.actions))
+        self.assertIn("turn_left_90", [item.kind for item in long.actions])
+
+    def test_turn_forward_opposite_turn_gets_lateral_conversion_penalty(self):
+        model, config = self.open_model()
+        actions = model.action_planner_actions(
+            config["navigation"], config["motion"]
+        )
+        turn = next(item for item in actions if item["name"] == "turn_right_small")
+        gx, gy = model.grid_pos((102.5, 102.5))
+        baseline_state = (gx, gy, 0, 0, 1, 0)
+        conversion_state = (gx, gy, 0, 0, 1, 1)
+        _, baseline = model.action_planner_transition(
+            baseline_state, turn, 7.5, 48, 55.0, 1.0
+        )
+        _, conversion = model.action_planner_transition(
+            conversion_state, turn, 7.5, 48, 55.0, 1.0
+        )
+        self.assertAlmostEqual(
+            conversion - baseline,
+            config["navigation"]["action_planner_lateral_conversion_penalty_cm"],
         )
 
     def test_reverse_rejects_bad_rear_angle_and_lateral_error(self):
@@ -527,6 +571,55 @@ class MotionAStarTests(unittest.TestCase):
         manager.last_navigation_failure_reason = ""
         self.assertTrue(manager.execute_motion_astar_action(plan, screen, goal))
         self.assertEqual(calls, [("forward_fast", 1)])
+
+    def test_executor_runs_safe_quarter_turn_as_one_objective_batch(self):
+        manager = bare_manager()
+        screen = manager.map.screens[1]
+        manager.current_target_screen_id = 1
+        manager.target_generation_counter = 1
+        goal = manager.target_goal_from_screen(screen, 1)
+        manager.current_target_goal = goal
+        start = RobotPose(
+            150.0, 50.0, 0.0, Confidence.HIGH, "VISION", now_s()
+        )
+        end = RobotPose(
+            150.0, 50.0, 90.0, Confidence.HIGH,
+            "MOTION_ASTAR_PHYSICAL_MODEL", now_s(),
+        )
+        manager.state.set_pose(start)
+        manager.last_localize_success_s = now_s()
+        manager.turn_progress_status = "VERIFIED_PROGRESS"
+        manager.map.target_rotation_sweep_clear = lambda *args, **kwargs: True
+        manager.map.non_target_clearance_cm = lambda *args, **kwargs: 100.0
+        action = PlannedNavigationAction(
+            "turn_left_90", "turn_left_fast", 12,
+            start, end, 0.0, 90.0, 90.0, 11.2,
+        )
+        plan = NavigationPlan(
+            goal.interaction_target_xy, goal.desired_yaw_deg,
+            11.2, [start.xy()], [action],
+        )
+        calls = []
+        manager.motion = SimpleNamespace(run=lambda key, times_override=1: (
+            calls.append((key, times_override))
+            or ActionResult(
+                key, key, times_override, 0.0,
+                model_yaw_deg=7.5 * times_override,
+                ok=True,
+                executed_times=times_override,
+            )
+        ))
+        monitored = []
+        manager.monitor_turn_result = lambda *args: monitored.append(args) or True
+        self.assertTrue(manager.execute_motion_astar_action(plan, screen, goal))
+        self.assertEqual(calls, [("turn_left_fast", 12)])
+        self.assertEqual(len(monitored), 1)
+        objective = [
+            data for name, data in manager.debug.events
+            if name == "turn_objective_batch_selected"
+        ]
+        self.assertEqual(objective[-1]["turn_objective_deg"], 90.0)
+        self.assertEqual(objective[-1]["selected_action_cycles"], 12)
 
 
 if __name__ == "__main__":

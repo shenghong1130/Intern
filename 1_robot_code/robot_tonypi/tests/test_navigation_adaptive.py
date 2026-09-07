@@ -138,6 +138,66 @@ class AdaptiveBatchTests(unittest.TestCase):
         turn = manager.select_adaptive_action_batch("turn", 8, 7.5, 100, 100)[0]
         self.assertEqual((forward, strafe, turn), (6, 4, 2))
 
+    def test_safe_high_and_medium_turn_objectives_run_as_one_batch(self):
+        for confidence in (Confidence.HIGH, Confidence.MEDIUM):
+            manager = adaptive_manager(confidence)
+            cycles, reason = manager.select_adaptive_action_batch(
+                "turn", 12, 7.5, 90.0, 100.0,
+                turn_objective_deg=90.0,
+                rotation_sweep_safe=True,
+            )
+            self.assertEqual(cycles, 12)
+            self.assertIn("turn_objective", reason)
+
+    def test_turn_objective_falls_back_to_short_batch_when_risk_is_high(self):
+        low = adaptive_manager(Confidence.LOW)
+        tight = adaptive_manager(Confidence.HIGH)
+        unsafe = adaptive_manager(Confidence.HIGH)
+        stalled = adaptive_manager(Confidence.HIGH)
+        stalled.turn_progress_status = "VERIFIED_NO_PROGRESS"
+        common = dict(
+            action_kind="turn",
+            requested_cycles=12,
+            step_cm=7.5,
+            remaining_cm=90.0,
+            goal_distance_cm=100.0,
+            turn_objective_deg=90.0,
+        )
+        self.assertEqual(low.select_adaptive_action_batch(
+            **common, rotation_sweep_safe=True
+        )[0], 1)
+        self.assertEqual(tight.select_adaptive_action_batch(
+            **common, rotation_sweep_safe=True, obstacle_tight=True
+        )[0], 2)
+        self.assertEqual(unsafe.select_adaptive_action_batch(
+            **common, rotation_sweep_safe=False
+        )[0], 2)
+        self.assertEqual(stalled.select_adaptive_action_batch(
+            **common, rotation_sweep_safe=True
+        )[0], 2)
+
+    def test_motion_turn_objective_batches_large_rotation(self):
+        config = load_config(None)
+        state = RobotState(config)
+        state.set_pose(RobotPose(
+            150.0, 150.0, 0.0, Confidence.HIGH, "VISION", now_s()
+        ))
+        calls = []
+        hardware = SimpleNamespace(run_action=lambda key, times_override=None: (
+            calls.append((key, times_override))
+            or ActionResult(
+                key, key, int(times_override), 0.0,
+                model_yaw_deg=(
+                    config["motion"]["actions"][key]["yaw_deg"]
+                    * int(times_override)
+                ),
+                executed_times=int(times_override),
+            )
+        ))
+        controller = MotionController(hardware, state, DebugStub())
+        controller.turn_toward(90.0, objective_batch_allowed=True)
+        self.assertEqual(calls, [("turn_left_large", 6)])
+
     def test_reverse_batch_cap_and_uncertainty_are_configured(self):
         manager = adaptive_manager()
         reverse = manager.select_adaptive_action_batch("reverse", 8, 2.5, 100, 100)[0]

@@ -147,7 +147,12 @@ class MotionController:
             )
         return result
 
-    def turn_toward(self, diff_yaw_deg: float):
+    def turn_toward(
+        self,
+        diff_yaw_deg: float,
+        *,
+        objective_batch_allowed: bool = False,
+    ):
         tolerance = float(self.state.config["navigation"]["turn_tolerance_deg"])
         if abs(diff_yaw_deg) <= tolerance:
             return None
@@ -159,7 +164,16 @@ class MotionController:
                 step = abs(float(actions[key].get("yaw_deg", 45.0)))
                 cycles = max(1, int(math.floor((abs(diff_yaw_deg) + tolerance) / max(1.0, step))))
                 max_cycles = int(self.state.config["navigation"].get("max_large_turn_cycles_per_step", 2))
-                if self.state.pose.confidence == Confidence.HIGH:
+                if objective_batch_allowed and self.state.pose.confidence in (
+                    Confidence.HIGH, Confidence.MEDIUM
+                ):
+                    adaptive_max = int(self.state.config["navigation"].get(
+                        "turn_objective_max_cycles_{}".format(
+                            self.state.pose.confidence.value.lower()
+                        ),
+                        max_cycles,
+                    ))
+                elif self.state.pose.confidence == Confidence.HIGH:
                     adaptive_max = int(self.state.config["navigation"].get("max_turn_cycles_high", 2))
                 elif self.state.pose.confidence == Confidence.MEDIUM:
                     adaptive_max = int(self.state.config["navigation"].get("max_turn_cycles_medium", 1))
@@ -167,6 +181,15 @@ class MotionController:
                     adaptive_max = int(self.state.config["navigation"].get("max_turn_cycles_low", 1))
                 max_cycles = min(max_cycles, max(1, adaptive_max))
                 cycles = max(1, min(max_cycles, cycles))
+                if self.debug and objective_batch_allowed and cycles > 1:
+                    self.debug.event(
+                        "turn_objective_started",
+                        target_delta_deg=round(float(diff_yaw_deg), 3),
+                        action_key=key,
+                        action_yaw_per_cycle_deg=round(float(step), 3),
+                        selected_action_cycles=cycles,
+                        localization_confidence=self.state.pose.confidence.value,
+                    )
                 return self.run(key, times_override=cycles)
         if diff_yaw_deg > 0:
             key = "turn_left_fast" if abs(diff_yaw_deg) >= 12.0 else "turn_left_micro"

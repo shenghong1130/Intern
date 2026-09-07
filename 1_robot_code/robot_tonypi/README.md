@@ -139,7 +139,7 @@ cp /home/pi/robot_tonypi/action_groups/*.d6a /home/pi/TonyPi/ActionGroups/
 | 左/右平移 | `+4.0 / -3.0 cm/周期` |
 | 大左/右转模型 | `+15 / -18°/逻辑动作` |
 
-`navigate_to_screen()` 只建立一次正式 goal：`interaction_target_xy + desired_yaw_deg`。真实 Pose 距离大于 10 cm 时，`POSITION_NAVIGATION` 使用现有 5 cm grid Motion A*；`5 < distance ≤ 10 cm` 时进入 `NEAR_TARGET_ADJUSTMENT`，不再调用 A*，而是用 motion config 的连续坐标模型试算 `forward_fast/back_fast/strafe_left_fast/strafe_right_fast ×1`，选择安全且预测距离最小的缩距动作，执行一次后强制 AprilTag 定位；真实距离 `≤5 cm` 才进入 `FINAL_YAW_ALIGNMENT`。精调最多 4 次，耗尽后交给既有 navigation recovery，不能无限循环。Position A* 原有 yaw state、±90° quarter-turn、turn primary cost=0、reverse≤15 cm、障碍/净空安全和最终 yaw deferred 规则均保持不变。
+`navigate_to_screen()` 只建立一次正式 goal：`interaction_target_xy + desired_yaw_deg`。真实 Pose 距离大于 10 cm 时，`POSITION_NAVIGATION` 使用现有 5 cm grid Motion A*；`5 < distance ≤ 10 cm` 时进入 `NEAR_TARGET_ADJUSTMENT`，不再调用 A*，而是用 motion config 的连续坐标模型试算 `forward_fast/back_fast/strafe_left_fast/strafe_right_fast ×1`，选择安全且预测距离最小的缩距动作，执行一次后强制 AprilTag 定位；真实距离 `≤5 cm` 才进入 `FINAL_YAW_ALIGNMENT`。精调最多 4 次，耗尽后交给既有 navigation recovery，不能无限循环。Position A* 保留 yaw state、forward/strafe/受限 reverse 和安全的 ±90° quarter-turn；quarter-turn 使用轻量正代价，并对 `turn→forward→反向 turn` 的横移转换额外惩罚，因此近似等长时偏向少转弯，但明显缩短路线或绕障时仍可正常转向。
 
 全局网格继续保持 5 cm：它负责长距离路径、障碍绕行和方向规划。真实单周期动作只有 forward 3.5 cm、back 2.5 cm、left 4 cm、right 3 cm，很多有效小动作在离散化后仍落在同一个 grid cell；把这些动作全部加入全局 A* 或把网格改为 2.5 cm 会显著扩大 XY×yaw 状态空间。因此最后 5–10 cm 单独使用有限次数的连续坐标闭环，而不是扩大全局搜索。
 
@@ -147,7 +147,7 @@ cp /home/pi/robot_tonypi/action_groups/*.d6a /home/pi/TonyPi/ActionGroups/
 
 - normal HIGH：最多 6 个动作，不确定度上限 6.0；
 - recovery HIGH：最多 4 个动作，上限 4.5；
-- LOW confidence、大转向、障碍紧张、ARRIVED 前会提前定位。
+- LOW confidence、障碍紧张、转动扫掠不安全或进展异常时会提前定位；安全的 HIGH/MEDIUM 大角度 turn objective 会连续完成多个 cycle 后统一定位。
 
 距离目标大于 `15 cm` 时 HIGH confidence 的 forward/strafe 可使用较大胆 batch；进入 `15 cm` 后限制为单周期。普通导航的 REVERSE 只在最终目标距离不超过 `15 cm`、目标位于后方、后向角不超过 30°、横向误差不超过 8 cm、确实缩短距离且后方 corridor 安全时进入 A* 扩展；Planner 不会先转身再立即 reverse。Recovery、NFC retry retreat 和 post-interaction retreat 不受此限制。
 
@@ -337,6 +337,7 @@ shuixianhua taohua yinghua yuanweihua zijinghua
 - `no_tag` 与“看见 Tag 但没有 Pose”分开计数；只有完整扫描连续 2 次零 Tag 才启动专用恢复。墙边优先安全横移，普通位置后退约 5 cm 并向场内身体转约 45°，每轮只先做中央复拍，最多 3 轮后升级全局恢复。
 - Turn watchdog 区分 `VERIFIED_PROGRESS`、`PROGRESS_UNVERIFIED` 和 `VERIFIED_NO_PROGRESS`；无可信 post-turn Pose 不增加 verified-no-progress counter，也不能产生 `RECOVERY_NO_PROGRESS`。
 - 正式位置搜索的 ±90° quarter-turn 可由 15° state 精确表示；若 action-level planner 使用标定 primitive，则会把请求的 15° 自动细化到可精确表示全部转角的 1.5° lattice。无论哪种模式，`NavigationPlan`、Executor、dead reckoning 和 watchdog 都按配置物理角重建，`-18°` 不再变成虚构的 `-30°` 预测。
+- 约 45°/90° 的转向会形成 turn objective：仅在 HIGH/MEDIUM、rotation sweep 安全、非障碍紧张且无已确认转向异常时连续执行，完成 objective 后统一视觉定位和重新 A*；LOW/风险路径保持短批次，接近目标角度后继续用 micro turn 微调。
 - 正式目标规划使用 Motion-Aware A*；相同输入失败 3 次后仍按既有规则升级到 interior recovery。普通二维 A* 保留给 debug、fallback 和 Recovery 兼容。
 - near-wall 恢复顺序为后退、左右平移、小转向；普通动作全被拒绝时可进入 bounded forced escape。真实动作后会重新定位。
 - 单个导航目标失败进入临时失败集合，不是永久黑名单；所有未完成目标都临时失败时执行全局恢复并释放它们。
