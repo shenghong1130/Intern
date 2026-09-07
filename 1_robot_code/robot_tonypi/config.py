@@ -57,7 +57,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "min_tag_area_px": 350.0,
         "edge_margin_px": 35.0,
         "allowed_min_id": 1,
-        "allowed_max_id": 36,
+        "allowed_max_id": 61,
         "startup_attempts": 14,
         "startup_search_actions": ["turn_left_fast", "turn_left_fast", "turn_left_fast", "turn_left_fast", "back_fast"],
         "scan_pan_angles": [100, 135, 65, 155, 45],

@@ -1553,7 +1553,9 @@ class TaskManager:
         ) or {})
         rejected = list(diagnostics.get("rejected_tags", []))
         if additional_rejection is not None:
-            rejected.append(dict(additional_rejection))
+            detail = dict(additional_rejection)
+            detail.setdefault("rejection_reason", detail.get("reason"))
+            rejected.append(detail)
         if not diagnostics and tags and not accepted:
             for tag in tags:
                 try:
@@ -1562,6 +1564,7 @@ class TaskManager:
                     area = None
                 rejected.append({
                     "tag_id": int(tag.tag_id),
+                    "tag_type": Localizer.localization_tag_type(int(tag.tag_id)),
                     "tag_area_px": area,
                     "tag_center_px": [
                         round(float(tag.center[0]), 1),
@@ -1569,7 +1572,21 @@ class TaskManager:
                     ] if getattr(tag, "center", None) is not None else None,
                     "stage": "pose_estimation",
                     "reason": "pose_not_produced",
+                    "rejection_reason": "pose_not_produced",
                 })
+        selection = {
+            "selected_tag_id": diagnostics.get("selected_tag_id"),
+            "selected_tag_type": diagnostics.get("selected_tag_type"),
+            "fallback_to_ground": bool(diagnostics.get("fallback_to_ground", False)),
+        }
+        self.debug.event(
+            "localization_tag_selection",
+            pan=float(pan),
+            localization_reason=reason,
+            accepted=bool(accepted),
+            rejected_tags=rejected,
+            **selection
+        )
         for item in rejected:
             self.debug.event(
                 "localization_tag_rejected",
@@ -1589,6 +1606,7 @@ class TaskManager:
                     "candidate_localization_tag_ids", []
                 ),
                 rejected_tags=rejected,
+                **selection,
                 result=(
                     "pose_rejected_by_localizer"
                     if additional_rejection is not None
@@ -9478,6 +9496,9 @@ class TaskManager:
                 "no_tag_recovery_exhausted": self.no_tag_recovery_exhausted,
                 "actions_since_localize": self.state.actions_since_localize,
                 "motion_uncertainty": round(self.state.motion_uncertainty, 3),
+                "tag_selection": dict(getattr(
+                    self.localizer, "last_estimation_diagnostics", {}
+                ) or {}),
             },
             "recovery": {
                 "count": self.recovery_count,

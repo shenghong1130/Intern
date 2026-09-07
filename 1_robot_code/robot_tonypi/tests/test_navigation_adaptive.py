@@ -9,7 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from robot_tonypi.config import load_config
 from robot_tonypi.load_pos import load_tag_pos
-from robot_tonypi.localizer import Localizer
+from robot_tonypi.localizer import AprilTagDetector, Localizer
 from robot_tonypi.map_model import MapModel
 from robot_tonypi.models import ActionResult, Confidence, RobotPose, ScreenStatus
 from robot_tonypi.motion import MotionController, RobotState
@@ -837,7 +837,7 @@ class LocalizerDiagnosticTests(unittest.TestCase):
     def localizer(self, outcomes):
         localizer = Localizer.__new__(Localizer)
         localizer.min_id = 1
-        localizer.max_id = 36
+        localizer.max_id = 61
         localizer.last_estimation_diagnostics = {}
         localizer.tag_area = lambda tag: float(tag.area)
         queue = dict(outcomes)
@@ -895,6 +895,90 @@ class LocalizerDiagnosticTests(unittest.TestCase):
             [item["reason"] for item in detail["rejected_tags"]],
             ["edge_margin", "pose_out_of_bounds"],
         )
+
+    def test_building_and_ground_selects_valid_building(self):
+        building_pose = RobotPose(10, 10, 0, Confidence.HIGH, "VISION_TAG_2", now_s())
+        ground_pose = RobotPose(20, 20, 0, Confidence.HIGH, "VISION_TAG_40", now_s())
+        localizer = self.localizer({2: building_pose, 40: ground_pose})
+        result, _ = localizer.estimate_from_frame(
+            np.zeros((20, 20, 3), dtype=np.uint8),
+            [self.tag(40, 1200), self.tag(2, 700)],
+        )
+        self.assertIs(result, building_pose)
+        detail = localizer.last_estimation_diagnostics
+        self.assertEqual(detail["selected_tag_id"], 2)
+        self.assertEqual(detail["selected_tag_type"], "building")
+        self.assertFalse(detail["fallback_to_ground"])
+        self.assertEqual(detail["rejected_tags"][0]["rejection_reason"], "building_pose_selected")
+
+    def test_invalid_building_falls_back_to_valid_ground(self):
+        ground_pose = RobotPose(20, 20, 0, Confidence.HIGH, "VISION_TAG_40", now_s())
+        localizer = self.localizer({
+            2: ("quality_gate", "edge_margin"),
+            40: ground_pose,
+        })
+        result, _ = localizer.estimate_from_frame(
+            np.zeros((20, 20, 3), dtype=np.uint8),
+            [self.tag(2, 900), self.tag(40, 700)],
+        )
+        self.assertIs(result, ground_pose)
+        detail = localizer.last_estimation_diagnostics
+        self.assertEqual(detail["selected_tag_id"], 40)
+        self.assertEqual(detail["selected_tag_type"], "ground")
+        self.assertTrue(detail["fallback_to_ground"])
+
+    def test_ground_only_can_localize(self):
+        ground_pose = RobotPose(20, 20, 0, Confidence.HIGH, "VISION_TAG_61", now_s())
+        localizer = self.localizer({61: ground_pose})
+        result, _ = localizer.estimate_from_frame(
+            np.zeros((20, 20, 3), dtype=np.uint8),
+            [self.tag(61, 700)],
+        )
+        self.assertIs(result, ground_pose)
+        detail = localizer.last_estimation_diagnostics
+        self.assertEqual(detail["selected_tag_type"], "ground")
+        self.assertTrue(detail["fallback_to_ground"])
+
+    def test_all_building_and_ground_candidates_invalid(self):
+        localizer = self.localizer({
+            1: ("quality_gate", "too_small"),
+            37: ("solve_pnp", "pnp_failed"),
+        })
+        result, _ = localizer.estimate_from_frame(
+            np.zeros((20, 20, 3), dtype=np.uint8),
+            [self.tag(37, 900), self.tag(1, 700)],
+        )
+        self.assertIsNone(result)
+        detail = localizer.last_estimation_diagnostics
+        self.assertEqual(detail["result"], "pose_unavailable_with_tags")
+        self.assertIsNone(detail["selected_tag_id"])
+        self.assertIsNone(detail["selected_tag_type"])
+        self.assertTrue(detail["fallback_to_ground"])
+        self.assertEqual(
+            [item["rejection_reason"] for item in detail["rejected_tags"]],
+            ["too_small", "pnp_failed"],
+        )
+
+    def test_largest_valid_tag_wins_within_each_type(self):
+        small_pose = RobotPose(10, 10, 0, Confidence.HIGH, "VISION_TAG_1", now_s())
+        large_pose = RobotPose(20, 20, 0, Confidence.HIGH, "VISION_TAG_2", now_s())
+        localizer = self.localizer({1: small_pose, 2: large_pose})
+        result, _ = localizer.estimate_from_frame(
+            np.zeros((20, 20, 3), dtype=np.uint8),
+            [self.tag(1, 500), self.tag(2, 900)],
+        )
+        self.assertIs(result, large_pose)
+        self.assertEqual(localizer.last_estimation_diagnostics["selected_tag_id"], 2)
+
+
+class AprilTagDetectorCoverageTests(unittest.TestCase):
+    def test_detector_keeps_building_and_ground_tags(self):
+        detector = AprilTagDetector.__new__(AprilTagDetector)
+        detector.detect_upscale = 1.0
+        detector.detector = SimpleNamespace(detect=lambda gray: [1, 36, 37, 61])
+        detector._parse_raw = lambda raw, scale=1.0: SimpleNamespace(tag_id=raw)
+        tags = detector.detect(np.zeros((20, 20), dtype=np.uint8))
+        self.assertEqual([tag.tag_id for tag in tags], [1, 36, 37, 61])
 
 
 class PlannerPreferenceTests(unittest.TestCase):

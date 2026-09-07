@@ -88,6 +88,11 @@ def load_camera_calibration(config) -> Tuple[np.ndarray, np.ndarray]:
 
 
 class Localizer:
+    BUILDING_TAG_MIN_ID = 1
+    BUILDING_TAG_MAX_ID = 36
+    GROUND_TAG_MIN_ID = 37
+    GROUND_TAG_MAX_ID = 61
+
     def __init__(self, tag_poses, config):
         self.tag_poses = tag_poses
         self.cfg = config
@@ -108,50 +113,95 @@ class Localizer:
     ) -> Tuple[Optional[RobotPose], object]:
         annotated = frame.copy() if annotate else frame
         best = None
-        best_area = -1.0
         detected_ids = []
         candidate_ids = []
         rejected = []
-        accepted_tag_id = None
+        selected_tag_id = None
+        selected_tag_type = None
         accepted_tag_area_px = None
         accepted_tag_center_px = None
+        candidates = {"building": [], "ground": []}
         for tag in tags:
             tag_id = int(tag.tag_id)
             detected_ids.append(tag_id)
-            if not (self.min_id <= int(tag.tag_id) <= self.max_id):
+            if not (self.min_id <= tag_id <= self.max_id):
                 rejected.append(self.tag_rejection_detail(
                     tag, "id_filter", "id_out_of_range"
                 ))
                 continue
-            candidate_ids.append(tag_id)
-            area = self.tag_area(tag)
-            if area < best_area:
+            tag_type = self.localization_tag_type(tag_id)
+            if tag_type is None:
                 rejected.append(self.tag_rejection_detail(
-                    tag, "candidate_selection", "lower_area_than_selected"
+                    tag, "id_filter", "unsupported_localization_tag_type"
                 ))
                 continue
-            pose, stage, rejection_reason = self._solve_tag_pose_detailed(
-                tag, annotated
-            )
-            if pose is not None:
-                pose.yaw_deg = normalize_angle_deg(pose.yaw_deg - (float(head_pan_angle) - 100.0))
+            candidate_ids.append(tag_id)
+            try:
+                area = self.tag_area(tag)
+            except Exception as exc:
+                rejected.append(self.tag_rejection_detail(
+                    tag,
+                    "corner_geometry",
+                    "invalid_corner_geometry:{}".format(type(exc).__name__),
+                ))
+                continue
+            candidates[tag_type].append((area, tag))
+
+        for values in candidates.values():
+            values.sort(key=lambda item: (-float(item[0]), int(item[1].tag_id)))
+
+        fallback_to_ground = False
+        for tag_type in ("building", "ground"):
+            if tag_type == "ground":
+                if best is not None:
+                    for _, tag in candidates["ground"]:
+                        rejected.append(self.tag_rejection_detail(
+                            tag, "priority_selection", "building_pose_selected"
+                        ))
+                    break
+                fallback_to_ground = bool(candidates["ground"])
+
+            selected_index = None
+            for index, (area, tag) in enumerate(candidates[tag_type]):
+                pose, stage, rejection_reason = self._solve_tag_pose_detailed(
+                    tag, annotated
+                )
+                if pose is None:
+                    rejected.append(self.tag_rejection_detail(
+                        tag, stage, rejection_reason
+                    ))
+                    continue
+                pose.yaw_deg = normalize_angle_deg(
+                    pose.yaw_deg - (float(head_pan_angle) - 100.0)
+                )
                 best = pose
-                best_area = area
-                accepted_tag_id = tag_id
+                selected_index = index
+                selected_tag_id = int(tag.tag_id)
+                selected_tag_type = tag_type
                 accepted_tag_area_px = round(float(area), 1)
                 accepted_tag_center_px = [
                     round(float(tag.center[0]), 1),
                     round(float(tag.center[1]), 1),
                 ]
-            else:
-                rejected.append(self.tag_rejection_detail(
-                    tag, stage, rejection_reason
-                ))
+                break
+
+            if selected_index is not None:
+                for _, tag in candidates[tag_type][selected_index + 1:]:
+                    rejected.append(self.tag_rejection_detail(
+                        tag, "candidate_selection", "lower_area_than_selected"
+                    ))
+                if tag_type == "building":
+                    continue
+                break
+
         self.last_estimation_diagnostics = {
             "detected_tag_ids": detected_ids,
             "candidate_localization_tag_ids": candidate_ids,
             "rejected_tags": rejected,
-            "accepted_tag_id": accepted_tag_id,
+            "selected_tag_id": selected_tag_id,
+            "selected_tag_type": selected_tag_type,
+            "fallback_to_ground": fallback_to_ground,
+            "accepted_tag_id": selected_tag_id,
             "accepted_tag_area_px": accepted_tag_area_px,
             "accepted_tag_center_px": accepted_tag_center_px,
             "result": (
@@ -163,6 +213,15 @@ class Localizer:
             ),
         }
         return best, annotated
+
+    @classmethod
+    def localization_tag_type(cls, tag_id: int) -> Optional[str]:
+        tag_id = int(tag_id)
+        if cls.BUILDING_TAG_MIN_ID <= tag_id <= cls.BUILDING_TAG_MAX_ID:
+            return "building"
+        if cls.GROUND_TAG_MIN_ID <= tag_id <= cls.GROUND_TAG_MAX_ID:
+            return "ground"
+        return None
 
     def _solve_tag_pose(self, tag: TagDetection, frame) -> Optional[RobotPose]:
         pose, _, _ = self._solve_tag_pose_detailed(tag, frame)
@@ -184,10 +243,12 @@ class Localizer:
             center = None
         return {
             "tag_id": int(tag.tag_id),
+            "tag_type": self.localization_tag_type(int(tag.tag_id)),
             "tag_area_px": area,
             "tag_center_px": center,
             "stage": str(stage),
             "reason": str(reason),
+            "rejection_reason": str(reason),
         }
 
     def _solve_tag_pose_detailed(
