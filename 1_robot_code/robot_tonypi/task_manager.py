@@ -1740,6 +1740,8 @@ class TaskManager:
         required_target_screen_id: Optional[int] = None,
     ) -> bool:
         """Localize normally, or keep scanning until one required target is bound."""
+        # An attempt consumes the motion request even if no pose is installed.
+        self.last_relocalization_motion_sequence = getattr(self.state, "motion_sequence", 0)
         saw_any_tag = False
         captured_frame = False
         accepted_any_pose = False
@@ -2940,6 +2942,7 @@ class TaskManager:
         if not watchdog_scan and t - self.last_scan_after_turn_s < min_interval:
             return outcome
         self.last_scan_after_turn_s = t
+        self.last_relocalization_motion_sequence = getattr(self.state, "motion_sequence", 0)
         center = float(self.config["camera"].get("head_center_angle", 100.0))
         frame, tags = self.capture_with_tags(center)
         outcome["tag_ids"] = [int(tag.tag_id) for tag in tags]
@@ -5102,6 +5105,11 @@ class TaskManager:
             "large" in action_key.lower()
             or yaw_per_cycle >= float(nav.get("large_turn_threshold_deg", 35.0))
         )
+        large_turn_pending = bool(
+            large_turn and actions > 0
+            and getattr(self.state, "motion_sequence", 0)
+            != getattr(self, "last_relocalization_motion_sequence", -1)
+        )
 
         decision = "continue_dead_reckoning"
         reason = "within_action_and_uncertainty_budget"
@@ -5111,7 +5119,7 @@ class TaskManager:
             decision, reason = "relocalize_now", "pose_missing"
         elif confidence == Confidence.LOW:
             decision, reason = "relocalize_now", "pose_confidence_low"
-        elif large_turn and actions > 0:
+        elif large_turn_pending:
             decision, reason = "relocalize_now", "large_turn"
         elif obstacle_tight:
             decision, reason = "relocalize_now", "obstacle_tight_navigation"
@@ -5136,7 +5144,7 @@ class TaskManager:
             "effective_pose_confidence": confidence.value,
             "navigation_mode": phase,
             "last_action": action_key or None,
-            "large_turn_relocalization_pending": bool(large_turn and actions > 0),
+            "large_turn_relocalization_pending": large_turn_pending,
             "action_budget": action_budget,
             "uncertainty_limit": uncertainty_limit,
             "decision": decision,
@@ -5297,6 +5305,7 @@ class TaskManager:
         should_localize = relocalization["decision"] == "relocalize_now"
         localized = False
         if should_localize:
+            self.last_relocalization_motion_sequence = getattr(self.state, "motion_sequence", 0)
             self.hardware.center_head()
             dry_run = bool(getattr(getattr(self, "args", None), "dry_run", False))
             if dry_run:
@@ -5307,8 +5316,6 @@ class TaskManager:
                 localized = bool(self.localize_scan(
                     reason=reason,
                 ))
-            if not localized and self.state.pose is not None:
-                self.state.pose.confidence = Confidence.LOW
         self.debug.event(
             "post_action_relocalize",
             reason=reason,
@@ -7726,8 +7733,11 @@ class TaskManager:
             return False
         if bool(getattr(self, "no_tag_recovery_active", False)):
             return False
+        if bool(getattr(self, "no_tag_recovery_exhausted", False)):
+            return False
         limit = int(nav.get("no_tag_recovery_failures", 2))
-        if int(getattr(self, "consecutive_no_tag_scans", 0)) < limit:
+        if max(int(getattr(self, "consecutive_no_tag_scans", 0)),
+               int(getattr(self, "consecutive_localize_failures", 0))) < limit:
             return False
         cooldown = float(nav.get("no_tag_recovery_cooldown_s", 4.0))
         if now_s() - float(getattr(self, "last_no_tag_recovery_s", 0.0)) < cooldown:
@@ -7765,6 +7775,7 @@ class TaskManager:
             reason=reason,
             no_tag_scans=self.consecutive_no_tag_scans,
             outward_facing=False if pose is None else self.is_facing_outside(pose),
+            localization_failures=int(getattr(self, "consecutive_localize_failures", 0)),
             cycle=0,
             pose=None if pose is None else pose.as_dict(),
             near_boundary=False if pose is None else self.is_near_boundary(pose),
@@ -7823,6 +7834,12 @@ class TaskManager:
                         self.config["motion"]["actions"]["back_fast"]["forward_cm"]
                     ))
                     back_times = max(1, int(round(back_cm / max(0.1, back_step))))
+                    if pose is not None:
+                        yaw = math.radians(pose.yaw_deg)
+                        end_xy = (pose.x_cm - back_step * back_times * math.cos(yaw),
+                                  pose.y_cm - back_step * back_times * math.sin(yaw))
+                        if not self.escape_corridor_metrics(pose.xy(), end_xy).get("clear"):
+                            break
                     result = self.motion.run("back_fast", times_override=back_times)
                     self.debug.event(
                         "no_tag_recovery_backoff", **context,
@@ -7837,6 +7854,11 @@ class TaskManager:
                         self.last_navigation_failure_reason = "hardware_failure"
                         return False
                     current_pose = self.state.pose if self.state.pose is not None else pose
+                    if current_pose is not None and not self.map.rotation_sweep_clear(
+                        current_pose.xy(), float(nav.get("turn_sweep_radius_cm", 10.0)),
+                        float(nav.get("normal_navigation_max_cost", 55.0)),
+                    ):
+                        break
                     result, key, times, target_yaw = self.no_tag_recovery_turn(
                         current_pose, cycle
                     )
@@ -7885,6 +7907,8 @@ class TaskManager:
                 )
                 if localized:
                     self.consecutive_no_tag_scans = 0
+                    self.consecutive_localize_failures = 0
+                    self.pending_post_action_replan = True
                     self.debug.event(
                         "no_tag_recovery_success", **context,
                         selected_action=key,
@@ -7893,10 +7917,6 @@ class TaskManager:
                         localization_result=localization_result,
                     )
                     return True
-                # A visible but rejected Tag is not permission for another
-                # blind body recovery cycle.
-                if localization_result != "no_tag":
-                    return False
             self.no_tag_recovery_exhausted = True
             self.last_navigation_failure_reason = "no_tag_recovery_exhausted"
             self.debug.event(
@@ -7910,12 +7930,8 @@ class TaskManager:
                 selected_direction=None,
                 tag_ids=[],
                 localization_result=self.last_localization_attempt_result,
-                higher_level_recovery="global_recovery",
+                higher_level_recovery="return_to_caller",
             )
-            if not str(reason).startswith("global_recovery"):
-                return bool(self.perform_global_recovery(
-                    "no_tag_recovery_exhausted:" + reason
-                ))
             return False
         finally:
             self.no_tag_recovery_active = False
@@ -8608,6 +8624,13 @@ class TaskManager:
                 self.last_navigation_failure_reason = "target_pose_mismatch"
                 return False
             pose = self.state.pose
+            if int(getattr(self, "consecutive_localize_failures", 0)) >= max(
+                1, int(nav.get("no_tag_recovery_failures", 2))
+            ):
+                if self.recover_from_no_tag_if_needed("target_navigation:localization_failures"):
+                    continue
+                self.last_navigation_failure_reason = "localization_recovery_blocked"
+                return False
             relocalization = self.adaptive_relocalization_decision(
                 "normal",
                 last_action=getattr(self, "last_motion_action", ""),
@@ -8621,9 +8644,13 @@ class TaskManager:
                 if not self.localize_scan(
                     reason="adaptive_navigation_budget",
                 ):
-                    self.recover_from_no_tag_if_needed(
+                    recovered = self.recover_from_no_tag_if_needed(
                         "target_navigation:adaptive_relocalization"
                     )
+                    if recovered:
+                        continue
+                    self.last_navigation_failure_reason = "localization_required"
+                    return False
                 continue
             distance = distance_xy(pose.xy(), goal.interaction_target_xy)
             yaw_error = abs(angle_diff_deg(goal.desired_yaw_deg, pose.yaw_deg))
@@ -9002,6 +9029,13 @@ class TaskManager:
                 last_action=getattr(self, "last_motion_action", ""),
                 emit=False,
             )
+            if int(getattr(self, "consecutive_localize_failures", 0)) >= max(
+                1, int(self.config["navigation"].get("no_tag_recovery_failures", 2))
+            ):
+                if self.recover_from_no_tag_if_needed(reason + ":localization_failures"):
+                    continue
+                self.last_navigation_failure_reason = "localization_recovery_blocked"
+                return False
             if pre_action_relocalization["decision"] == "relocalize_now":
                 self.adaptive_relocalization_decision(
                     self.navigation_relocalization_mode(),
@@ -9011,7 +9045,10 @@ class TaskManager:
                     reason="adaptive_navigation_budget",
                 )
                 if not localized:
-                    self.recover_from_no_tag_if_needed(reason + ":adaptive_relocalization")
+                    if self.recover_from_no_tag_if_needed(reason + ":adaptive_relocalization"):
+                        continue
+                    self.last_navigation_failure_reason = "localization_required"
+                    return False
                 else:
                     continue
             dist = distance_xy(pose.xy(), target_xy)

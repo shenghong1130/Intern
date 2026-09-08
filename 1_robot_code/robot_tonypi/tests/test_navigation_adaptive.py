@@ -264,6 +264,42 @@ class AdaptiveBatchTests(unittest.TestCase):
         self.assertEqual(decision["decision"], "continue_dead_reckoning")
         self.assertTrue(manager.pending_post_action_replan)
 
+    def test_failed_post_turn_request_is_consumed_and_new_motion_rearms(self):
+        for failure in ("no_tag", "pose_unavailable_with_tags",
+                        "suspect_visual_pose_rejected", "pose_jump_rejected"):
+            with self.subTest(failure=failure):
+                manager = adaptive_manager()
+                manager.args = SimpleNamespace(dry_run=False)
+                manager.hardware = SimpleNamespace(center_head=lambda: None)
+                scans = []
+
+                def fail_scan(**kwargs):
+                    scans.append(kwargs)
+                    manager.record_localization_failure(
+                        failure, saw_any_tag=failure != "no_tag", reason="test"
+                    )
+                    return False
+
+                manager.localize_scan = fail_scan
+                manager.consecutive_no_tag_scans = 0
+                before = TaskManager.copy_pose(manager.state.pose)
+                result = ActionResult("turn_right_large", "turn", 1, 0.0,
+                                      model_yaw_deg=-45.0, executed_times=1)
+                manager.state.apply_action_result(result)
+                self.assertFalse(manager.post_action_relocalize(
+                    "test", before, result, (200.0, 150.0)
+                ))
+                for _ in range(3):
+                    decision = manager.adaptive_relocalization_decision()
+                    self.assertFalse(decision["large_turn_relocalization_pending"])
+                    self.assertEqual(decision["decision"], "continue_dead_reckoning")
+                self.assertEqual(len(scans), 1)
+                self.assertEqual(manager.consecutive_localize_failures, 1)
+                manager.state.apply_action_result(result)
+                self.assertTrue(manager.adaptive_relocalization_decision()[
+                    "large_turn_relocalization_pending"
+                ])
+
     def test_phase_specific_action_budgets(self):
         manager = adaptive_manager()
         manager.state.actions_since_localize = 3
@@ -535,6 +571,7 @@ class NoTagRecoverySequenceTests(unittest.TestCase):
     def test_first_genuine_no_tag_does_not_trigger_motion(self):
         manager, calls, actions = self.manager([])
         manager.consecutive_no_tag_scans = 1
+        manager.consecutive_localize_failures = 1
         self.assertFalse(manager.recover_from_no_tag_if_needed("test"))
         self.assertEqual(calls, [])
         self.assertEqual(actions, [])
@@ -556,7 +593,7 @@ class NoTagRecoverySequenceTests(unittest.TestCase):
         self.assertEqual(manager.current_target_screen_id, 17)
         self.assertIs(manager.current_target_goal, original_goal)
 
-    def test_exhausted_sequence_enters_higher_recovery(self):
+    def test_exhausted_sequence_stops_without_recursive_recovery(self):
         manager, calls, actions = self.manager([False] * 3)
         escalated = []
         manager.perform_global_recovery = lambda reason: escalated.append(reason) or False
@@ -564,7 +601,10 @@ class NoTagRecoverySequenceTests(unittest.TestCase):
         self.assertEqual(len(actions), 6)
         self.assertEqual(len(calls), 3)
         self.assertTrue(manager.no_tag_recovery_exhausted)
-        self.assertEqual(len(escalated), 1)
+        self.assertEqual(len(escalated), 0)
+        manager.last_no_tag_recovery_s = 0.0
+        self.assertFalse(manager.recover_from_no_tag_if_needed("retry"))
+        self.assertEqual(len(calls), 3)
 
     def test_startup_and_runtime_use_same_search_sequence_helper(self):
         manager, _, _ = self.manager([])
@@ -574,14 +614,18 @@ class NoTagRecoverySequenceTests(unittest.TestCase):
         self.assertEqual(used[0]["reason"], "initial_localize")
         self.assertFalse(used[0]["runtime_safety"])
 
-    def test_pose_unavailable_does_not_enter_no_tag_recovery(self):
-        manager, calls, actions = self.manager([])
+    def test_pose_unavailable_enters_failure_recovery(self):
+        manager, calls, actions = self.manager([True])
         manager.consecutive_no_tag_scans = 0
         manager.consecutive_localize_failures = 2
         manager.last_localization_attempt_result = "pose_unavailable_with_tags"
-        self.assertFalse(manager.recover_from_no_tag_if_needed("test"))
-        self.assertEqual(len(calls), 0)
-        self.assertEqual(actions, [])
+        original_goal = manager.current_target_goal
+        self.assertTrue(manager.recover_from_no_tag_if_needed("test"))
+        self.assertEqual(len(calls), 1)
+        self.assertTrue(actions)
+        self.assertIs(manager.current_target_goal, original_goal)
+        self.assertEqual(manager.current_target_screen_id, 17)
+        self.assertTrue(manager.pending_post_action_replan)
 
     def test_visible_tag_failures_never_increment_no_tag_counter(self):
         manager, _, _ = self.manager([])
@@ -594,17 +638,17 @@ class NoTagRecoverySequenceTests(unittest.TestCase):
         manager.record_localization_failure(
             "pose_unavailable_with_tags", saw_any_tag=True, reason="second"
         )
-        self.assertFalse(manager.no_tag_recovery_needed())
+        self.assertTrue(manager.no_tag_recovery_needed())
         self.assertEqual(manager.consecutive_no_tag_scans, 0)
 
-    def test_visible_tag_after_motion_stops_blind_recovery(self):
+    def test_visible_tag_after_motion_keeps_recovery_bounded(self):
         manager, calls, actions = self.manager(
             [False], ["pose_unavailable_with_tags"]
         )
         self.assertFalse(manager.recover_from_no_tag_if_needed("test"))
-        self.assertEqual(len(actions), 2)
-        self.assertEqual(len(calls), 1)
-        self.assertEqual(manager.consecutive_no_tag_scans, 0)
+        self.assertEqual(len(actions), 6)
+        self.assertEqual(len(calls), 3)
+        self.assertTrue(manager.no_tag_recovery_exhausted)
 
     def test_near_boundary_prefers_one_safe_lateral_action(self):
         manager, calls, actions = self.manager([True])
@@ -614,6 +658,18 @@ class NoTagRecoverySequenceTests(unittest.TestCase):
         manager.choose_near_wall_lateral_direction = lambda pose, step: -1.0
         self.assertTrue(manager.recover_from_no_tag_if_needed("test"))
         self.assertEqual(actions, [("strafe_right_fast", 1)])
+
+    def test_blocked_recovery_corridor_exits_without_motion_or_scan(self):
+        manager, calls, actions = self.manager([True])
+        manager.state.pose = RobotPose(150, 150, 0, Confidence.LOW, "DEAD_RECKONING", now_s())
+        manager.is_near_boundary = lambda pose: False
+        manager.near_wall_now = lambda pose: False
+        manager.escape_corridor_metrics = lambda *args: {"clear": False}
+        self.assertFalse(manager.recover_from_no_tag_if_needed("test"))
+        self.assertEqual(actions, [])
+        self.assertEqual(calls, [])
+        self.assertTrue(manager.no_tag_recovery_exhausted)
+        self.assertEqual(manager.current_target_screen_id, 17)
 
 
 class LocalizationStateResetTests(unittest.TestCase):

@@ -15,6 +15,7 @@ class RobotState:
         self.pose: Optional[RobotPose] = None
         self.actions_since_localize = 0
         self.motion_uncertainty = 0.0
+        self.motion_sequence = 0
 
     def set_pose(self, pose: RobotPose) -> None:
         self.pose = pose
@@ -47,6 +48,7 @@ class RobotState:
                 self.pose.confidence = Confidence.LOW
             return
         executed_fraction = min(1.0, actual_cycles / float(requested_cycles))
+        self.motion_sequence += 1
         yaw_rad = math.radians(self.pose.yaw_deg)
         left_rad = yaw_rad + math.pi / 2.0
         self.pose.x_cm += result.model_forward_cm * executed_fraction * math.cos(yaw_rad)
