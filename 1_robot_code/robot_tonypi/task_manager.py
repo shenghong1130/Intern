@@ -2678,7 +2678,7 @@ class TaskManager:
         return True
 
     def confirm_target_with_visibility_recovery(self, screen: Screen) -> bool:
-        """Confirm the locked target without returning to target selection on failure."""
+        """Confirm the locked target, rotating it after bounded recovery is exhausted."""
         max_cycles = max(0, int(self.config["interaction"].get("target_confirmation_recovery_max_cycles", 2)))
         self.target_confirmation_recovery_cycle = 0
         self.arrived_at_target = True
@@ -2724,13 +2724,17 @@ class TaskManager:
                 )
                 self.preserve_current_target(screen, failure_kind)
                 return False
-        screen.attempts += 1
         self.last_navigation_failure_reason = "target_screen_confirmation_unresolved"
         self.classifier_allowed = False
         self.target_visual_confirmation = None
         self.visual_authorization = None
-        self.preserve_current_target(screen, self.last_navigation_failure_reason)
-        self.set_mission_state(MissionState.MISSION_BLOCKED)
+        self.register_temporary_target_failure(
+            screen,
+            self.last_navigation_failure_reason,
+        )
+        self.clear_current_target_context()
+        self.target_tag_confirmation = None
+        self.set_mission_state(MissionState.SELECT_NEAREST_TARGET)
         self.debug.event(
             "target_screen_confirmation_unresolved",
             screen_id=screen.screen_id,
@@ -2738,7 +2742,9 @@ class TaskManager:
             target_confirmation_max_retries=int(self.config["interaction"].get("target_confirmation_max_retries", 3)),
             target_confirmation_recovery_cycle=self.target_confirmation_recovery_cycle,
             final_forward_executed=self.final_forward_executed,
-            target_preserved=True,
+            target_preserved=False,
+            temporarily_failed=True,
+            next_state=MissionState.SELECT_NEAREST_TARGET.value,
             mission_failed=False,
         )
         self.publish_state(screen)

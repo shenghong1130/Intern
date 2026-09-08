@@ -90,6 +90,9 @@ def classification_manager(tag_ids, candidates, classification):
     manager.last_vote_summary = {}
     manager.recent_bound_flower_observations = {}
     manager.bound_classification_last_attempt_s = {}
+    manager.temporarily_failed_targets = {}
+    manager.target_failure_counts = {}
+    manager.time_left_s = lambda: 100.0
     manager.state = SimpleNamespace(
         pose=RobotPose(20.0, -1.0, 180.0, Confidence.HIGH, "TEST", 1.0)
     )
@@ -407,21 +410,34 @@ class TargetStandoffFlowTests(unittest.TestCase):
         self.assertEqual(recoveries, [(1, 1)])
         self.assertEqual(manager.current_target_screen_id, 1)
 
-    def test_unresolved_confirmation_stops_finitely_and_preserves_target(self):
+    def test_unresolved_confirmation_rotates_temporarily_failed_target(self):
         manager = classification_manager([1], [], ClassificationResult(True, "chuju", confidence=0.95))
         target = make_screen()
+        recovery_cycles = []
         manager.confirm_target_tag_and_screen = lambda screen: False
-        manager.recover_target_visibility = lambda screen, cycle: False
-        manager.preserve_current_target = lambda screen, reason: setattr(manager, "current_target_screen_id", screen.screen_id)
+        manager.recover_target_visibility = lambda screen, cycle: recovery_cycles.append(cycle) or False
         manager.last_navigation_failure_reason = ""
         self.assertFalse(manager.confirm_target_with_visibility_recovery(target))
-        self.assertEqual(manager.mission_state, MissionState.MISSION_BLOCKED)
-        self.assertEqual(manager.current_target_screen_id, 1)
+        self.assertEqual(
+            recovery_cycles,
+            list(range(
+                1,
+                manager.config["interaction"]["target_confirmation_recovery_max_cycles"] + 1,
+            )),
+        )
+        self.assertEqual(manager.mission_state, MissionState.SELECT_NEAREST_TARGET)
+        self.assertIsNone(manager.current_target_screen_id)
+        self.assertIn(target.screen_id, manager.temporarily_failed_targets)
         self.assertEqual(target.attempts, 1)
         self.assertFalse(manager.final_forward_executed)
         unresolved = [data for name, data in manager.debug.events if name == "target_screen_confirmation_unresolved"]
         self.assertEqual(len(unresolved), 1)
-        self.assertTrue(unresolved[0]["target_preserved"])
+        self.assertFalse(unresolved[0]["target_preserved"])
+        self.assertTrue(unresolved[0]["temporarily_failed"])
+        self.assertEqual(
+            unresolved[0]["next_state"],
+            MissionState.SELECT_NEAREST_TARGET.value,
+        )
 
     def test_fpga_failure_blocks_authorization(self):
         manager = classification_manager([1], [candidate()], ClassificationResult(False, error="fpga_down"))
