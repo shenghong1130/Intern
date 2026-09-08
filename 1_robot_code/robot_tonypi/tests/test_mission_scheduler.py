@@ -507,7 +507,8 @@ class MissionSchedulerTests(unittest.TestCase):
         fn = next(node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef) and node.name == "localize_scan")
         calls = {getattr(call.func, "attr", "") for call in ast.walk(fn) if isinstance(call, ast.Call)}
         self.assertIn("capture_with_tags", calls)
-        self.assertIn("estimate_from_frame", calls)
+        self.assertIn("estimate_visual_pose_candidates", calls)
+        self.assertIn("evaluate_and_accept_visual_candidates", calls)
         self.assertIn("observe_transit_bindings", calls)
         self.assertNotIn("classify_crop", calls)
 

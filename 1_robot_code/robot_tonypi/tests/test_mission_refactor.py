@@ -10,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from robot_tonypi.config import load_config
 from robot_tonypi.load_pos import load_tag_pos
+from robot_tonypi.localizer import Localizer
 from robot_tonypi.map_model import MapModel
 from robot_tonypi.models import (
     ActionResult,
@@ -101,21 +102,117 @@ class LocalizationPhysicalGateTests(unittest.TestCase):
         self.assertGreater(float(manager.map.cost[manager.map.grid_pos(pose.xy())]), 0.0)
         self.assertIsNone(manager.visual_pose_physical_rejection_reason(pose))
 
-    def test_hard_jump_rejected_without_confirmation_and_prior_retained(self):
+    def test_high_confidence_hard_jump_confirmation_does_not_lower_protection(self):
         manager = bare_manager()
         prior = RobotPose(100.0, 100.0, 0.0, Confidence.HIGH, "PRIOR", 1.0)
         manager.state.set_pose(prior)
-        manager.capture_visual_pose_once = lambda *args, **kwargs: self.fail(
-            "hard jump must not request confirmation"
+        confirmation = RobotPose(
+            100.0, 100.0, 82.0, Confidence.HIGH, "VISION_TAG_1", 3.0
         )
+        manager.capture_visual_pose_once = lambda *args, **kwargs: {
+            "pose": confirmation, "tags": [], "frame": object(), "annotated": object()
+        }
         result = manager.evaluate_and_accept_visual_pose(
-            RobotPose(141.0, 100.0, 0.0, Confidence.HIGH, "VISION", 2.0),
+            RobotPose(100.0, 100.0, 80.0, Confidence.HIGH, "VISION", 2.0),
             [], 100.0, "test", prior,
         )
         self.assertFalse(result["accepted"])
         self.assertEqual(result["decision"], "pose_jump_rejected")
         self.assertIs(manager.state.pose, prior)
         self.assertIn("pose_jump_rejected", [name for name, _ in manager.debug.events])
+
+    def test_low_dead_reckoning_consistent_hard_jump_recovers(self):
+        manager = bare_manager()
+        prior = RobotPose(
+            100.0, 100.0, 0.0, Confidence.LOW, "DEAD_RECKONING", 1.0
+        )
+        manager.state.set_pose(prior)
+        confirmation = RobotPose(
+            100.0, 100.0, 82.0, Confidence.HIGH, "VISION_TAG_1", 3.0
+        )
+        manager.capture_visual_pose_once = lambda *args, **kwargs: {
+            "pose": confirmation, "tags": [], "frame": object(), "annotated": object()
+        }
+        result = manager.evaluate_and_accept_visual_pose(
+            RobotPose(100.0, 100.0, 80.0, Confidence.HIGH, "VISION_TAG_1", 2.0),
+            [], 100.0, "test", prior,
+        )
+        self.assertTrue(result["accepted"])
+        self.assertEqual(result["decision"], "confirmed_low_confidence_hard_jump")
+        self.assertIs(manager.state.pose, confirmation)
+
+    def test_inconsistent_low_confidence_hard_jump_is_rejected(self):
+        manager = bare_manager()
+        prior = RobotPose(
+            100.0, 100.0, 0.0, Confidence.LOW, "DEAD_RECKONING", 1.0
+        )
+        manager.state.set_pose(prior)
+        confirmation = RobotPose(
+            100.0, 100.0, -80.0, Confidence.HIGH, "VISION_TAG_1", 3.0
+        )
+        manager.capture_visual_pose_once = lambda *args, **kwargs: {
+            "pose": confirmation, "tags": [], "frame": object(), "annotated": object()
+        }
+        result = manager.evaluate_and_accept_visual_pose(
+            RobotPose(100.0, 100.0, 80.0, Confidence.HIGH, "VISION_TAG_1", 2.0),
+            [], 100.0, "test", prior,
+        )
+        self.assertFalse(result["accepted"])
+        self.assertEqual(result["decision"], "rejected_inconsistent_visual_pose")
+        self.assertIs(manager.state.pose, prior)
+
+    def test_temporally_rejected_building_falls_back_to_ground(self):
+        manager = bare_manager()
+        prior = RobotPose(
+            100.0, 100.0, 0.0, Confidence.HIGH, "DEAD_RECKONING", 1.0
+        )
+        manager.state.set_pose(prior)
+        manager.capture_visual_pose_once = lambda *args, **kwargs: {
+            "pose": None, "tags": [], "frame": None, "annotated": None
+        }
+        building_tag = SimpleNamespace(tag_id=1, area=900.0, center=(300.0, 220.0))
+        ground_tag = SimpleNamespace(tag_id=40, area=800.0, center=(340.0, 220.0))
+        localizer = Localizer.__new__(Localizer)
+        localizer.tag_area = lambda tag: float(tag.area)
+        localizer.last_estimation_diagnostics = {
+            "detected_tag_ids": [1, 40],
+            "candidate_localization_tag_ids": [1, 40],
+            "rejected_tags": [],
+            "fallback_to_ground": False,
+            "result": "accepted_visual_pose",
+        }
+        manager.localizer = localizer
+        building_pose = RobotPose(
+            100.0, 100.0, 30.0, Confidence.HIGH, "VISION_TAG_1", 2.0
+        )
+        ground_pose = RobotPose(
+            102.0, 100.0, 2.0, Confidence.HIGH, "VISION_TAG_40", 2.0
+        )
+        candidates = [
+            {
+                "pose": building_pose, "tag": building_tag, "tag_id": 1,
+                "tag_type": "building", "tag_area_px": 900.0,
+                "tag_center_px": [300.0, 220.0],
+            },
+            {
+                "pose": ground_pose, "tag": ground_tag, "tag_id": 40,
+                "tag_type": "ground", "tag_area_px": 800.0,
+                "tag_center_px": [340.0, 220.0],
+            },
+        ]
+        result = manager.evaluate_and_accept_visual_candidates(
+            candidates, [building_tag, ground_tag], 100.0, "test", prior
+        )
+        self.assertTrue(result["accepted"])
+        self.assertIs(manager.state.pose, ground_pose)
+        detail = manager.localizer.last_estimation_diagnostics
+        self.assertEqual(detail["selected_tag_id"], 40)
+        self.assertEqual(detail["selected_tag_type"], "ground")
+        self.assertTrue(detail["fallback_to_ground"])
+        self.assertEqual(
+            detail["rejected_tags"][0]["rejection_reason"],
+            "confirmation_pose_unavailable",
+        )
 
     def test_moderate_jump_still_uses_confirmation(self):
         manager = bare_manager()

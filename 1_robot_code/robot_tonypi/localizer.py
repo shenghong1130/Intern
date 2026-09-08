@@ -103,6 +103,7 @@ class Localizer:
         self.min_id = int(config["localization"]["allowed_min_id"])
         self.max_id = int(config["localization"]["allowed_max_id"])
         self.last_estimation_diagnostics = {}
+        self.last_pose_candidates = []
 
     def estimate_from_frame(
         self,
@@ -111,15 +112,37 @@ class Localizer:
         head_pan_angle: float = 100.0,
         annotate: bool = True,
     ) -> Tuple[Optional[RobotPose], object]:
+        candidates, annotated = self.estimate_candidates_from_frame(
+            frame,
+            tags,
+            head_pan_angle=head_pan_angle,
+            annotate=annotate,
+        )
+        selected = candidates[0] if candidates else None
+        self.finalize_candidate_diagnostics(
+            candidates,
+            selected_candidate=selected,
+            task_rejections=[],
+        )
+        return (None if selected is None else selected["pose"]), annotated
+
+    def estimate_candidates_from_frame(
+        self,
+        frame,
+        tags: Iterable[TagDetection],
+        head_pan_angle: float = 100.0,
+        annotate: bool = True,
+    ) -> Tuple[List[dict], object]:
+        """Return every locally valid pose in TaskManager priority order.
+
+        Pose solving is intentionally separate from temporal acceptance.  This
+        lets TaskManager reject one building candidate and continue with the
+        remaining buildings before falling back to ground Tags.
+        """
         annotated = frame.copy() if annotate else frame
-        best = None
         detected_ids = []
         candidate_ids = []
         rejected = []
-        selected_tag_id = None
-        selected_tag_type = None
-        accepted_tag_area_px = None
-        accepted_tag_center_px = None
         candidates = {"building": [], "ground": []}
         for tag in tags:
             tag_id = int(tag.tag_id)
@@ -150,19 +173,9 @@ class Localizer:
         for values in candidates.values():
             values.sort(key=lambda item: (-float(item[0]), int(item[1].tag_id)))
 
-        fallback_to_ground = False
+        solved_candidates = []
         for tag_type in ("building", "ground"):
-            if tag_type == "ground":
-                if best is not None:
-                    for _, tag in candidates["ground"]:
-                        rejected.append(self.tag_rejection_detail(
-                            tag, "priority_selection", "building_pose_selected"
-                        ))
-                    break
-                fallback_to_ground = bool(candidates["ground"])
-
-            selected_index = None
-            for index, (area, tag) in enumerate(candidates[tag_type]):
+            for area, tag in candidates[tag_type]:
                 pose, stage, rejection_reason = self._solve_tag_pose_detailed(
                     tag, annotated
                 )
@@ -174,45 +187,110 @@ class Localizer:
                 pose.yaw_deg = normalize_angle_deg(
                     pose.yaw_deg - (float(head_pan_angle) - 100.0)
                 )
-                best = pose
-                selected_index = index
-                selected_tag_id = int(tag.tag_id)
-                selected_tag_type = tag_type
-                accepted_tag_area_px = round(float(area), 1)
-                accepted_tag_center_px = [
-                    round(float(tag.center[0]), 1),
-                    round(float(tag.center[1]), 1),
-                ]
-                break
-
-            if selected_index is not None:
-                for _, tag in candidates[tag_type][selected_index + 1:]:
-                    rejected.append(self.tag_rejection_detail(
-                        tag, "candidate_selection", "lower_area_than_selected"
-                    ))
-                if tag_type == "building":
-                    continue
-                break
+                solved_candidates.append({
+                    "pose": pose,
+                    "tag": tag,
+                    "tag_id": int(tag.tag_id),
+                    "tag_type": tag_type,
+                    "tag_area_px": round(float(area), 1),
+                    "tag_center_px": [
+                        round(float(tag.center[0]), 1),
+                        round(float(tag.center[1]), 1),
+                    ],
+                })
 
         self.last_estimation_diagnostics = {
             "detected_tag_ids": detected_ids,
             "candidate_localization_tag_ids": candidate_ids,
             "rejected_tags": rejected,
-            "selected_tag_id": selected_tag_id,
-            "selected_tag_type": selected_tag_type,
-            "fallback_to_ground": fallback_to_ground,
-            "accepted_tag_id": selected_tag_id,
-            "accepted_tag_area_px": accepted_tag_area_px,
-            "accepted_tag_center_px": accepted_tag_center_px,
+            "selected_tag_id": None,
+            "selected_tag_type": None,
+            "fallback_to_ground": bool(
+                candidates["ground"]
+                and not any(item["tag_type"] == "building" for item in solved_candidates)
+            ),
+            "accepted_tag_id": None,
+            "accepted_tag_area_px": None,
+            "accepted_tag_center_px": None,
             "result": (
                 "accepted_visual_pose"
-                if best is not None
+                if solved_candidates
                 else "pose_unavailable_with_tags"
                 if detected_ids
                 else "no_tag"
             ),
         }
-        return best, annotated
+        self.last_pose_candidates = solved_candidates
+        return solved_candidates, annotated
+
+    def finalize_candidate_diagnostics(
+        self,
+        candidates: List[dict],
+        *,
+        selected_candidate: Optional[dict],
+        task_rejections: List[dict],
+    ) -> None:
+        """Attach TaskManager acceptance/rejection to per-Tag diagnostics."""
+        diagnostics = dict(self.last_estimation_diagnostics or {})
+        rejected = list(diagnostics.get("rejected_tags", []))
+        rejected.extend(dict(item) for item in task_rejections)
+        selected_index = None
+        if selected_candidate is not None:
+            selected_index = next((
+                index for index, item in enumerate(candidates)
+                if item is selected_candidate
+            ), None)
+        for index, candidate in enumerate(candidates):
+            if selected_candidate is candidate or index < (selected_index or 0):
+                continue
+            if selected_candidate is None:
+                continue
+            tag = candidate["tag"]
+            if (
+                selected_candidate["tag_type"] == "building"
+                and candidate["tag_type"] == "ground"
+            ):
+                stage = "priority_selection"
+                reason = "building_pose_selected"
+            elif candidate["tag_type"] == selected_candidate["tag_type"]:
+                stage = "candidate_selection"
+                reason = "lower_area_than_selected"
+            else:
+                continue
+            rejected.append(self.tag_rejection_detail(tag, stage, reason))
+        diagnostics.update({
+            "rejected_tags": rejected,
+            "selected_tag_id": (
+                None if selected_candidate is None else selected_candidate["tag_id"]
+            ),
+            "selected_tag_type": (
+                None if selected_candidate is None else selected_candidate["tag_type"]
+            ),
+            "fallback_to_ground": bool(
+                (selected_candidate is not None and selected_candidate["tag_type"] == "ground")
+                or (selected_candidate is None and (
+                    diagnostics.get("fallback_to_ground", False)
+                    or any(item["tag_type"] == "ground" for item in candidates)
+                ))
+            ),
+            "accepted_tag_id": (
+                None if selected_candidate is None else selected_candidate["tag_id"]
+            ),
+            "accepted_tag_area_px": (
+                None if selected_candidate is None else selected_candidate["tag_area_px"]
+            ),
+            "accepted_tag_center_px": (
+                None if selected_candidate is None else selected_candidate["tag_center_px"]
+            ),
+            "result": (
+                "accepted_visual_pose"
+                if selected_candidate is not None
+                else "pose_unavailable_with_tags"
+                if diagnostics.get("detected_tag_ids")
+                else "no_tag"
+            ),
+        })
+        self.last_estimation_diagnostics = diagnostics
 
     @classmethod
     def localization_tag_type(cls, tag_id: int) -> Optional[str]:

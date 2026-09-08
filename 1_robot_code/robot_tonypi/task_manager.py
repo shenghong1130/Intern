@@ -1259,6 +1259,67 @@ class TaskManager:
             return "pose_outside_field"
         return None
 
+    def estimate_visual_pose_candidates(self, frame, tags, pan: float):
+        """Estimate all same-frame candidates, retaining compatibility with stubs."""
+        estimate_all = getattr(self.localizer, "estimate_candidates_from_frame", None)
+        if callable(estimate_all):
+            return estimate_all(
+                frame, tags, head_pan_angle=pan, annotate=True
+            )
+        pose, annotated = self.localizer.estimate_from_frame(
+            frame, tags, head_pan_angle=pan, annotate=True
+        )
+        return ([] if pose is None else [{"pose": pose, "tag": None}]), annotated
+
+    def evaluate_and_accept_visual_candidates(
+        self,
+        candidates,
+        tags,
+        pan: float,
+        reason: str,
+        prior_pose: Optional[RobotPose],
+    ) -> Optional[dict]:
+        """Accept the first TaskManager-valid candidate in Localizer priority order."""
+        if not candidates:
+            return None
+        diagnostics = dict(getattr(
+            self.localizer, "last_estimation_diagnostics", {}
+        ) or {})
+        diagnostics["rejected_tags"] = [
+            dict(item) for item in diagnostics.get("rejected_tags", [])
+        ]
+        task_rejections = []
+        last_acceptance = None
+        selected_candidate = None
+        for candidate in candidates:
+            candidate_pose = candidate["pose"]
+            acceptance = self.evaluate_and_accept_visual_pose(
+                candidate_pose, tags, pan, reason, prior_pose
+            )
+            last_acceptance = acceptance
+            if acceptance["accepted"]:
+                selected_candidate = candidate
+                break
+            tag = candidate.get("tag")
+            if tag is not None and hasattr(self.localizer, "tag_rejection_detail"):
+                task_rejections.append(self.localizer.tag_rejection_detail(
+                    tag,
+                    "temporal_consistency",
+                    str(acceptance.get("decision", "visual_pose_rejected")),
+                ))
+
+        finalize = getattr(self.localizer, "finalize_candidate_diagnostics", None)
+        if callable(finalize):
+            # Confirmation captures may have overwritten Localizer diagnostics;
+            # restore the original frame summary before recording its result.
+            self.localizer.last_estimation_diagnostics = diagnostics
+            finalize(
+                candidates,
+                selected_candidate=selected_candidate,
+                task_rejections=task_rejections,
+            )
+        return last_acceptance
+
     def capture_visual_pose_once(self, pan: float, reason: str) -> dict:
         """Capture and estimate one visual pose without moving or mutating RobotState."""
         frame, tags = self.capture_with_tags(pan)
@@ -1320,35 +1381,11 @@ class TaskManager:
                 "result_category": "pose_unavailable_with_tags",
             }
         detail = self.assess_visual_localization(pose, tags, prior_pose)
-        if detail.get("visual_odometry_hard_jump"):
-            self.debug.event(
-                "pose_jump_rejected",
-                reason=reason,
-                rejection_reason="pose_jump_rejected",
-                position_jump_cm=detail["visual_odometry_position_delta_cm"],
-                yaw_jump_deg=detail["visual_odometry_yaw_delta_deg"],
-                hard_distance_cm=float(self.config["navigation"].get("localization_hard_jump_distance_cm", 40.0)),
-                hard_yaw_deg=float(self.config["navigation"].get("localization_hard_jump_yaw_deg", 60.0)),
-                visual_pose=pose.as_dict(),
-                prior_pose=None if prior_pose is None else prior_pose.as_dict(),
-                prior_pose_retained=True,
-                pose_installed=False,
-                result="pose_unavailable_with_tags",
-            )
-            return {
-                "accepted": False,
-                "pose": None,
-                "tags": tags,
-                "frame": None,
-                "annotated": None,
-                "localization_detail": detail,
-                "decision": "pose_jump_rejected",
-                "result_category": "pose_unavailable_with_tags",
-            }
+        hard_jump = bool(detail.get("visual_odometry_hard_jump"))
         enabled = bool(self.config["navigation"].get(
             "localization_suspect_confirmation_enabled", True
         ))
-        if not detail.get("visual_odometry_conflict") or not enabled:
+        if not detail.get("visual_odometry_conflict") or (not enabled and not hard_jump):
             self.accept_visual_localization(pose, reason)
             return {
                 "accepted": True,
@@ -1384,6 +1421,7 @@ class TaskManager:
                 "localization_best_tag_area_px"
             ],
             pan=float(pan),
+            hard_jump=hard_jump,
         )
         attempts = max(1, int(self.config["navigation"].get(
             "localization_suspect_confirmation_attempts", 1
@@ -1447,7 +1485,15 @@ class TaskManager:
                         confirmation_pose, confirmation.get("tags", []), prior_pose
                     )
                     if confirmation_detail.get("visual_odometry_hard_jump"):
-                        decision = "pose_jump_rejected"
+                        if (
+                            hard_jump
+                            and prior_pose is not None
+                            and prior_pose.confidence == Confidence.LOW
+                        ):
+                            decision = "confirmed_low_confidence_hard_jump"
+                            accepted_pose = confirmation_pose
+                        else:
+                            decision = "pose_jump_rejected"
                     else:
                         decision = "confirmed_visual_jump"
                         accepted_pose = confirmation_pose
@@ -1455,11 +1501,13 @@ class TaskManager:
                     confirmation_detail = self.assess_visual_localization(
                         confirmation_pose, confirmation.get("tags", []), prior_pose
                     )
-                    if confirmation_detail.get("visual_odometry_hard_jump"):
-                        decision = "pose_jump_rejected"
-                    elif not confirmation_detail.get("visual_odometry_conflict"):
+                    if not confirmation_detail.get("visual_odometry_conflict"):
                         decision = "confirmation_pose_matches_prior"
                         accepted_pose = confirmation_pose
+                    elif hard_jump:
+                        decision = "rejected_inconsistent_visual_pose"
+                    elif confirmation_detail.get("visual_odometry_hard_jump"):
+                        decision = "pose_jump_rejected"
                     else:
                         decision = "rejected_inconsistent_visual_pose"
             last_decision = decision
@@ -1487,7 +1535,10 @@ class TaskManager:
             )
             if accepted_pose is not None:
                 self.accept_visual_localization(accepted_pose, reason)
-                if decision == "confirmed_visual_jump":
+                if decision in (
+                    "confirmed_visual_jump",
+                    "confirmed_low_confidence_hard_jump",
+                ):
                     self.debug.event(
                         "visual_pose_jump_confirmed",
                         reason=reason,
@@ -1515,6 +1566,25 @@ class TaskManager:
                     "decision": decision,
                 }
 
+        if hard_jump:
+            self.debug.event(
+                "pose_jump_rejected",
+                reason=reason,
+                rejection_reason=last_decision,
+                position_jump_cm=detail["visual_odometry_position_delta_cm"],
+                yaw_jump_deg=detail["visual_odometry_yaw_delta_deg"],
+                hard_distance_cm=float(self.config["navigation"].get(
+                    "localization_hard_jump_distance_cm", 40.0
+                )),
+                hard_yaw_deg=float(self.config["navigation"].get(
+                    "localization_hard_jump_yaw_deg", 60.0
+                )),
+                visual_pose=pose.as_dict(),
+                prior_pose=None if prior_pose is None else prior_pose.as_dict(),
+                prior_pose_retained=True,
+                pose_installed=False,
+                result="pose_unavailable_with_tags",
+            )
         self.debug.event(
             "visual_pose_jump_rejected",
             reason=reason,
@@ -1707,11 +1777,13 @@ class TaskManager:
                 if tags:
                     saw_any_tag = True
                     self.update_dynamic_obstacles(tags, pan=pan)
-                pose, annotated = self.localizer.estimate_from_frame(frame, tags, head_pan_angle=pan, annotate=True)
-                if pose is not None:
+                candidates, annotated = self.estimate_visual_pose_candidates(
+                    frame, tags, pan
+                )
+                if candidates:
                     prior_pose = None if self.state.pose is None else self.copy_pose(self.state.pose)
-                    acceptance = self.evaluate_and_accept_visual_pose(
-                        pose, tags, pan, reason, prior_pose
+                    acceptance = self.evaluate_and_accept_visual_candidates(
+                        candidates, tags, pan, reason, prior_pose
                     )
                     if not acceptance["accepted"]:
                         rejection_decision = str(acceptance.get("decision", ""))
@@ -2880,15 +2952,17 @@ class TaskManager:
             self.debug.event("scan_after_turn_failed", reason=reason, action_key=action_key, error="capture_failed")
             outcome["localization_result"] = "capture_failed"
             return outcome
-        pose, annotated = self.localizer.estimate_from_frame(frame, tags, head_pan_angle=center, annotate=True)
-        localized = pose is not None
+        candidates, annotated = self.estimate_visual_pose_candidates(
+            frame, tags, center
+        )
+        localized = bool(candidates)
         outcome["localized"] = localized
-        if pose is not None:
+        if candidates:
             prior_pose = (
                 None if self.state.pose is None else self.copy_pose(self.state.pose)
             )
-            acceptance = self.evaluate_and_accept_visual_pose(
-                pose,
+            acceptance = self.evaluate_and_accept_visual_candidates(
+                candidates,
                 tags,
                 center,
                 "scan_after_turn:" + reason,
