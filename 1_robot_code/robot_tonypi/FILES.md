@@ -9,14 +9,14 @@ main.py
 ├─ config.py + config/competition_config.json
 ├─ task_manager.py
 │  ├─ models.py / utils.py
-│  ├─ load_pos.py → localizer.py
-│  ├─ map_model.py
-│  ├─ motion.py → hardware.py → robotall / TonyPi ActionGroups
-│  ├─ vision.py → classifier.py → Kria /predict
+│  ├─ map_model.py → load_pos.py（load_tag_positions）
+│  ├─ localizer.py（共享 Tag 世界坐标）
+│  ├─ motion.py → hardware.py → hiwonder / TonyPi ActionGroups
+│  ├─ vision.py + classifier.py → Worker /predict 或 Central /predict、/requests/{id}
 │  ├─ interaction_logic.py
 │  ├─ interaction_client.py → robotall.send_request
 │  └─ debug.py
-└─ finally: TaskManager.close()
+└─ TaskManager.run() 的 finally → TaskManager.close()
 ```
 
 ## 2. 顶层文档
@@ -46,7 +46,7 @@ main.py
 ### `main.py`
 
 - 定义 `mission`、`localize`、`harvest` 三种模式；
-- 检查目标花名；
+- 检查目标花名及 central 模式的 student_id/password；直接脚本入口仍导入 `competition_tonypi`，包模式使用相对导入；
 - 读取 JSON 覆盖配置；
 - 创建并运行 `TaskManager`；
 - 正常返回码为 0，运行返回 False 时为 2，`Ctrl+C` 为 130。
@@ -98,14 +98,14 @@ main.py
 #### 定位
 
 - `initial_localize()`；
-- `run_localization_search_sequence()`：启动与高级恢复共用“完整 pan → 身体搜索动作 → 完整 pan”；运行时 genuine NO-TAG 使用独立的有界位置恢复；
+- `run_localization_search_sequence()`：启动与缺失 Pose 的高级恢复共用“完整 pan → 身体搜索动作 → 完整 pan”；运行时连续定位失败使用独立的有界位置恢复；
 - `localize_scan()`：普通模式在任意有效视觉 Pose 后停止；指定 `required_target_screen_id` 时必须等到该目标 Tag↔Screen 绑定；
 - `accept_visual_localization()`：只有接受视觉 Pose 才清零动作计数与运动不确定度；
-- `record_localization_failure()`：区分 `no_tag`、`pose_unavailable_with_tags` 和 `capture_failed`。
+- `record_localization_failure()`：所有失败累加 `consecutive_localize_failures`；看到 Tag 清零 `consecutive_no_tag_scans`，未看到则累加（包括 `capture_failed`）；记录 `no_tag`、`pose_unavailable_with_tags`、`suspect_visual_pose_rejected` 或 `capture_failed`，不直接降低旧 Pose confidence。
 
 #### NO-TAG 与转向证据
 
-- `recover_from_no_tag_if_needed()`：仅连续 genuine `no_tag` 触发；墙边横移，否则 5 cm 后退 + 向内 45° 身体转向，中央复拍最多 3 轮；
+- `recover_from_no_tag_if_needed()`：两项连续失败计数的最大值≥2、cooldown≥4 s 且 enabled、未 active/耗尽时触发；墙边选安全横移，否则检查后退 corridor 后退 5 cm，再检查新位置 rotation sweep 后向内转约 45°，中央复拍最多 3 轮；看到 Tag 无 Pose 或取帧失败仍继续有界循环。安全拒绝或轮数耗尽设置 `no_tag_recovery_exhausted` 并返回调用者，不递归 global recovery；成功清两项计数并设置 `pending_post_action_replan=True`；
 - `evaluate_turn_progress()` / `monitor_turn_result()`：只让可靠视觉 Pose 产生 VERIFIED 结论；不可定位统一为 `PROGRESS_UNVERIFIED`；
 - 正式位置 A* 使用可被 15° state 精确表示的 ±90° physical quarter-turn macro；action-level yaw lattice 也可细化到 1.5°。预测、dead reckoning 和 watchdog 始终使用配置物理动作角。
 
@@ -115,18 +115,18 @@ main.py
 - `confirm_target_tag_now()`：最多看 `[100,130,70]`，只确认当前目标 Tag；
 - `bounded_fresh_target_observation()`：当前目标新鲜分类最多 3 帧；
 - `confirm_target_tag_and_screen()`：实时 Tag + 同 ID 绑定分类；
-- `confirm_target_with_visibility_recovery()`：分类服务不可用时保持目标和 mission，目标不可见时最多 2 轮局部恢复。
+- `confirm_target_with_visibility_recovery()`：分类服务不可用/结果无效时保持目标，进入 WAIT/DEGRADED；目标确认最多 2 轮局部恢复仍失败时，以 `target_screen_confirmation_unresolved` 临时排除并清锁、重选。
 
 #### 导航
 
 - `plan_navigation_path()`：保留给 debug、fallback 和 Recovery 兼容的二维路径接口；
-- `plan_motion_actions()`：正式 `POSITION_NAVIGATION` 的 Motion-Aware A*；yaw 保留在 state 中解释动作世界方向，但 Screen 最终 yaw 不参与位置阶段终点或 heuristic；
-- `navigate_to_xy()`：自适应重定位、动作选择、到达前新鲜视觉 Pose、最终 yaw；
+- `MapModel.plan_motion_actions()`：由 `navigate_motion_plan_to_target()` 调用的正式 `POSITION_NAVIGATION` Motion-Aware A*；yaw 保留在 state 中解释动作世界方向，但 Screen 最终 yaw 不参与位置阶段终点或 heuristic；
+- `navigate_to_xy()`：兼容路径的自适应重定位、动作选择、到达前新鲜视觉 Pose、最终 yaw；与正式目标导航一样，连续定位失败达门槛且恢复不成功时返回 `localization_recovery_blocked`，自适应定位及恢复失败时返回 `localization_required`；
 - `navigate_to_screen()`：一次建立 25 cm XY + desired yaw goal，并按真实距离进入 `POSITION A* (>10 cm) → NEAR_TARGET_ADJUSTMENT (5–10 cm) → FINAL_YAW_ALIGNMENT (≤5 cm)`；不再有中途 staging；
 - `perform_near_target_adjustment()`：使用四个真实单周期 translation action 的连续坐标预测和既有 target-owned corridor safety 做有限次数精调；每次动作后强制视觉定位；
-- `execute_motion_astar_action()`：直接执行 Planner 的 action key，可合并连续同动作，按 confidence/距离限制 batch，随后定位并重规划；
+- `execute_motion_astar_action()`：直接执行 Planner 的 action key，可合并连续同动作，按 confidence/距离限制 batch；转向做视觉进展检查，平移自适应定位（可跳过），均请求重规划；平移不传播 post-action 定位的 False，由下一导航循环处理；
 - `choose_translation_action()`：前进、短距离正后方倒退和平移；
-- `adaptive_relocalization_decision()`：动作预算、置信度、不确定度、阶段和大转向触发；
+- `adaptive_relocalization_decision()`：动作预算、Pose 原始置信度、不确定度、阶段和新大转向触发；`motion_sequence != last_relocalization_motion_sequence` 且动作数>0 才有大转向待定位请求，定位尝试即消费该序号。失败不直接把旧 Pose 改成 LOW；batch 使用的 `effective_localization_confidence()` 仍可因失败/陈旧而返回 LOW；
 - `register_plan_failure()`：相同输入 3 次失败后升级，不等到 80 步才处理。
 
 #### 恢复
@@ -135,15 +135,15 @@ main.py
 - `execute_bounded_escape()`：普通恢复全被 veto 时，从不安全起点选择更安全的小动作；
 - `recover_via_indoor_waypoint()`：在内缩区域选可达、安全、尽量保 yaw 的 waypoint；
 - `perform_global_recovery()`：重新定位，必要时 near-wall 或 interior recovery；
-- `register_temporary_target_failure()`、`release_temporary_target_failures()`：失败目标轮换和释放。
+- `register_temporary_target_failure()`、`release_temporary_target_failures()`：导航失败/可见性耗尽直接临时排除；普通 `register_target_failure()` 达2次才升级。无可选目标时 global recovery 返回后释放普通临时失败（不要求恢复成功），NFC GAVE_UP 集合不释放。
 
 #### FPGA 与 NFC
 
 - `latest_valid_bound_flower_observation()`：15 秒、同 ID、binding、置信度检查；
 - `adopt_cached_target_observation()`：实时当前 Tag 存在后把缓存变成授权；
-- `execute_final_forward()`：仅 NEEDS_CHANGE 时执行一次 `interaction_forward_final`（大步×4，约 20 cm），并设置 retreat pending；
+- `execute_final_forward()`：主流程在非目标花且已分类授权、未 skip-change 时调用；函数自身检查同 ID 绑定确认和未执行标记，执行 `interaction_forward_final`（大步×4，约 20 cm），成功才设置 retreat pending；
 - `process_screen_interaction()`：最多两次 NFC 物理尝试；
-- `restore_nfc_physical_contact()`：Attempt1 失败后后退、定位、最多 3 轮重新寻找当前目标；
+- `restore_nfc_physical_contact()`：Attempt1 失败后调用后退/定位，即使返回 False 仍进入最多3轮重获；仅接受 retry 开始后同 ID、有效 binding、confidence≥0.20 的新证据；已为目标花则直接 CHANGED，否则重新接近；pending 后退由 `complete_post_interaction_retreat()` 收尾，动作失败 blocked 不重发，动作成功但定位失败仅重试定位；
 - `recalibrate_target_for_nfc_retry()`：只有当前目标重新分类仍不是 target 才重新导航/确认/final forward；
 - `nfc_change_is_terminal()`：CHANGED 后禁止任何 retry；
 - `give_up_nfc_change()`：两次失败或目标重获耗尽后结束该 Screen，mission 继续。
@@ -155,19 +155,19 @@ main.py
 - 从 Tag 平面确定 WEST/EAST/SOUTH/NORTH；
 - 从同一建筑 `face_center` 和 cardinal normal 生成 reader、25 cm interaction target 和 cardinal yaw；
 - 保存分类但不执行交互；
-- 只有 Worker `success=True` 才写 `CHANGED`。
+- `apply_worker_change_result()` 在 Worker `success=True` 时写 `CHANGED`；另一路由 `TaskManager.restore_nfc_physical_contact()` 在 NFC 失败后凭同目标新分类证实已换，直接写 `CHANGED`。
 
 ## 5. 定位与地图
 
 ### `load_pos.py`
 
-保存 AprilTag 世界四角坐标。1–36 是 Screen Tag，37 以上可用于定位/障碍语义。此文件是地图事实源，不应因文档或 Dashboard 显示需求改坐标。
+保存 AprilTag 世界四角坐标。1–36 是建筑/Screen Tag，37–61 是地面定位 Tag；动态障碍另由 `obstacle.tag_min_id=81` 控制，正式 JSON 关闭该功能。此文件是地图事实源，不应因文档或 Dashboard 显示需求改坐标。
 
 ### `localizer.py`
 
 - AprilTag detector 适配；
-- 面积、边缘、世界坐标存在性、PnP、向量/旋转合法性、场地范围质量检查；
-- 同一帧逐个尝试 Tag，一个失败不会阻止后续 Tag；
+- ID 1–61、面积、边缘、世界坐标存在性、PnP、向量/旋转合法性检查；场地/建筑实体及时间一致性由 TaskManager 检查；
+- 先建筑 Tag 1–36，再地面 Tag 37–61；同类按面积降序、ID 升序。TaskManager 拒绝一个候选后继续后续候选，建筑全部不可用才回退地面；PnP 候选初始 HIGH，TaskManager 按帧内 Tag 数量/面积可降为 MEDIUM；
 - 输出结构化 rejection detail 和 frame summary。
 
 ### `map_model.py`
@@ -189,7 +189,7 @@ Debug 显示由 `_map_pt(xy) -> (y, x)` 转换，因此左上为 `(0,0)`、x 向
 
 ### `classifier.py`
 
-把 crop 编码成 JPEG。`direct` 模式保持只以 multipart `image` POST 到 KV260 Worker `/predict`；`central` 模式额外提交 `student_id`，并在 POST `/predict` 和 queued GET `/requests/{request_id}` 中使用 `X-Student-Password`。连接异常、5xx、408、429 被标记为可恢复 service unavailable；401 等其他 HTTP 错误不可重试；无合法花名/JSON 属于 invalid response。
+把 crop 编码成 JPEG。`direct` 模式保持只以 multipart `image` POST 到 KV260 Worker `/predict`；`central` 模式额外提交 `student_id`，并在 POST `/predict` 和 queued GET `/requests/{request_id}` 中使用 `X-Student-Password`。连接异常、5xx、408、429 被标记为可恢复 service unavailable；401 等其他 HTTP 错误不可重试；缺失花名、非法 confidence/JSON 属于 invalid response，解析器不校验花名是否在12类白名单内。
 
 ### `fpga_flower_server/fpga_server_api_ready.py`
 
@@ -199,13 +199,13 @@ Debug 显示由 `_map_pt(xy) -> (y, x)` 转换，因此左上为 `(0,0)`、x 向
 
 ### `motion.py`
 
-- `RobotState`：视觉 Pose、dead reckoning、动作计数和运动不确定度；
+- `RobotState`：视觉 Pose、dead reckoning、动作计数、运动不确定度及 `motion_sequence`；有 Pose 且实际完成周期>0 时每个 action result 增加一次序号，`set_pose()` 不清该序号；
 - `MotionController`：执行配置动作、按真实完成周期更新模型；
 - 失败或部分动作不会虚报全部 requested cycles。
 
 ### `hardware.py`
 
-相机后台读取、云台、ActionGroup 执行、动作序列、stop/close。动作完成前检查动作组是否存在；交互期间阻止普通动作并保持 stand 清理。
+相机后台读取、云台、ActionGroup 执行、动作序列、stop/close。动作执行前检查动作组是否存在；交互期间阻止普通动作并允许 stand 清理。
 
 ### `action_groups/*.d6a`
 
@@ -225,13 +225,13 @@ Debug 显示由 `_map_pt(xy) -> (y, x)` 转换，因此左上为 `(0,0)`、x 向
 授权检查
 → stand
 → lift_left_hand(stand=False)
-→ 再次授权检查
+→ 稳定等待 0.5 s，再次授权检查
 → 生成新 seq
-→ send_request(retries=0, scan_timeout≤15s, overall_timeout≤15s)
+→ send_request(retries=0, clear_first=True, scan_timeout_s≤25s, overall_timeout_s≤25s)
 → finally stand
 ```
 
-每次物理 Attempt 使用新 seq，底层继续校验 worker_id/seq；同一物理位置不会由底层自动重试。
+每次物理 Attempt 使用新 seq，底层继续校验 worker_id/seq；同一物理位置不会由底层自动重试。25 s 是正式 JSON 覆盖值（默认 15 s），任务管理器按调用前剩余任务时间截短，response timeout 为 1 s；授权检查核对身份、绑定、到达和花名，不重新取帧或检查证据年龄。
 
 ## 9. Debug
 
@@ -246,13 +246,13 @@ Debug 显示由 `_map_pt(xy) -> (y, x)` 转换，因此左上为 `(0,0)`、x 向
 - `test_calibrate_motion.py`：动作标定纯逻辑；
 - `test_interaction_flow.py`：几何、授权、NFC deadline/seq/异常；
 - `test_mission_scheduler.py`：目标选择、状态机、near-wall/forced escape、timeout；
-- `test_navigation_adaptive.py`：动作批次、自适应定位、no-tag、倒退/平移、task safety bypass；
+- `test_navigation_adaptive.py`：动作批次、新大转向单次定位、连续定位失败恢复/安全 corridor/非递归耗尽、建筑与地面 Tag 优先级、倒退/平移、task safety bypass；
 - `test_navigation_path_fallback.py`：clearance、兼容 fallback、规划失败升级；
 - `test_recovery_target_consistency.py`：TargetGoal 原子一致和 interior recovery；
 - `test_target_direct_approach.py`：当前目标软 cost 例外和直接动作；
-- `test_mission_refactor.py`：物理定位 gate、hard jump、两阶段目标评分、Motion-Aware A* goal/action、Position 免费安全转向、15 cm reverse 边界和 Planner→Executor 一致性；
+- `test_mission_refactor.py`：物理定位 gate、hard jump、建筑候选拒绝后地面 fallback、两阶段目标评分、Motion-Aware A* goal/action、Position 轻量正代价转向、15 cm reverse 边界和 Planner→Executor 一致性；同目录 `test_near_target_adjustment.py`、`test_target_geometry.py` 核对单周期精调与目标几何；
 - `test_target_standoff_flow.py`：目标确认、缓存、final forward、NFC 两次尝试和目标重获；
-- `test_vision_tag_binding.py`：Tag↔Screen 绑定和 15 秒缓存。
+- `test_vision_tag_binding.py`：Tag↔Screen 绑定和 15 秒缓存；`test_classifier.py` 核对 direct/central 请求、鉴权和错误解析。
 
 详细命令见 [tests/README.md](tests/README.md)。
 
