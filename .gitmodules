@@ -6,3 +6,6 @@
 	path = 0_NFCserver_code
 	url = https://github.com/shenghong1130/robot_playground.git
 	branch = main
+[submodule "0_robot_control_center"]
+	path = 0_robot_control_center
+	url = https://github.com/shenghong1130/Robot-Control-Center
